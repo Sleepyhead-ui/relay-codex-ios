@@ -10,6 +10,11 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if store.isRunning, !store.activePlan.isEmpty {
+                ExecutionPlanPanel(steps: store.activePlan)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             if store.socket.state != .connected {
                 if store.socket.state.isConnecting {
                     Label("Reconnecting to Windows", systemImage: "arrow.triangle.2.circlepath")
@@ -125,6 +130,7 @@ struct ComposerView: View {
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
+        .animation(.easeOut(duration: 0.2), value: store.activePlan)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
@@ -326,5 +332,96 @@ struct ComposerView: View {
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
         let isUploading = store.attachments.contains { $0.state == .uploading }
         return store.socket.state == .connected && !isUploading && (hasText || hasReadyFile)
+    }
+}
+
+private struct ExecutionPlanPanel: View {
+    let steps: [ExecutionPlanStep]
+    @State private var expanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "list.bullet.clipboard")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("执行计划")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("\(completedCount)/\(steps.count)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+                .padding(.horizontal, 11)
+                .frame(height: 32)
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                Divider().opacity(0.45)
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(visibleSteps) { step in
+                        HStack(alignment: .top, spacing: 7) {
+                            planStatus(step)
+                                .frame(width: 14, height: 16)
+                            Text(step.text)
+                                .font(.system(size: 12))
+                                .foregroundStyle(step.isCompleted ? Color.secondary : Color.primary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if hiddenStepCount > 0 {
+                        Text("还有 \(hiddenStepCount) 项")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 21)
+                    }
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(RelayTheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(RelayTheme.hairline, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.04), radius: 8, y: 2)
+    }
+
+    private var completedCount: Int { steps.filter(\.isCompleted).count }
+    private var visibleSteps: [ExecutionPlanStep] { Array(steps.prefix(6)) }
+    private var hiddenStepCount: Int { max(0, steps.count - visibleSteps.count) }
+
+    @ViewBuilder
+    private func planStatus(_ step: ExecutionPlanStep) -> some View {
+        if step.isCompleted {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(RelayTheme.accent)
+        } else if step.isRunning {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(.secondary)
+        } else if step.normalizedStatus.contains("fail") {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+        } else {
+            Circle()
+                .stroke(Color.secondary.opacity(0.45), lineWidth: 1.2)
+                .frame(width: 10, height: 10)
+        }
     }
 }

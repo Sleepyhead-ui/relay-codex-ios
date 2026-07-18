@@ -4,7 +4,7 @@ struct TurnGroupView: View {
     let group: TranscriptGroup
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(group.userItems) { item in
                 TranscriptRow(item: item)
             }
@@ -108,51 +108,78 @@ private struct RunActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
+                guard !executionItems.isEmpty else { return }
                 withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 9) {
+                HStack(alignment: .top, spacing: 8) {
                     if metadata.isRunning {
                         ProgressView()
                             .controlSize(.mini)
                             .tint(.secondary)
+                            .padding(.top, 1)
                     } else {
                         Image(systemName: statusIcon)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(statusColor)
+                            .padding(.top, 1)
                     }
 
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(activityLabel)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if metadata.isRunning, let latestProgressText {
+                            Text(latestProgressText)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .id(latestProgressText)
+                                .transition(.opacity)
+                        } else {
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                Text(activityLabel)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if metadata.isRunning, elapsedMilliseconds > 0 {
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                Text(formatDuration(milliseconds: elapsedMilliseconds))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
                     }
 
-                    if !items.isEmpty {
-                        Text("· \(items.count) 个步骤")
-                            .font(.system(size: 12))
+                    if !executionItems.isEmpty {
+                        Text("· \(executionItems.count)")
+                            .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
+                            .padding(.top, 1)
                     }
 
                     Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                    if !executionItems.isEmpty {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .padding(.top, 3)
+                    }
                 }
                 .contentShape(Rectangle())
-                .padding(.vertical, 8)
+                .padding(.vertical, 5)
             }
             .buttonStyle(.plain)
 
-            if expanded {
+            if expanded, !executionItems.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(items) { item in
-                        HStack(alignment: .top, spacing: 10) {
+                    ForEach(executionItems) { item in
+                        HStack(alignment: .top, spacing: 8) {
                             VStack(spacing: 0) {
                                 Circle()
                                     .fill(stepColor(item))
-                                    .frame(width: 6, height: 6)
-                                    .padding(.top, 17)
+                                    .frame(width: 5, height: 5)
+                                    .padding(.top, 13)
                                 Rectangle()
                                     .fill(RelayTheme.hairline)
                                     .frame(width: 1)
@@ -160,7 +187,7 @@ private struct RunActivityView: View {
                             .frame(width: 8)
 
                             TranscriptRow(item: item)
-                                .padding(.bottom, 5)
+                                .padding(.bottom, 1)
                         }
                     }
                 }
@@ -168,11 +195,30 @@ private struct RunActivityView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(.easeOut(duration: 0.16), value: latestProgressText)
         .onChange(of: metadata.isRunning) { running in
             if !running {
                 withAnimation(.easeOut(duration: 0.2)) { expanded = false }
             }
         }
+    }
+
+    private var progressItems: [TranscriptItem] {
+        items.filter { $0.kind == .reasoning || $0.isCommentary }
+    }
+
+    private var executionItems: [TranscriptItem] {
+        items.filter { $0.kind != .reasoning && !$0.isCommentary && $0.kind != .plan }
+    }
+
+    private var latestProgressText: String? {
+        guard let item = progressItems.last else { return nil }
+        let source = item.text.nonEmpty ?? item.detail?.nonEmpty
+        let lines = source?
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+        return lines.last?.nonEmpty
     }
 
     private var elapsedMilliseconds: Int {
@@ -263,7 +309,7 @@ private struct ToolEventRow: View {
                                 Text(item.text)
                                     .font(.system(size: 12, design: item.kind == .command ? .monospaced : .default))
                                     .foregroundStyle(.secondary)
-                                    .lineLimit(expanded ? 12 : 3)
+                                    .lineLimit(expanded ? 12 : 1)
                                     .textSelection(.enabled)
                             }
                         }
@@ -272,6 +318,7 @@ private struct ToolEventRow: View {
                             Text("操作失败：\(item.errorMessage?.nonEmpty ?? "Codex 未返回更多原因")")
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(.red)
+                                .lineLimit(expanded ? 5 : 2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -294,11 +341,11 @@ private struct ToolEventRow: View {
                     }
                 }
                 .contentShape(Rectangle())
-                .padding(.vertical, 10)
+                .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
 
-            if !item.downloadablePaths.isEmpty {
+            if !item.downloadablePaths.isEmpty, expanded || item.kind == .image {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(item.downloadablePaths, id: \.self) { path in
                         Button {

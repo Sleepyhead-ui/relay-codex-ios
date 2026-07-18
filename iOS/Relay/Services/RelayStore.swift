@@ -25,6 +25,7 @@ final class RelayStore: ObservableObject {
     @Published var workspaceAccess: WorkspaceAccessMode = .workspaceWrite
     @Published var sharedFile: SharedFile?
     @Published var downloadingPath: String?
+    @Published var activePlan: [ExecutionPlanStep] = []
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -177,6 +178,7 @@ final class RelayStore: ObservableObject {
             return
         }
         do {
+            activePlan = []
             var params: [String: JSONValue] = [
                 "approvalPolicy": .string("on-request"),
                 "sandbox": .string(workspaceAccess.threadSandbox),
@@ -204,6 +206,7 @@ final class RelayStore: ObservableObject {
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
         selectedThreadId = id
+        activePlan = []
         if closeSidebar { sidebarOpen = false }
         isLoadingThread = true
         defer {
@@ -250,6 +253,7 @@ final class RelayStore: ObservableObject {
         guard let threadId = selectedThreadId else { return }
 
         let clientMessageId = UUID().uuidString
+        activePlan = []
         composerText = ""
         attachments = []
         isRunning = true
@@ -446,6 +450,7 @@ final class RelayStore: ObservableObject {
         switch method {
         case "turn/started":
             isRunning = true
+            activePlan = []
             activeTurnId = params["turn"]?["id"]?.stringValue
             if let activeTurnId { turnMetadata[activeTurnId] = TurnMetadata(json: params["turn"] ?? .object([:])) }
         case "turn/completed":
@@ -459,6 +464,7 @@ final class RelayStore: ObservableObject {
             }
             isRunning = false
             activeTurnId = nil
+            activePlan = []
             Task { await refreshThreads(showErrors: false) }
         case "item/started", "item/completed":
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
@@ -473,12 +479,14 @@ final class RelayStore: ObservableObject {
         case "turn/plan/updated":
             guard let turnId = eventTurnId else { break }
             let steps = params["plan"]?.arrayValue ?? []
-            let markdown = steps.map { step -> String in
-                let status = step["status"]?.stringValue ?? "pending"
-                let marker = status == "completed" ? "[x]" : "[ ]"
-                return "- \(marker) \(step["step"]?.stringValue ?? "")"
-            }.joined(separator: "\n")
-            upsert(TranscriptItem(id: "plan.\(turnId)", turnId: turnId, role: .tool, kind: .plan, title: "执行计划", text: markdown, status: isRunning ? "inProgress" : "completed"))
+            activePlan = steps.enumerated().compactMap { index, step in
+                guard let text = step["step"]?.stringValue, !text.isEmpty else { return nil }
+                return ExecutionPlanStep(
+                    id: "\(turnId).\(index)",
+                    text: text,
+                    status: step["status"]?.stringValue ?? "pending"
+                )
+            }
         case "thread/tokenUsage/updated":
             if let threadId = params["threadId"]?.stringValue, let usage = params["tokenUsage"] {
                 tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
@@ -494,6 +502,7 @@ final class RelayStore: ObservableObject {
         case "error":
             errorMessage = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue ?? "Codex reported an error."
             isRunning = false
+            activePlan = []
         default:
             break
         }

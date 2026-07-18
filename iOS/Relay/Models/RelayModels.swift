@@ -67,6 +67,20 @@ struct SharedFile: Identifiable {
     let url: URL
 }
 
+struct ExecutionPlanStep: Identifiable, Equatable {
+    let id: String
+    let text: String
+    let status: String
+
+    var normalizedStatus: String {
+        status.replacingOccurrences(of: "_", with: "").lowercased()
+    }
+    var isCompleted: Bool { normalizedStatus == "completed" }
+    var isRunning: Bool {
+        normalizedStatus == "inprogress" || normalizedStatus == "running" || normalizedStatus == "active"
+    }
+}
+
 struct ThreadSummary: Identifiable, Equatable {
     let id: String
     var title: String
@@ -318,7 +332,7 @@ struct TranscriptItem: Identifiable, Equatable {
                 durationMs: json["durationMs"]?.intValue,
                 exitCode: exitCode,
                 cwd: json["cwd"]?.stringValue,
-                errorMessage: (exitCode ?? 0) != 0 ? output?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty : nil
+                errorMessage: (exitCode ?? 0) != 0 ? commandFailureSummary(output) : nil
             )
         case "fileChange":
             let changes = json["changes"]?.arrayValue ?? []
@@ -374,6 +388,15 @@ struct TranscriptItem: Identifiable, Equatable {
         case "run": return "运行命令"
         default: return "运行命令"
         }
+    }
+
+    private static func commandFailureSummary(_ output: String?) -> String? {
+        let lines = output?
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+        guard let line = lines.last else { return nil }
+        return String(line.prefix(240))
     }
 
     private static func friendlyToolTitle(name: String, namespace: String) -> String {
