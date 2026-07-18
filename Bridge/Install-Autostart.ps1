@@ -1,6 +1,7 @@
 param(
     [string]$TaskName = "Relay Codex Bridge",
-    [string]$WorkingDirectory = ""
+    [string]$WorkingDirectory = "",
+    [switch]$DesktopSync
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,9 @@ $startScript = Join-Path $PSScriptRoot "Start-Relay.ps1"
 $arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startScript`""
 if ($WorkingDirectory) {
     $arguments += " -WorkingDirectory `"$WorkingDirectory`""
+}
+if ($DesktopSync) {
+    $arguments += " -DesktopSync"
 }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
@@ -17,4 +21,3 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 Write-Host "Installed scheduled task: $TaskName"
 Write-Host "Run it now from Task Scheduler, or sign out and back in."
-

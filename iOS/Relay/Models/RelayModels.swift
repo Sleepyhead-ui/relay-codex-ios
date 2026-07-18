@@ -25,6 +25,105 @@ struct ThreadSummary: Identifiable, Equatable {
     }
 }
 
+struct ReasoningEffortOption: Identifiable, Equatable {
+    let id: String
+    let description: String
+
+    init?(json: JSONValue) {
+        guard let id = json["reasoningEffort"]?.stringValue else { return nil }
+        self.id = id
+        description = json["description"]?.stringValue ?? ""
+    }
+
+    var displayName: String {
+        switch id.lowercased() {
+        case "none": return "关闭"
+        case "minimal": return "最低"
+        case "low": return "低"
+        case "medium": return "中"
+        case "high": return "高"
+        case "xhigh": return "最高"
+        case "ultra": return "极高+"
+        default: return id
+        }
+    }
+}
+
+struct CodexModelOption: Identifiable, Equatable {
+    let id: String
+    let model: String
+    let displayName: String
+    let description: String
+    let isDefault: Bool
+    let efforts: [ReasoningEffortOption]
+    let defaultEffort: String
+
+    init?(json: JSONValue) {
+        guard let id = json["id"]?.stringValue,
+              let model = json["model"]?.stringValue else { return nil }
+        self.id = id
+        self.model = model
+        displayName = json["displayName"]?.stringValue ?? model
+        description = json["description"]?.stringValue ?? ""
+        isDefault = json["isDefault"]?.boolValue ?? false
+        efforts = json["supportedReasoningEfforts"]?.arrayValue?.compactMap(ReasoningEffortOption.init(json:)) ?? []
+        defaultEffort = json["defaultReasoningEffort"]?.stringValue ?? efforts.first?.id ?? "medium"
+    }
+}
+
+struct TokenUsageBreakdown: Equatable {
+    var inputTokens = 0
+    var cachedInputTokens = 0
+    var outputTokens = 0
+    var reasoningOutputTokens = 0
+    var totalTokens = 0
+
+    init(json: JSONValue?) {
+        inputTokens = json?["inputTokens"]?.intValue ?? 0
+        cachedInputTokens = json?["cachedInputTokens"]?.intValue ?? 0
+        outputTokens = json?["outputTokens"]?.intValue ?? 0
+        reasoningOutputTokens = json?["reasoningOutputTokens"]?.intValue ?? 0
+        totalTokens = json?["totalTokens"]?.intValue ?? 0
+    }
+}
+
+struct ThreadTokenUsage: Equatable {
+    var last: TokenUsageBreakdown
+    var total: TokenUsageBreakdown
+    var modelContextWindow: Int?
+
+    init(json: JSONValue) {
+        last = TokenUsageBreakdown(json: json["last"])
+        total = TokenUsageBreakdown(json: json["total"])
+        modelContextWindow = json["modelContextWindow"]?.intValue
+    }
+
+    var contextPercentage: Int? {
+        guard let modelContextWindow, modelContextWindow > 0 else { return nil }
+        return min(100, max(0, Int((Double(last.totalTokens) / Double(modelContextWindow)) * 100)))
+    }
+}
+
+struct TurnMetadata: Equatable {
+    var status = "inProgress"
+    var startedAt: Date?
+    var completedAt: Date?
+    var durationMs: Int?
+    var errorMessage: String?
+
+    init() {}
+
+    init(json: JSONValue) {
+        status = json["status"]?.stringValue ?? "inProgress"
+        if let value = json["startedAt"]?.doubleValue { startedAt = Date(timeIntervalSince1970: value) }
+        if let value = json["completedAt"]?.doubleValue { completedAt = Date(timeIntervalSince1970: value) }
+        durationMs = json["durationMs"]?.intValue
+        errorMessage = json["error"]?["message"]?.stringValue
+    }
+
+    var isRunning: Bool { status == "inProgress" || status == "active" }
+}
+
 enum TranscriptRole: Equatable {
     case user
     case assistant
@@ -38,19 +137,60 @@ enum TranscriptKind: Equatable {
     case fileChange
     case reasoning
     case webSearch
+    case plan
+    case contextCompaction
+    case image
+    case subagent
     case other
 }
 
 struct TranscriptItem: Identifiable, Equatable {
     let id: String
+    var turnId: String?
     var role: TranscriptRole
     var kind: TranscriptKind
     var title: String?
     var text: String
     var detail: String?
     var status: String?
+    var phase: String?
+    var durationMs: Int?
+    var exitCode: Int?
+    var cwd: String?
 
-    static func from(json: JSONValue) -> TranscriptItem? {
+    init(
+        id: String,
+        turnId: String? = nil,
+        role: TranscriptRole,
+        kind: TranscriptKind,
+        title: String? = nil,
+        text: String,
+        detail: String? = nil,
+        status: String? = nil,
+        phase: String? = nil,
+        durationMs: Int? = nil,
+        exitCode: Int? = nil,
+        cwd: String? = nil
+    ) {
+        self.id = id
+        self.turnId = turnId
+        self.role = role
+        self.kind = kind
+        self.title = title
+        self.text = text
+        self.detail = detail
+        self.status = status
+        self.phase = phase
+        self.durationMs = durationMs
+        self.exitCode = exitCode
+        self.cwd = cwd
+    }
+
+    var isCommentary: Bool { role == .assistant && phase == "commentary" }
+    var isFinalAnswer: Bool { role == .assistant && phase != "commentary" }
+    var isActivity: Bool { role == .tool || isCommentary }
+
+    static func from(json: JSONValue, turnId: String? = nil) -> TranscriptItem? {
         guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
         let id = type == "userMessage" ? (json["clientId"]?.stringValue ?? serverId) : serverId
         switch type {
@@ -58,38 +198,108 @@ struct TranscriptItem: Identifiable, Equatable {
             let text = json["content"]?.arrayValue?
                 .compactMap { $0["text"]?.stringValue }
                 .joined(separator: "\n") ?? ""
-            return TranscriptItem(id: id, role: .user, kind: .message, text: text)
+            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text)
         case "agentMessage":
-            return TranscriptItem(id: id, role: .assistant, kind: .message, text: json["text"]?.stringValue ?? "")
-        case "reasoning":
-            let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n") ?? ""
-            return TranscriptItem(id: id, role: .tool, kind: .reasoning, title: "Reasoning", text: summary)
-        case "commandExecution":
             return TranscriptItem(
                 id: id,
+                turnId: turnId,
+                role: .assistant,
+                kind: .message,
+                text: json["text"]?.stringValue ?? "",
+                phase: json["phase"]?.stringValue
+            )
+        case "reasoning":
+            let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
+            let content = json["content"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .reasoning, title: "思考", text: summary, detail: content)
+        case "commandExecution":
+            let command = json["command"]?.stringValue ?? "Command"
+            return TranscriptItem(
+                id: id,
+                turnId: turnId,
                 role: .tool,
                 kind: .command,
-                title: "Terminal",
-                text: json["command"]?.stringValue ?? "Command",
+                title: commandTitle(json: json),
+                text: command,
                 detail: json["aggregatedOutput"]?.stringValue,
-                status: json["status"]?.stringValue
+                status: json["status"]?.stringValue,
+                durationMs: json["durationMs"]?.intValue,
+                exitCode: json["exitCode"]?.intValue,
+                cwd: json["cwd"]?.stringValue
             )
         case "fileChange":
             let changes = json["changes"]?.arrayValue ?? []
             let paths = changes.compactMap { $0["path"]?.stringValue }.joined(separator: "\n")
-            let diffs = changes.compactMap { $0["diff"]?.stringValue }.joined(separator: "\n")
-            return TranscriptItem(id: id, role: .tool, kind: .fileChange, title: "Files changed", text: paths, detail: diffs, status: json["status"]?.stringValue)
+            let diffs = changes.compactMap { $0["diff"]?.stringValue }.joined(separator: "\n\n")
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .fileChange, title: "修改文件", text: paths, detail: diffs, status: json["status"]?.stringValue)
         case "webSearch":
-            return TranscriptItem(id: id, role: .tool, kind: .webSearch, title: "Web search", text: json["query"]?.stringValue ?? "")
-        case "mcpToolCall", "dynamicToolCall", "collabAgentToolCall":
-            let name = json["tool"]?.stringValue ?? json["name"]?.stringValue ?? "Tool"
-            return TranscriptItem(id: id, role: .tool, kind: .other, title: name, text: json["server"]?.stringValue ?? "", status: json["status"]?.stringValue)
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .webSearch, title: "搜索网页", text: json["query"]?.stringValue ?? "")
+        case "mcpToolCall":
+            let name = json["tool"]?.stringValue ?? "MCP tool"
+            let server = json["server"]?.stringValue ?? ""
+            let result = prettyJSON(json["result"]) ?? prettyJSON(json["error"])
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: name, text: server, detail: result, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue)
+        case "dynamicToolCall":
+            let name = json["tool"]?.stringValue ?? "Tool"
+            let namespace = json["namespace"]?.stringValue ?? ""
+            let detail = prettyJSON(json["contentItems"]) ?? prettyJSON(json["arguments"])
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: name, text: namespace, detail: detail, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue)
+        case "collabAgentToolCall":
+            let tool = json["tool"]?.stringValue ?? "Agent"
+            let prompt = json["prompt"]?.stringValue ?? ""
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .subagent, title: "协作代理 · \(tool)", text: prompt, detail: prettyJSON(json["agentsStates"]), status: json["status"]?.stringValue)
+        case "subAgentActivity":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .subagent, title: "子代理", text: json["agentPath"]?.stringValue ?? "", detail: json["kind"]?.stringValue)
         case "plan":
-            return TranscriptItem(id: id, role: .assistant, kind: .message, title: "Plan", text: json["text"]?.stringValue ?? "")
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .plan, title: "计划", text: json["text"]?.stringValue ?? "")
+        case "contextCompaction":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .contextCompaction, title: "已压缩上下文", text: "Codex 已整理较早的对话内容，为后续工作释放上下文空间。", status: "completed")
+        case "imageView":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .image, title: "查看图片", text: json["path"]?.stringValue ?? "")
+        case "imageGeneration":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .image, title: "生成图片", text: json["savedPath"]?.stringValue ?? json["result"]?.stringValue ?? "", status: json["status"]?.stringValue)
+        case "enteredReviewMode":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: "开始审查", text: json["review"]?.stringValue ?? "")
+        case "exitedReviewMode":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: "完成审查", text: json["review"]?.stringValue ?? "", status: "completed")
+        case "sleep":
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: "等待", text: formatDuration(milliseconds: json["durationMs"]?.intValue ?? 0), status: "completed")
         default:
             return nil
         }
     }
+
+    private static func commandTitle(json: JSONValue) -> String {
+        guard let action = json["commandActions"]?.arrayValue?.first else { return "运行命令" }
+        let type = action["type"]?.stringValue ?? action["kind"]?.stringValue ?? ""
+        switch type {
+        case "read": return "读取文件"
+        case "search": return "搜索代码"
+        case "listFiles": return "列出文件"
+        case "write": return "写入文件"
+        case "delete": return "删除文件"
+        case "run": return "运行命令"
+        default: return "运行命令"
+        }
+    }
+
+    private static func prettyJSON(_ value: JSONValue?) -> String? {
+        guard let value,
+              JSONSerialization.isValidJSONObject(value.rawValue),
+              let data = try? JSONSerialization.data(withJSONObject: value.rawValue, options: [.prettyPrinted, .sortedKeys]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+struct TranscriptGroup: Identifiable, Equatable {
+    let id: String
+    let turnId: String?
+    var items: [TranscriptItem]
+    var metadata: TurnMetadata
+
+    var userItems: [TranscriptItem] { items.filter { $0.role == .user } }
+    var activityItems: [TranscriptItem] { items.filter(\.isActivity) }
+    var answerItems: [TranscriptItem] { items.filter(\.isFinalAnswer) }
 }
 
 struct ApprovalRequest: Identifiable, Equatable {
@@ -129,6 +339,17 @@ struct ApprovalRequest: Identifiable, Equatable {
             detail = method
         }
     }
+}
+
+func formatDuration(milliseconds: Int) -> String {
+    let seconds = max(0, milliseconds / 1000)
+    if seconds < 60 { return "\(seconds) 秒" }
+    let minutes = seconds / 60
+    let remainder = seconds % 60
+    if minutes < 60 { return remainder == 0 ? "\(minutes) 分钟" : "\(minutes) 分 \(remainder) 秒" }
+    let hours = minutes / 60
+    let minuteRemainder = minutes % 60
+    return "\(hours) 小时 \(minuteRemainder) 分"
 }
 
 extension String {

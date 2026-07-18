@@ -15,6 +15,12 @@ Relay 是一个面向 iOS 16 的非官方 Codex 远程客户端。它通过 Wind
 - 停止正在运行的 Turn
 - Tailscale 网络和 Bearer Token 双层保护
 - GitHub Actions 自动生成 TrollStore 可安装的未签名 IPA
+- 结构化处理过程：思考摘要、计划、命令、文件修改、工具结果和处理时间
+- 原生风格 Markdown：标题、列表、引用、代码块、表格、行内链接和代码复制
+- 从 Codex 模型目录读取模型及其可用推理强度
+- 上下文 Token 占用、手动压缩和压缩事件展示
+- 打开线程自动定位到最新一轮，浏览历史时显示“跳到最新”按钮
+- 可选 Windows 桌面线程刷新模式
 
 ## 架构
 
@@ -44,8 +50,10 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 在 `Bridge` 目录运行：
 
 ```powershell
-.\Start-Relay.ps1 -WorkingDirectory "C:\path\to\your-project"
+.\Start-Relay.ps1 -WorkingDirectory "C:\path\to\your-project" -DesktopSync
 ```
+
+`-DesktopSync` 是可选的桌面刷新模式。手机开始或完成一轮任务时，Bridge 会通过官方 `codex://threads/<id>` 协议激活同一线程，让 Windows Codex 重新读取手机写入的会话内容。该功能仍属实验性质，可能短暂把 Codex 窗口带到前台。
 
 脚本会：
 
@@ -59,7 +67,7 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 让 Bridge 登录后自动运行：
 
 ```powershell
-.\Install-Autostart.ps1 -WorkingDirectory "C:\path\to\your-project"
+.\Install-Autostart.ps1 -WorkingDirectory "C:\path\to\your-project" -DesktopSync
 ```
 
 该命令会创建当前用户的 Windows 计划任务。执行前可先检查脚本内容。

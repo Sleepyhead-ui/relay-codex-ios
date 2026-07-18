@@ -1,5 +1,32 @@
 import SwiftUI
 
+struct TurnGroupView: View {
+    let group: TranscriptGroup
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(group.userItems) { item in
+                TranscriptRow(item: item)
+            }
+
+            if !group.activityItems.isEmpty || group.metadata.isRunning {
+                RunActivityView(items: group.activityItems, metadata: group.metadata)
+            }
+
+            ForEach(group.answerItems) { item in
+                TranscriptRow(item: item)
+            }
+
+            if group.answerItems.isEmpty, let error = group.metadata.errorMessage, !error.isEmpty {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.red)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct TranscriptRow: View {
     let item: TranscriptItem
 
@@ -8,24 +35,26 @@ struct TranscriptRow: View {
         case .user:
             HStack {
                 Spacer(minLength: 46)
-                Text(item.text)
-                    .font(.system(size: 16))
-                    .textSelection(.enabled)
+                MarkdownContentView(source: item.text)
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 11)
                     .background(RelayTheme.softFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         case .assistant:
-            VStack(alignment: .leading, spacing: 8) {
-                if let title = item.title {
-                    Text(title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
+            if item.isCommentary {
+                CommentaryRow(item: item)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let title = item.title {
+                        Text(title)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    MarkdownContentView(source: item.text)
                 }
-                MarkdownText(item.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         case .tool:
             ToolEventRow(item: item)
         case .system:
@@ -37,27 +66,119 @@ struct TranscriptRow: View {
     }
 }
 
-private struct MarkdownText: View {
-    let value: String
-
-    init(_ value: String) { self.value = value }
+private struct RunActivityView: View {
+    let items: [TranscriptItem]
+    let metadata: TurnMetadata
+    @State private var expanded = true
 
     var body: some View {
-        if let attributed = try? AttributedString(
-            markdown: value,
-            options: .init(interpretedSyntax: .full)
-        ) {
-            Text(attributed)
-                .font(.system(size: 16))
-                .lineSpacing(4)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            Text(value)
-                .font(.system(size: 16))
-                .lineSpacing(4)
-                .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 9) {
+                    if metadata.isRunning {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.secondary)
+                    } else {
+                        Image(systemName: statusIcon)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(statusColor)
+                    }
+
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(activityLabel)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !items.isEmpty {
+                        Text("· \(items.count) 个步骤")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(items) { item in
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(spacing: 0) {
+                                Circle()
+                                    .fill(stepColor(item))
+                                    .frame(width: 6, height: 6)
+                                    .padding(.top, 17)
+                                Rectangle()
+                                    .fill(RelayTheme.hairline)
+                                    .frame(width: 1)
+                            }
+                            .frame(width: 8)
+
+                            TranscriptRow(item: item)
+                                .padding(.bottom, 5)
+                        }
+                    }
+                }
+                .padding(.leading, 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+    }
+
+    private var elapsedMilliseconds: Int {
+        if let duration = metadata.durationMs { return duration }
+        guard let startedAt = metadata.startedAt else { return 0 }
+        let end = metadata.completedAt ?? Date()
+        return max(0, Int(end.timeIntervalSince(startedAt) * 1000))
+    }
+
+    private var activityLabel: String {
+        let duration = formatDuration(milliseconds: elapsedMilliseconds)
+        if metadata.isRunning { return elapsedMilliseconds > 0 ? "正在处理 · \(duration)" : "正在处理" }
+        if metadata.status == "failed" { return "处理失败 · \(duration)" }
+        if metadata.status == "interrupted" { return "已停止 · \(duration)" }
+        return elapsedMilliseconds > 0 ? "已处理 · \(duration)" : "处理过程"
+    }
+
+    private var statusIcon: String {
+        metadata.status == "failed" ? "xmark.circle.fill" : metadata.status == "interrupted" ? "stop.circle.fill" : "checkmark.circle.fill"
+    }
+
+    private var statusColor: Color {
+        metadata.status == "failed" ? .red : metadata.status == "interrupted" ? .secondary : RelayTheme.accent
+    }
+
+    private func stepColor(_ item: TranscriptItem) -> Color {
+        let status = item.status?.lowercased() ?? ""
+        if status.contains("fail") { return .red }
+        if status.contains("progress") || status.contains("running") { return .orange }
+        return Color.secondary.opacity(0.55)
+    }
+}
+
+private struct CommentaryRow: View {
+    let item: TranscriptItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("进展")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            MarkdownContentView(source: item.text)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
     }
 }
 
@@ -68,57 +189,102 @@ private struct ToolEventRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                guard item.detail?.isEmpty == false else { return }
+                guard hasExpandableContent else { return }
                 withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 11) {
+                HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.title ?? title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(iconColor)
+                        .frame(width: 19, height: 20)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(item.title ?? title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.primary)
+                            if let durationMs = item.durationMs, durationMs > 0 {
+                                Text(formatDuration(milliseconds: durationMs))
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if let exitCode = item.exitCode, item.kind == .command {
+                                Text("exit \(exitCode)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(exitCode == 0 ? .tertiary : .red)
+                            }
+                        }
+
                         if !item.text.isEmpty {
-                            Text(item.text)
-                                .font(.system(size: 12, design: item.kind == .command ? .monospaced : .default))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(expanded ? 8 : 2)
+                            if item.kind == .reasoning || item.kind == .plan || item.isCommentary {
+                                MarkdownContentView(source: item.text)
+                                    .foregroundStyle(item.kind == .reasoning ? .secondary : .primary)
+                            } else {
+                                Text(item.text)
+                                    .font(.system(size: 12, design: item.kind == .command ? .monospaced : .default))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(expanded ? 12 : 3)
+                                    .textSelection(.enabled)
+                            }
+                        }
+
+                        if let cwd = item.cwd, !cwd.isEmpty, item.kind == .command {
+                            Text(cwd)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
                         }
                     }
-                    Spacer()
-                    if let status = item.status {
-                        StatusGlyph(status: status)
-                    }
-                    if item.detail?.isEmpty == false {
+
+                    Spacer(minLength: 6)
+                    if let status = item.status { StatusGlyph(status: status) }
+                    if hasExpandableContent {
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                             .rotationEffect(.degrees(expanded ? 180 : 0))
                             .foregroundStyle(.tertiary)
+                            .padding(.top, 4)
                     }
                 }
                 .contentShape(Rectangle())
-                .padding(.vertical, 9)
+                .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
 
             if expanded, let detail = item.detail, !detail.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .padding(12)
-                }
-                .frame(maxHeight: 260)
-                .background(Color.black.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
-                .padding(.bottom, 8)
+                detailView(detail)
+                    .padding(.leading, 29)
+                    .padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .overlay(alignment: .bottom) { Divider().opacity(0.55) }
     }
+
+    @ViewBuilder
+    private func detailView(_ detail: String) -> some View {
+        if item.kind == .reasoning {
+            MarkdownContentView(source: detail)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 11)
+                .overlay(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.25)).frame(width: 2)
+                }
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(detail)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(12)
+            }
+            .frame(maxHeight: 280)
+            .background(RelayTheme.codeFill)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+
+    private var hasExpandableContent: Bool { item.detail?.isEmpty == false }
 
     private var icon: String {
         switch item.kind {
@@ -126,17 +292,29 @@ private struct ToolEventRow: View {
         case .fileChange: return "doc.badge.gearshape"
         case .reasoning: return "sparkles"
         case .webSearch: return "globe"
+        case .plan: return "list.bullet.clipboard"
+        case .contextCompaction: return "arrow.triangle.2.circlepath"
+        case .image: return "photo"
+        case .subagent: return "person.2"
         case .message, .other: return "wrench.and.screwdriver"
         }
     }
 
+    private var iconColor: Color {
+        item.kind == .contextCompaction ? RelayTheme.accent : .secondary
+    }
+
     private var title: String {
         switch item.kind {
-        case .command: return "Terminal"
-        case .fileChange: return "Files changed"
-        case .reasoning: return "Reasoning"
-        case .webSearch: return "Web search"
-        case .message, .other: return "Tool"
+        case .command: return "运行命令"
+        case .fileChange: return "修改文件"
+        case .reasoning: return "思考"
+        case .webSearch: return "搜索网页"
+        case .plan: return "执行计划"
+        case .contextCompaction: return "已压缩上下文"
+        case .image: return "图片"
+        case .subagent: return "协作代理"
+        case .message, .other: return "工具"
         }
     }
 }
@@ -145,13 +323,13 @@ private struct StatusGlyph: View {
     let status: String
 
     var body: some View {
-        if status.lowercased().contains("progress") {
+        let normalized = status.lowercased()
+        if normalized.contains("progress") || normalized.contains("running") {
             ProgressView().controlSize(.mini)
         } else {
-            Image(systemName: status.lowercased().contains("fail") ? "xmark.circle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(status.lowercased().contains("fail") ? Color.red : RelayTheme.accent)
+            Image(systemName: normalized.contains("fail") ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(normalized.contains("fail") ? Color.red : RelayTheme.accent)
         }
     }
 }
-

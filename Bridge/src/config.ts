@@ -11,6 +11,7 @@ export interface RelayConfig {
   advertiseUrl: string;
   codexBin: string;
   defaultCwd?: string;
+  desktopSync: boolean;
 }
 
 export async function loadConfig(): Promise<RelayConfig> {
@@ -22,6 +23,7 @@ export async function loadConfig(): Promise<RelayConfig> {
   const bundledCodex = path.join(bridgeRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
   const codexBin = process.env.CODEX_BIN ?? bundledCodex;
   const defaultCwd = process.env.RELAY_DEFAULT_CWD?.trim();
+  const desktopSync = parseBoolean(process.env.RELAY_DESKTOP_SYNC ?? "false");
 
   return {
     host,
@@ -29,8 +31,13 @@ export async function loadConfig(): Promise<RelayConfig> {
     token,
     advertiseUrl,
     codexBin,
+    desktopSync,
     ...(defaultCwd ? { defaultCwd } : {}),
   };
+}
+
+function parseBoolean(raw: string): boolean {
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
 }
 
 function parsePort(raw: string): number {

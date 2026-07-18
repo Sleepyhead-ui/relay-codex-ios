@@ -3,11 +3,14 @@ import { WebSocketServer, WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
 import { loadConfig } from "./config.js";
+import { DesktopSync } from "./desktopSync.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 
 interface PendingClientRequest {
   socket: WebSocket;
   clientId: string;
+  method: string;
+  params: JsonObject;
 }
 
 const config = await loadConfig();
@@ -17,16 +20,17 @@ const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
 let codexReady = false;
+const desktopSync = new DesktopSync(config.desktopSync, (message) => console.log(`[desktop] ${message}`));
 
 const codex = new CodexAppServer(config.codexBin, {
   onResponse: handleCodexResponse,
-  onNotification: (message) => broadcast({ type: "event", ...message }),
+  onNotification: handleCodexNotification,
   onRequest: handleCodexRequest,
   onLog: (message) => {
     if (message) console.log(`[codex] ${message}`);
     if (message.includes("initialized")) {
       codexReady = true;
-      broadcast({ type: "bridgeStatus", status: "ready" });
+      broadcast({ type: "bridgeStatus", status: "ready", desktopSync: desktopSync.enabled });
     }
   },
   onExit: (code, signal) => {
@@ -73,7 +77,7 @@ webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
   console.log(`[socket] mobile client connected (${clients.size} total)`);
-  send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting" });
+  send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: desktopSync.enabled });
   for (const request of pendingServerRequests.values()) {
     send(socket, { type: "serverRequest", ...request });
   }
@@ -116,6 +120,7 @@ httpServer.listen(config.port, config.host, () => {
 
   console.log(`Relay Bridge listening on ${config.host}:${config.port}`);
   console.log(`Advertised mobile URL: ${config.advertiseUrl}`);
+  console.log(`Desktop sync: ${desktopSync.enabled ? "enabled" : "disabled"}`);
   console.log("Scan this QR code with the iPhone Camera after installing Relay:");
   qrcode.generate(pairingUrl.toString(), { small: true });
   console.log(`Manual token: ${config.token}`);
@@ -126,11 +131,11 @@ function handleClientMessage(socket: WebSocket, raw: string): void {
   if (message.type === "rpc") {
     if (!codexReady) throw new Error("Codex is still starting.");
     const bridgeId = `relay.${nextRequestId++}`;
-    pendingClientRequests.set(bridgeId, { socket, clientId: message.id });
     const params = { ...message.params };
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
       params.cwd = config.defaultCwd;
     }
+    pendingClientRequests.set(bridgeId, { socket, clientId: message.id, method: message.method, params });
     codex.send({ method: message.method, id: bridgeId, params });
     return;
   }
@@ -154,6 +159,16 @@ function handleCodexResponse(message: JsonObject): void {
   if ("result" in message) payload.result = message.result;
   if ("error" in message) payload.error = message.error;
   send(pending.socket, payload);
+  if (pending.method === "turn/start" && !("error" in message)) {
+    desktopSync.activateThread(pending.params.threadId, "turn-started");
+  }
+}
+
+function handleCodexNotification(message: JsonObject): void {
+  broadcast({ type: "event", ...message });
+  if (message.method === "turn/completed" && isObject(message.params)) {
+    desktopSync.activateThread(message.params.threadId, "turn-completed");
+  }
 }
 
 function handleCodexRequest(message: JsonObject): void {

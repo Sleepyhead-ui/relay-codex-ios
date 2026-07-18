@@ -2,7 +2,8 @@ param(
     [string]$ListenAddress = "",
     [int]$Port = 8765,
     [string]$AdvertiseAddress = "",
-    [string]$WorkingDirectory = ""
+    [string]$WorkingDirectory = "",
+    [switch]$DesktopSync
 )
 
 $ErrorActionPreference = "Stop"
@@ -35,6 +36,7 @@ if (-not $AdvertiseAddress) {
 $env:RELAY_HOST = $ListenAddress
 $env:RELAY_PORT = "$Port"
 $env:RELAY_ADVERTISE_URL = "ws://${AdvertiseAddress}:$Port"
+$env:RELAY_DESKTOP_SYNC = if ($DesktopSync) { "true" } else { "false" }
 if ($WorkingDirectory) {
     $env:RELAY_DEFAULT_CWD = (Resolve-Path -LiteralPath $WorkingDirectory).Path
 }

@@ -27,7 +27,13 @@ try {
   await waitForHealth();
   const result = await listThreads();
   if (!Array.isArray(result.data)) throw new Error("thread/list returned an unexpected payload.");
-  console.log(`Relay integration OK; received ${result.data.length} thread(s).`);
+  const models = await listModels();
+  if (!Array.isArray(models.data) || models.data.length === 0) throw new Error("model/list returned an unexpected payload.");
+  const firstModel = models.data[0];
+  if (!firstModel.model || !Array.isArray(firstModel.supportedReasoningEfforts)) {
+    throw new Error("model/list did not include model or reasoning effort metadata.");
+  }
+  console.log(`Relay integration OK; received ${result.data.length} thread(s) and ${models.data.length} model(s).`);
 } catch (error) {
   console.error(output);
   throw error;
@@ -49,18 +55,26 @@ async function waitForHealth() {
 }
 
 function listThreads() {
+  return rpc("e2e.list", "thread/list", { limit: 1 });
+}
+
+function listModels() {
+  return rpc("e2e.models", "model/list", { limit: 100, includeHidden: false });
+}
+
+function rpc(id, method, params) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } });
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for thread/list.")), 15_000);
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${method}.`)), 15_000);
     socket.on("message", (data) => {
       const message = JSON.parse(data.toString("utf8"));
       if (message.type === "bridgeStatus" && message.status === "ready") {
-        socket.send(JSON.stringify({ type: "rpc", id: "e2e.list", method: "thread/list", params: { limit: 1 } }));
+        socket.send(JSON.stringify({ type: "rpc", id, method, params }));
       }
-      if (message.type === "rpcResult" && message.id === "e2e.list") {
+      if (message.type === "rpcResult" && message.id === id) {
         clearTimeout(timer);
         socket.close();
-        if (message.error) reject(new Error(message.error.message ?? "thread/list failed"));
+        if (message.error) reject(new Error(message.error.message ?? `${method} failed`));
         else resolve(message.result);
       }
     });
@@ -70,4 +84,3 @@ function listThreads() {
     });
   });
 }
-

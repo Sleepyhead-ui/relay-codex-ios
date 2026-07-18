@@ -21,13 +21,15 @@ struct SettingsView: View {
                     TextField("Working directory", text: $store.host.workingDirectory)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    LabeledContent("Model", value: store.selectedModel?.displayName ?? "Default")
+                    LabeledContent("Reasoning", value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "Default")
                     Text("New tasks use workspace-write sandboxing and request approval for actions that cross the configured boundary.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
                 Section("Conversation continuity") {
-                    Text("Relay stores turns on this Windows host. A Codex desktop chat that is already open will not refresh live; reopen or resume the thread on Windows to load mobile turns.")
+                    Text("Start the Bridge with -DesktopSync to activate the same thread in the official Windows Codex app when a mobile turn starts or completes. This refresh mode is experimental and may briefly bring Codex to the foreground.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -37,7 +39,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.2.0")
+                    LabeledContent("Relay", value: "0.3.0")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }

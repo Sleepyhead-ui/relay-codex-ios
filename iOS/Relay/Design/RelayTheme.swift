@@ -18,6 +18,12 @@ enum RelayTheme {
     static let softFill = Color.primary.opacity(0.07)
     static let hairline = Color.primary.opacity(0.10)
     static let secondaryText = Color.secondary
+    static let codeFill = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.105, green: 0.105, blue: 0.105, alpha: 1)
+            : UIColor(red: 0.948, green: 0.948, blue: 0.943, alpha: 1)
+    })
+    static let activityFill = Color.primary.opacity(0.035)
 
     static let contentWidth: CGFloat = 760
     static let horizontalPadding: CGFloat = 18
@@ -40,4 +46,3 @@ extension View {
         buttonStyle(RelayIconButtonStyle())
     }
 }
-

@@ -1,7 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct ConversationView: View {
     @EnvironmentObject private var store: RelayStore
+    @State private var isAtBottom = true
+
+    private let bottomAnchor = "relay-conversation-bottom"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,7 +49,11 @@ struct ConversationView: View {
                 ProgressView()
                     .controlSize(.small)
                     .tint(.secondary)
-                    .frame(width: 28, height: 42)
+                    .frame(width: 26, height: 42)
+            }
+
+            if let percentage = store.currentTokenUsage?.contextPercentage {
+                ContextRing(percentage: percentage)
             }
 
             Button {
@@ -70,33 +78,81 @@ struct ConversationView: View {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 24) {
-                        ForEach(store.messages) { item in
-                            TranscriptRow(item: item)
-                                .id(item.id)
-                                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                ZStack(alignment: .bottom) {
+                    ScrollView {
+                        LazyVStack(spacing: 30) {
+                            ForEach(store.transcriptGroups) { group in
+                                TurnGroupView(group: group)
+                                    .id(group.id)
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id(bottomAnchor)
+                                .onAppear { isAtBottom = true }
+                                .onDisappear { isAtBottom = false }
                         }
-                        if store.isRunning {
-                            WorkingIndicator()
-                                .id("working")
-                        }
+                        .frame(maxWidth: RelayTheme.contentWidth)
+                        .padding(.horizontal, RelayTheme.horizontalPadding)
+                        .padding(.top, 24)
+                        .padding(.bottom, 20)
+                        .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: RelayTheme.contentWidth)
-                    .padding(.horizontal, RelayTheme.horizontalPadding)
-                    .padding(.top, 24)
-                    .padding(.bottom, 18)
-                    .frame(maxWidth: .infinity)
+                    .scrollDismissesKeyboard(.interactively)
+                    .onTapGesture { dismissKeyboard() }
+
+                    if !isAtBottom {
+                        Button {
+                            scrollToBottom(proxy, animated: true)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial)
+                                .clipShape(Circle())
+                                .overlay { Circle().stroke(RelayTheme.hairline, lineWidth: 1) }
+                                .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 12)
+                        .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    }
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: store.messages) { _ in
-                    withAnimation(.easeOut(duration: 0.22)) {
-                        if store.isRunning { proxy.scrollTo("working", anchor: .bottom) }
-                        else if let lastId = store.messages.last?.id { proxy.scrollTo(lastId, anchor: .bottom) }
+                .onAppear { scrollToBottom(proxy, animated: false) }
+                .onChange(of: store.selectedThreadId) { _ in
+                    isAtBottom = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        scrollToBottom(proxy, animated: false)
                     }
+                }
+                .onChange(of: store.isLoadingThread) { loading in
+                    guard !loading else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                        scrollToBottom(proxy, animated: false)
+                    }
+                }
+                .onChange(of: store.messages) { _ in
+                    guard isAtBottom else { return }
+                    scrollToBottom(proxy, animated: true)
                 }
             }
         }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.22)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private var connectionColor: Color {
@@ -115,6 +171,26 @@ struct ConversationView: View {
         case .disconnected: return "Offline"
         case .failed: return "Connection lost"
         }
+    }
+}
+
+private struct ContextRing: View {
+    let percentage: Int
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: CGFloat(percentage) / 100)
+                .stroke(percentage >= 85 ? Color.orange : RelayTheme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text("\(percentage)")
+                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 27, height: 27)
+        .accessibilityLabel("Context usage \(percentage) percent")
     }
 }
 
@@ -176,26 +252,5 @@ struct RelayMark: View {
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
-    }
-}
-
-private struct WorkingIndicator: View {
-    @State private var pulse = false
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(RelayTheme.accent)
-                .frame(width: 8, height: 8)
-                .scaleEffect(pulse ? 1 : 0.65)
-                .opacity(pulse ? 1 : 0.45)
-            Text("Working")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true)) { pulse = true }
-        }
     }
 }
