@@ -31,7 +31,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.1.0")
+                    LabeledContent("Relay", value: "0.1.1")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }
@@ -54,4 +54,3 @@ struct SettingsView: View {
         }
     }
 }
-

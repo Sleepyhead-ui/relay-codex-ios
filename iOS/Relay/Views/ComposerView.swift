@@ -69,10 +69,16 @@ struct ComposerView: View {
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { focused = false }
+                    .fontWeight(.semibold)
+            }
+        }
     }
 
     private var canSend: Bool {
         store.socket.state == .connected && !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
-

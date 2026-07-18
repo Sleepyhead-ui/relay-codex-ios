@@ -1,8 +1,16 @@
 import SwiftUI
 
+enum ConnectionField: Hashable {
+    case computerName
+    case endpoint
+    case token
+    case workingDirectory
+}
+
 struct ConnectionView: View {
     @EnvironmentObject private var store: RelayStore
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedField: ConnectionField?
     let canDismiss: Bool
 
     var body: some View {
@@ -22,19 +30,20 @@ struct ConnectionView: View {
                     }
 
                     VStack(spacing: 18) {
-                        RelayField(label: "Computer name", placeholder: "Windows PC", text: $store.host.name)
-                        RelayField(label: "WebSocket address", placeholder: "ws://100.x.x.x:8765", text: $store.host.endpoint)
+                        RelayField(label: "Computer name", placeholder: "Windows PC", text: $store.host.name, field: .computerName, focus: $focusedField)
+                        RelayField(label: "WebSocket address", placeholder: "ws://100.x.x.x:8765", text: $store.host.endpoint, field: .endpoint, focus: $focusedField)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
-                        RelaySecureField(label: "Pairing token", placeholder: "Token", text: $store.token)
-                        RelayField(label: "Default project folder", placeholder: "C:\\Users\\you\\Projects", text: $store.host.workingDirectory)
+                        RelaySecureField(label: "Pairing token", placeholder: "Token", text: $store.token, field: .token, focus: $focusedField)
+                        RelayField(label: "Default project folder", placeholder: "C:\\Users\\you\\Projects", text: $store.host.workingDirectory, field: .workingDirectory, focus: $focusedField)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
                         Button {
+                            focusedField = nil
                             store.connect()
                         } label: {
                             HStack {
@@ -63,12 +72,18 @@ struct ConnectionView: View {
                 .padding(.bottom, 30)
                 .frame(maxWidth: .infinity)
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(RelayTheme.canvas)
             .toolbar {
                 if canDismiss {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Done") { dismiss() }
                     }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focusedField = nil }
+                        .fontWeight(.semibold)
                 }
             }
         }
@@ -79,12 +94,15 @@ struct RelayField: View {
     let label: String
     let placeholder: String
     @Binding var text: String
+    let field: ConnectionField
+    let focus: FocusState<ConnectionField?>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
             TextField(placeholder, text: $text)
+                .focused(focus, equals: field)
                 .font(.system(size: 15))
                 .padding(.horizontal, 12)
                 .frame(height: 46)
@@ -99,12 +117,15 @@ struct RelaySecureField: View {
     let label: String
     let placeholder: String
     @Binding var text: String
+    let field: ConnectionField
+    let focus: FocusState<ConnectionField?>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(label)
                 .font(.system(size: 13, weight: .medium))
             SecureField(placeholder, text: $text)
+                .focused(focus, equals: field)
                 .font(.system(size: 15, design: .monospaced))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -116,4 +137,3 @@ struct RelaySecureField: View {
         }
     }
 }
-
