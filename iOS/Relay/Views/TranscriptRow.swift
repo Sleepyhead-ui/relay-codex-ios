@@ -211,7 +211,7 @@ private struct ToolEventRow: View {
                             if let exitCode = item.exitCode, item.kind == .command {
                                 Text("exit \(exitCode)")
                                     .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(exitCode == 0 ? .tertiary : .red)
+                                    .foregroundStyle(exitCode == 0 ? Color.secondary.opacity(0.65) : Color.red)
                             }
                         }
 
