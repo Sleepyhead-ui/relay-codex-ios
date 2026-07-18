@@ -1,0 +1,10 @@
+Bridge/node_modules/
+Bridge/dist/
+iOS/Relay.xcodeproj/
+iOS/build/
+iOS/Payload/
+iOS/Relay.ipa
+iOS/Relay/Assets.xcassets/AppIcon.appiconset/*.png
+.DS_Store
+*.log
+

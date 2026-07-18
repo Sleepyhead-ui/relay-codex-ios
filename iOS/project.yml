@@ -1,0 +1,32 @@
+name: Relay
+options:
+  bundleIdPrefix: dev.relay
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  Relay:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Relay
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.relay.mobile
+        INFOPLIST_FILE: Relay/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_PREVIEWS: YES
+    scheme:
+      testTargets: []
+
