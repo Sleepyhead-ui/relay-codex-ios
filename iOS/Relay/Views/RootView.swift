@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var store: RelayStore
@@ -33,6 +34,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $store.showingSettings) { SettingsView() }
         .sheet(item: $store.pendingApproval) { approval in ApprovalSheet(approval: approval) }
+        .sheet(item: $store.sharedFile) { file in
+            ShareSheet(items: [file.url])
+        }
         .alert("Relay", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
@@ -44,3 +48,12 @@ struct RootView: View {
     }
 }
 
+private struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}

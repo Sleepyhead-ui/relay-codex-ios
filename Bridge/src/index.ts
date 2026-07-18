@@ -4,6 +4,7 @@ import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
+import { FileTransferManager } from "./fileTransfer.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 
 interface PendingClientRequest {
@@ -21,6 +22,7 @@ const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
 let codexReady = false;
 const desktopSync = new DesktopSync(config.desktopSync, (message) => console.log(`[desktop] ${message}`));
+const fileTransfer = new FileTransferManager(config.defaultCwd);
 
 const codex = new CodexAppServer(config.codexBin, {
   onResponse: handleCodexResponse,
@@ -88,7 +90,9 @@ webSocketServer.on("connection", (socket) => {
       return;
     }
     try {
-      handleClientMessage(socket, data.toString("utf8"));
+      void handleClientMessage(socket, data.toString("utf8")).catch((error) => {
+        sendError(socket, error instanceof Error ? error.message : "Invalid message.");
+      });
     } catch (error) {
       sendError(socket, error instanceof Error ? error.message : "Invalid message.");
     }
@@ -126,9 +130,22 @@ httpServer.listen(config.port, config.host, () => {
   console.log(`Manual token: ${config.token}`);
 });
 
-function handleClientMessage(socket: WebSocket, raw: string): void {
+async function handleClientMessage(socket: WebSocket, raw: string): Promise<void> {
   const message = parseClientMessage(raw);
   if (message.type === "rpc") {
+    if (message.method.startsWith("relay/")) {
+      try {
+        const result = await fileTransfer.handle(message.method, message.params);
+        send(socket, { type: "rpcResult", id: message.id, result });
+      } catch (error) {
+        send(socket, {
+          type: "rpcResult",
+          id: message.id,
+          error: { message: error instanceof Error ? error.message : "File transfer failed." },
+        });
+      }
+      return;
+    }
     if (!codexReady) throw new Error("Codex is still starting.");
     const bridgeId = `relay.${nextRequestId++}`;
     const params = { ...message.params };

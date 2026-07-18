@@ -23,8 +23,22 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                     LabeledContent("Model", value: store.selectedModel?.displayName ?? "Default")
                     LabeledContent("Reasoning", value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "Default")
-                    Text("New tasks use workspace-write sandboxing and request approval for actions that cross the configured boundary.")
+
+                    Picker("工作区访问", selection: $store.workspaceAccess) {
+                        ForEach(WorkspaceAccessMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .onChange(of: store.workspaceAccess) { mode in
+                        Task { await store.selectWorkspaceAccess(mode) }
+                    }
+
+                    Label(store.workspaceAccess.detail, systemImage: accessIcon)
                         .font(.footnote)
+                        .foregroundStyle(store.workspaceAccess == .fullAccess ? Color.orange : Color.secondary)
+
+                    Text("权限会应用到新任务和之后发送的每一轮；越过当前边界的操作仍可能要求确认。")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -39,7 +53,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.3.0")
+                    LabeledContent("Relay", value: "0.4.0")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }
@@ -50,6 +64,14 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
+        }
+    }
+
+    private var accessIcon: String {
+        switch store.workspaceAccess {
+        case .readOnly: return "lock"
+        case .workspaceWrite: return "folder.badge.gearshape"
+        case .fullAccess: return "exclamationmark.shield"
         }
     }
 

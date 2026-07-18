@@ -97,6 +97,90 @@ final class RelaySocket: ObservableObject {
         }
     }
 
+    func uploadFile(_ url: URL, progress: @escaping (Double) -> Void) async throws -> (path: String, size: Int64) {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= 50 * 1024 * 1024 else {
+            throw SocketError.remote("文件不能超过 50 MB。")
+        }
+        let started = try await rpc(method: "relay/file/upload/start", params: [
+            "name": .string(url.lastPathComponent),
+            "size": .number(Double(data.count))
+        ])
+        guard let uploadId = started["uploadId"]?.stringValue else {
+            throw SocketError.remote("Windows 未能开始接收文件。")
+        }
+        let chunkSize = started["chunkSize"]?.intValue ?? (512 * 1024)
+        if !data.isEmpty {
+            var index = 0
+            var offset = 0
+            while offset < data.count {
+                let end = min(offset + chunkSize, data.count)
+                let chunk = data.subdata(in: offset..<end)
+                _ = try await rpc(method: "relay/file/upload/chunk", params: [
+                    "uploadId": .string(uploadId),
+                    "index": .number(Double(index)),
+                    "data": .string(chunk.base64EncodedString())
+                ])
+                offset = end
+                index += 1
+                progress(Double(offset) / Double(data.count))
+            }
+        }
+        let finished = try await rpc(method: "relay/file/upload/finish", params: ["uploadId": .string(uploadId)])
+        guard let path = finished["path"]?.stringValue else {
+            throw SocketError.remote("Windows 未返回上传文件的位置。")
+        }
+        progress(1)
+        return (path, Int64(finished["size"]?.intValue ?? data.count))
+    }
+
+    func downloadFile(at remotePath: String, progress: @escaping (Double) -> Void) async throws -> URL {
+        let started = try await rpc(method: "relay/file/download/start", params: ["path": .string(remotePath)])
+        guard let downloadId = started["downloadId"]?.stringValue else {
+            throw SocketError.remote("Windows 未能开始发送文件。")
+        }
+        let name = started["name"]?.stringValue ?? URL(fileURLWithPath: remotePath).lastPathComponent
+        let totalSize = started["size"]?.intValue ?? 0
+        var output = Data()
+        if totalSize > 0 { output.reserveCapacity(totalSize) }
+        var index = 0
+        var done = false
+        while !done {
+            let chunk = try await rpc(method: "relay/file/download/chunk", params: [
+                "downloadId": .string(downloadId),
+                "index": .number(Double(index))
+            ])
+            guard let encoded = chunk["data"]?.stringValue, let data = Data(base64Encoded: encoded) else {
+                throw SocketError.remote("收到的文件数据无效。")
+            }
+            output.append(data)
+            done = chunk["done"]?.boolValue ?? false
+            index += 1
+            progress(totalSize == 0 ? 1 : min(1, Double(output.count) / Double(totalSize)))
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Relay Downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = uniqueFileURL(in: directory, name: name)
+        try output.write(to: destination, options: .atomic)
+        return destination
+    }
+
+    private func uniqueFileURL(in directory: URL, name: String) -> URL {
+        let original = directory.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: original.path) else { return original }
+        let source = URL(fileURLWithPath: name)
+        let base = source.deletingPathExtension().lastPathComponent
+        let ext = source.pathExtension
+        for number in 2...999 {
+            let candidateName = ext.isEmpty ? "\(base) \(number)" : "\(base) \(number).\(ext)"
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return directory.appendingPathComponent("\(UUID().uuidString)-\(name)")
+    }
+
     func respond(to id: JSONValue, result: [String: JSONValue]) async throws {
         try await send([
             "type": "serverResponse",

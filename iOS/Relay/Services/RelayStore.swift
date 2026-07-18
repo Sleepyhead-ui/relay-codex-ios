@@ -21,11 +21,16 @@ final class RelayStore: ObservableObject {
     @Published var turnMetadata: [String: TurnMetadata] = [:]
     @Published var tokenUsageByThread: [String: ThreadTokenUsage] = [:]
     @Published var isCompacting = false
+    @Published var attachments: [PendingAttachment] = []
+    @Published var workspaceAccess: WorkspaceAccessMode = .workspaceWrite
+    @Published var sharedFile: SharedFile?
+    @Published var downloadingPath: String?
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
     private let modelDefaultsKey = "relay.model"
     private let effortDefaultsKey = "relay.reasoningEffort"
+    private let accessDefaultsKey = "relay.workspaceAccess"
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
 
@@ -76,6 +81,10 @@ final class RelayStore: ObservableObject {
         token = KeychainStore.loadToken() ?? ""
         selectedModelId = UserDefaults.standard.string(forKey: modelDefaultsKey) ?? ""
         selectedEffort = UserDefaults.standard.string(forKey: effortDefaultsKey) ?? ""
+        if let storedAccess = UserDefaults.standard.string(forKey: accessDefaultsKey),
+           let access = WorkspaceAccessMode(rawValue: storedAccess) {
+            workspaceAccess = access
+        }
 
         socket.onConnected = { [weak self] in
             Task { await self?.handleConnectionRestored() }
@@ -170,7 +179,7 @@ final class RelayStore: ObservableObject {
         do {
             var params: [String: JSONValue] = [
                 "approvalPolicy": .string("on-request"),
-                "sandbox": .string("workspace-write"),
+                "sandbox": .string(workspaceAccess.threadSandbox),
                 "threadSource": .string("relay-ios")
             ]
             if !host.workingDirectory.isEmpty { params["cwd"] = .string(host.workingDirectory) }
@@ -231,7 +240,8 @@ final class RelayStore: ObservableObject {
 
     func sendPrompt() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let readyAttachments = attachments.filter { $0.state == .ready && $0.remotePath != nil }
+        guard !text.isEmpty || !readyAttachments.isEmpty else { return }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             return
@@ -241,14 +251,28 @@ final class RelayStore: ObservableObject {
 
         let clientMessageId = UUID().uuidString
         composerText = ""
+        attachments = []
         isRunning = true
-        messages.append(TranscriptItem(id: clientMessageId, role: .user, kind: .message, text: text))
+        let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
+        let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        messages.append(TranscriptItem(id: clientMessageId, role: .user, kind: .message, text: displayText))
         do {
+            var input: [JSONValue] = []
+            if !text.isEmpty { input.append(.object(["type": .string("text"), "text": .string(text)])) }
+            for attachment in readyAttachments {
+                guard let path = attachment.remotePath else { continue }
+                if attachment.isImage {
+                    input.append(.object(["type": .string("localImage"), "path": .string(path)]))
+                } else {
+                    input.append(.object(["type": .string("mention"), "name": .string(attachment.name), "path": .string(path)]))
+                }
+            }
             var params: [String: JSONValue] = [
                 "threadId": .string(threadId),
                 "clientUserMessageId": .string(clientMessageId),
-                "input": .array([.object(["type": .string("text"), "text": .string(text)])]),
-                "summary": .string("detailed")
+                "input": .array(input),
+                "summary": .string("detailed"),
+                "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: host.workingDirectory)
             ]
             if let model = selectedModel?.model { params["model"] = .string(model) }
             if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
@@ -262,8 +286,65 @@ final class RelayStore: ObservableObject {
             }
         } catch {
             isRunning = false
+            attachments = readyAttachments
             report(error)
         }
+    }
+
+    func addAttachments(_ urls: [URL]) {
+        for url in urls {
+            let id = UUID()
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+            let size = Int64(values?.fileSize ?? 0)
+            let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"]
+            attachments.append(PendingAttachment(
+                id: id,
+                name: url.lastPathComponent,
+                localURL: url,
+                size: size,
+                progress: 0,
+                state: .uploading,
+                isImage: imageExtensions.contains(url.pathExtension.lowercased())
+            ))
+            Task {
+                do {
+                    let uploaded = try await socket.uploadFile(url) { [weak self] progress in
+                        guard let index = self?.attachments.firstIndex(where: { $0.id == id }) else { return }
+                        self?.attachments[index].progress = progress
+                    }
+                    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+                    attachments[index].remotePath = uploaded.path
+                    attachments[index].size = uploaded.size
+                    attachments[index].progress = 1
+                    attachments[index].state = .ready
+                } catch {
+                    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+                    attachments[index].state = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func removeAttachment(_ id: UUID) {
+        attachments.removeAll { $0.id == id }
+    }
+
+    func downloadFile(path: String) async {
+        guard downloadingPath == nil else { return }
+        downloadingPath = path
+        defer { downloadingPath = nil }
+        do {
+            let url = try await socket.downloadFile(at: path) { _ in }
+            sharedFile = SharedFile(url: url)
+        } catch {
+            report(error)
+        }
+    }
+
+    func selectWorkspaceAccess(_ access: WorkspaceAccessMode) async {
+        workspaceAccess = access
+        UserDefaults.standard.set(access.rawValue, forKey: accessDefaultsKey)
+        await applyThreadSettings(showErrors: true)
     }
 
     func stopTurn() async {
@@ -325,7 +406,8 @@ final class RelayStore: ObservableObject {
         guard let threadId = selectedThreadId, socket.state == .connected else { return }
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
-            "summary": .string("detailed")
+            "summary": .string("detailed"),
+            "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: host.workingDirectory)
         ]
         if let model = selectedModel?.model { params["model"] = .string(model) }
         if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }

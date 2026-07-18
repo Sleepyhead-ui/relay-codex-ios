@@ -29,6 +29,7 @@ struct TurnGroupView: View {
 
 struct TranscriptRow: View {
     let item: TranscriptItem
+    @EnvironmentObject private var store: RelayStore
 
     var body: some View {
         switch item.role {
@@ -52,6 +53,9 @@ struct TranscriptRow: View {
                             .foregroundStyle(.secondary)
                     }
                     MarkdownContentView(source: item.text)
+                    if !item.downloadablePaths.isEmpty {
+                        DownloadFileLinks(paths: item.downloadablePaths)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -66,10 +70,40 @@ struct TranscriptRow: View {
     }
 }
 
+private struct DownloadFileLinks: View {
+    let paths: [String]
+    @EnvironmentObject private var store: RelayStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(paths, id: \.self) { path in
+                Button {
+                    Task { await store.downloadFile(path: path) }
+                } label: {
+                    HStack(spacing: 6) {
+                        if store.downloadingPath == path { ProgressView().controlSize(.mini) }
+                        else { Image(systemName: "arrow.down.circle") }
+                        Text("下载 \(path.lastPathComponentForDisplay)").lineLimit(1)
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(store.downloadingPath != nil)
+            }
+        }
+    }
+}
+
 private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
-    @State private var expanded = true
+    @State private var expanded: Bool
+
+    init(items: [TranscriptItem], metadata: TurnMetadata) {
+        self.items = items
+        self.metadata = metadata
+        _expanded = State(initialValue: metadata.isRunning)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -134,6 +168,11 @@ private struct RunActivityView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .onChange(of: metadata.isRunning) { running in
+            if !running {
+                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
+            }
+        }
     }
 
     private var elapsedMilliseconds: Int {
@@ -184,6 +223,7 @@ private struct CommentaryRow: View {
 
 private struct ToolEventRow: View {
     let item: TranscriptItem
+    @EnvironmentObject private var store: RelayStore
     @State private var expanded = false
 
     var body: some View {
@@ -228,6 +268,13 @@ private struct ToolEventRow: View {
                             }
                         }
 
+                        if isFailed {
+                            Text("操作失败：\(item.errorMessage?.nonEmpty ?? "Codex 未返回更多原因")")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
                         if let cwd = item.cwd, !cwd.isEmpty, item.kind == .command {
                             Text(cwd)
                                 .font(.system(size: 10, design: .monospaced))
@@ -251,11 +298,41 @@ private struct ToolEventRow: View {
             }
             .buttonStyle(.plain)
 
+            if !item.downloadablePaths.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(item.downloadablePaths, id: \.self) { path in
+                        Button {
+                            Task { await store.downloadFile(path: path) }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if store.downloadingPath == path {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: "arrow.down.circle")
+                                }
+                                Text("下载 \(path.lastPathComponentForDisplay)")
+                                    .lineLimit(1)
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.downloadingPath != nil)
+                    }
+                }
+                .padding(.leading, 29)
+                .padding(.bottom, 8)
+            }
+
             if expanded, let detail = item.detail, !detail.isEmpty {
-                detailView(detail)
-                    .padding(.leading, 29)
-                    .padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("技术详情")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    detailView(detail)
+                }
+                .padding(.leading, 29)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -285,6 +362,10 @@ private struct ToolEventRow: View {
     }
 
     private var hasExpandableContent: Bool { item.detail?.isEmpty == false }
+    private var isFailed: Bool {
+        let status = item.status?.lowercased() ?? ""
+        return status.contains("fail") || (item.exitCode.map { $0 != 0 } ?? false)
+    }
 
     private var icon: String {
         switch item.kind {

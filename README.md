@@ -21,6 +21,11 @@ Relay 是一个面向 iOS 16 的非官方 Codex 远程客户端。它通过 Wind
 - 上下文 Token 占用、手动压缩和压缩事件展示
 - 打开线程自动定位到最新一轮，浏览历史时显示“跳到最新”按钮
 - 可选 Windows 桌面线程刷新模式
+- 手机选择并上传多个文件，图片和普通文件会以原生 Codex 输入类型发送
+- 下载对话中的文件改动、生成图片和本地文件链接，并通过 iOS 分享菜单保存
+- 只读、工作区写入、完全访问三档工作区权限
+- 思考和执行过程在完成后自动折叠，工具失败显示可读原因和可选技术详情
+- 最多八行的动态输入框，发送后自动收起键盘
 
 ## 架构
 
@@ -105,7 +110,7 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 - 不要把 Bridge 端口映射到公网，也不要直接绑定公网 IP。
 - `ws://` 只用于 Tailscale/WireGuard 已加密隧道内；公网入口必须另行配置 `wss://` 和反向代理。
 - 不要提交 `~\.relay\token`、Codex 的 `auth.json` 或任何 OpenAI API Key。
-- 第一版固定使用 `workspace-write` 与 `on-request` 审批。
+- 默认使用 `workspace-write` 与 `on-request` 审批；可在设置中切换只读或完全访问。完全访问会显著扩大 Codex 能操作的范围。
 - iOS App 开启了 ATS 非 TLS 连接，因为 Tailscale 内使用 `ws://`；离开可信 VPN 时不要使用该配置。
 - Windows 必须保持唤醒、联网且用户会话可运行 Bridge。
 
@@ -113,7 +118,8 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 
 - iOS 被系统挂起后 WebSocket 不会持续保活。Windows 任务仍继续，重新打开 Relay 后会恢复历史；第一版没有 APNs 推送。
 - 可以恢复本机保存的 Codex 线程，但不保证接管桌面 App 中正在输出的同一个活动 Turn。
-- 图片/附件上传、Git diff 专用高亮视图、语音和多主机切换留到后续版本。
+- Git diff 专用高亮视图、语音和多主机切换留到后续版本。
+- 单个上传或下载文件上限为 50 MB；下载仅允许当前工作区和 Relay 上传目录中的文件。
 - Codex App Server 会演进。升级 `@openai/codex` 前，应重新生成 schema 并运行兼容测试。
 
 ## 本地开发

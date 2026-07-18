@@ -6,6 +6,67 @@ struct HostConfiguration: Codable, Equatable {
     var workingDirectory = ""
 }
 
+enum WorkspaceAccessMode: String, Codable, CaseIterable, Identifiable {
+    case readOnly
+    case workspaceWrite
+    case fullAccess
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .readOnly: return "只读"
+        case .workspaceWrite: return "工作区写入"
+        case .fullAccess: return "完全访问"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .readOnly: return "可以查看文件，但不能修改"
+        case .workspaceWrite: return "可以修改当前工作区内的文件"
+        case .fullAccess: return "可以访问这台电脑上的所有文件和网络"
+        }
+    }
+    var threadSandbox: String {
+        switch self {
+        case .readOnly: return "read-only"
+        case .workspaceWrite: return "workspace-write"
+        case .fullAccess: return "danger-full-access"
+        }
+    }
+    func sandboxPolicy(workingDirectory: String) -> JSONValue {
+        switch self {
+        case .readOnly:
+            return .object(["type": .string("readOnly"), "networkAccess": .bool(false)])
+        case .workspaceWrite:
+            let roots: [JSONValue] = workingDirectory.isEmpty ? [] : [.string(workingDirectory)]
+            return .object([
+                "type": .string("workspaceWrite"),
+                "writableRoots": .array(roots),
+                "networkAccess": .bool(false)
+            ])
+        case .fullAccess:
+            return .object(["type": .string("dangerFullAccess")])
+        }
+    }
+}
+
+struct PendingAttachment: Identifiable, Equatable {
+    enum State: Equatable { case uploading, ready, failed(String) }
+    let id: UUID
+    let name: String
+    let localURL: URL
+    var remotePath: String?
+    var size: Int64
+    var progress: Double
+    var state: State
+    var isImage: Bool
+}
+
+struct SharedFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
 struct ThreadSummary: Identifiable, Equatable {
     let id: String
     var title: String
@@ -157,6 +218,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var durationMs: Int?
     var exitCode: Int?
     var cwd: String?
+    var errorMessage: String?
 
     init(
         id: String,
@@ -170,7 +232,8 @@ struct TranscriptItem: Identifiable, Equatable {
         phase: String? = nil,
         durationMs: Int? = nil,
         exitCode: Int? = nil,
-        cwd: String? = nil
+        cwd: String? = nil,
+        errorMessage: String? = nil
     ) {
         self.id = id
         self.turnId = turnId
@@ -184,11 +247,29 @@ struct TranscriptItem: Identifiable, Equatable {
         self.durationMs = durationMs
         self.exitCode = exitCode
         self.cwd = cwd
+        self.errorMessage = errorMessage
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
     var isFinalAnswer: Bool { role == .assistant && phase != "commentary" }
     var isActivity: Bool { role == .tool || isCommentary }
+    var downloadablePaths: [String] {
+        if kind == .fileChange || kind == .image {
+            return text.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }
+        }
+        guard role == .assistant else { return [] }
+        let pattern = #"\]\(<?([^)>]+)>?\)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > 1, let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+            var value = String(text[valueRange]).removingPercentEncoding ?? String(text[valueRange])
+            if let lineSuffix = value.range(of: #":\d+$"#, options: .regularExpression) { value.removeSubrange(lineSuffix) }
+            let normalized = value.replacingOccurrences(of: "\\", with: "/")
+            guard normalized.range(of: #"^[A-Za-z]:/"#, options: .regularExpression) != nil else { return nil }
+            return value
+        }
+    }
 
     static func from(json: JSONValue, turnId: String? = nil) -> TranscriptItem? {
         guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
@@ -196,7 +277,16 @@ struct TranscriptItem: Identifiable, Equatable {
         switch type {
         case "userMessage":
             let text = json["content"]?.arrayValue?
-                .compactMap { $0["text"]?.stringValue }
+                .compactMap { content -> String? in
+                    if let text = content["text"]?.stringValue { return text }
+                    if content["type"]?.stringValue == "mention" {
+                        return "📎 \(content["name"]?.stringValue ?? content["path"]?.stringValue?.lastPathComponentForDisplay ?? "文件")"
+                    }
+                    if content["type"]?.stringValue == "localImage" {
+                        return "📎 \(content["path"]?.stringValue?.lastPathComponentForDisplay ?? "图片")"
+                    }
+                    return nil
+                }
                 .joined(separator: "\n") ?? ""
             return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text)
         case "agentMessage":
@@ -214,6 +304,8 @@ struct TranscriptItem: Identifiable, Equatable {
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .reasoning, title: "思考", text: summary, detail: content)
         case "commandExecution":
             let command = json["command"]?.stringValue ?? "Command"
+            let output = json["aggregatedOutput"]?.stringValue
+            let exitCode = json["exitCode"]?.intValue
             return TranscriptItem(
                 id: id,
                 turnId: turnId,
@@ -221,11 +313,12 @@ struct TranscriptItem: Identifiable, Equatable {
                 kind: .command,
                 title: commandTitle(json: json),
                 text: command,
-                detail: json["aggregatedOutput"]?.stringValue,
+                detail: output,
                 status: json["status"]?.stringValue,
                 durationMs: json["durationMs"]?.intValue,
-                exitCode: json["exitCode"]?.intValue,
-                cwd: json["cwd"]?.stringValue
+                exitCode: exitCode,
+                cwd: json["cwd"]?.stringValue,
+                errorMessage: (exitCode ?? 0) != 0 ? output?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty : nil
             )
         case "fileChange":
             let changes = json["changes"]?.arrayValue ?? []
@@ -237,13 +330,13 @@ struct TranscriptItem: Identifiable, Equatable {
         case "mcpToolCall":
             let name = json["tool"]?.stringValue ?? "MCP tool"
             let server = json["server"]?.stringValue ?? ""
-            let result = prettyJSON(json["result"]) ?? prettyJSON(json["error"])
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: name, text: server, detail: result, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue)
+            let result = prettyJSON(json["result"]) ?? prettyJSON(json["error"]) ?? prettyJSON(json["arguments"])
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: friendlyToolTitle(name: name, namespace: server), text: friendlyToolSummary(name: name, namespace: server), detail: result, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue, errorMessage: readableError(json))
         case "dynamicToolCall":
             let name = json["tool"]?.stringValue ?? "Tool"
             let namespace = json["namespace"]?.stringValue ?? ""
-            let detail = prettyJSON(json["contentItems"]) ?? prettyJSON(json["arguments"])
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: name, text: namespace, detail: detail, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue)
+            let detail = prettyJSON(json["contentItems"]) ?? prettyJSON(json["result"]) ?? prettyJSON(json["arguments"])
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: friendlyToolTitle(name: name, namespace: namespace), text: friendlyToolSummary(name: name, namespace: namespace), detail: detail, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue, errorMessage: readableError(json))
         case "collabAgentToolCall":
             let tool = json["tool"]?.stringValue ?? "Agent"
             let prompt = json["prompt"]?.stringValue ?? ""
@@ -281,6 +374,47 @@ struct TranscriptItem: Identifiable, Equatable {
         case "run": return "运行命令"
         default: return "运行命令"
         }
+    }
+
+    private static func friendlyToolTitle(name: String, namespace: String) -> String {
+        let combined = "\(namespace) \(name)".lowercased()
+        if combined.contains("node_repl") || combined.contains("computer") { return "控制 Windows 应用" }
+        if combined.contains("browser") || combined.contains("playwright") { return "操作浏览器" }
+        if combined.contains("shell") || combined.contains("exec") { return "运行命令" }
+        if combined.contains("image") { return "处理图片" }
+        return "运行工具"
+    }
+
+    private static func friendlyToolSummary(name: String, namespace: String) -> String {
+        let combined = "\(namespace) \(name)".lowercased()
+        if combined.contains("node_repl") || combined.contains("computer") { return "正在与 Windows 上的应用交互" }
+        if combined.contains("browser") || combined.contains("playwright") { return "正在浏览和操作网页" }
+        if combined.contains("shell") || combined.contains("exec") { return "正在 Windows 上执行操作" }
+        return name == "Tool" ? "" : name
+    }
+
+    private static func readableError(_ json: JSONValue) -> String? {
+        for candidate in [json["error"], json["result"], json["contentItems"]] {
+            if let message = findErrorText(candidate), !message.isEmpty { return message }
+        }
+        return nil
+    }
+
+    private static func findErrorText(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if let object = value.objectValue {
+            for key in ["message", "error", "text", "detail", "reason"] {
+                if let text = object[key]?.stringValue, !text.isEmpty { return text }
+            }
+            for child in object.values {
+                if let text = findErrorText(child) { return text }
+            }
+        } else if let array = value.arrayValue {
+            for child in array {
+                if let text = findErrorText(child) { return text }
+            }
+        }
+        return nil
     }
 
     private static func prettyJSON(_ value: JSONValue?) -> String? {

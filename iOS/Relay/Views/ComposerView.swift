@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
     @FocusState private var focused: Bool
+    @State private var showingFileImporter = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -20,32 +22,42 @@ struct ComposerView: View {
             }
 
             VStack(spacing: 2) {
+                if !store.attachments.isEmpty {
+                    attachmentStrip
+                }
+
                 HStack(alignment: .bottom, spacing: 8) {
                     Button {
-                        store.showingSettings = true
+                        showingFileImporter = true
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 17, weight: .medium))
                             .frame(width: 36, height: 36)
                     }
-                    .accessibilityLabel("Task settings")
+                    .accessibilityLabel("添加文件")
 
                     TextField("Message Codex", text: $store.composerText, axis: .vertical)
                         .font(.system(size: 16))
-                        .lineLimit(1...7)
+                        .lineLimit(1...8)
                         .textFieldStyle(.plain)
                         .focused($focused)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 9)
+                        .frame(minHeight: 44, maxHeight: 164, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
                         .submitLabel(.send)
                         .onSubmit {
                             guard canSend else { return }
+                            focused = false
                             Task { await store.sendPrompt() }
                         }
 
                     Button {
                         Task {
                             if store.isRunning { await store.stopTurn() }
-                            else { await store.sendPrompt() }
+                            else {
+                                focused = false
+                                await store.sendPrompt()
+                            }
                         }
                     } label: {
                         Image(systemName: store.isRunning ? "stop.fill" : "arrow.up")
@@ -104,6 +116,68 @@ struct ComposerView: View {
                 Button("Done") { focused = false }
                     .fontWeight(.semibold)
             }
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls): store.addAttachments(urls)
+            case .failure(let error): store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(store.attachments) { attachment in
+                    HStack(spacing: 7) {
+                        Group {
+                            switch attachment.state {
+                            case .uploading:
+                                ProgressView(value: attachment.progress).controlSize(.mini)
+                            case .ready:
+                                Image(systemName: attachment.isImage ? "photo" : "doc")
+                                    .foregroundStyle(.secondary)
+                            case .failed:
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        .frame(width: 15)
+
+                        Text(attachment.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+
+                        Button { store.removeAttachment(attachment.id) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.leading, 9)
+                    .padding(.trailing, 4)
+                    .frame(height: 32)
+                    .background(RelayTheme.softFill)
+                    .clipShape(Capsule())
+                    .accessibilityLabel(attachmentAccessibilityLabel(attachment))
+                }
+            }
+            .padding(.horizontal, 7)
+            .padding(.top, 5)
+        }
+    }
+
+    private func attachmentAccessibilityLabel(_ attachment: PendingAttachment) -> String {
+        switch attachment.state {
+        case .uploading: return "正在上传 \(attachment.name)"
+        case .ready: return "已添加 \(attachment.name)"
+        case .failed(let message): return "\(attachment.name) 上传失败：\(message)"
         }
     }
 
@@ -200,6 +274,9 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        store.socket.state == .connected && !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasReadyFile = store.attachments.contains { $0.state == .ready }
+        let isUploading = store.attachments.contains { $0.state == .uploading }
+        return store.socket.state == .connected && !isUploading && (hasText || hasReadyFile)
     }
 }

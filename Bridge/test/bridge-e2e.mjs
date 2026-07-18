@@ -33,7 +33,13 @@ try {
   if (!firstModel.model || !Array.isArray(firstModel.supportedReasoningEfforts)) {
     throw new Error("model/list did not include model or reasoning effort metadata.");
   }
-  console.log(`Relay integration OK; received ${result.data.length} thread(s) and ${models.data.length} model(s).`);
+  const upload = await rpc("e2e.upload.start", "relay/file/upload/start", { name: "e2e.txt", size: 9 });
+  await rpc("e2e.upload.chunk", "relay/file/upload/chunk", { uploadId: upload.uploadId, index: 0, data: Buffer.from("relay-e2e").toString("base64") });
+  const uploaded = await rpc("e2e.upload.finish", "relay/file/upload/finish", { uploadId: upload.uploadId });
+  const download = await rpc("e2e.download.start", "relay/file/download/start", { path: uploaded.path });
+  const downloaded = await rpc("e2e.download.chunk", "relay/file/download/chunk", { downloadId: download.downloadId, index: 0 });
+  if (Buffer.from(downloaded.data, "base64").toString("utf8") !== "relay-e2e") throw new Error("file transfer content mismatch");
+  console.log(`Relay integration OK; received ${result.data.length} thread(s), ${models.data.length} model(s), and transferred a file.`);
 } catch (error) {
   console.error(output);
   throw error;
