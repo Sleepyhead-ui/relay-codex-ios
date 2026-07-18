@@ -24,11 +24,15 @@ struct SettingsView: View {
                     LabeledContent("Model", value: store.selectedModel?.displayName ?? "Default")
                     LabeledContent("Reasoning", value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "Default")
 
-                    Picker("工作区访问", selection: $store.workspaceAccess) {
+                }
+
+                Section("工作区权限") {
+                    Picker("访问级别", selection: $store.workspaceAccess) {
                         ForEach(WorkspaceAccessMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
+                    .pickerStyle(.menu)
                     .onChange(of: store.workspaceAccess) { mode in
                         Task { await store.selectWorkspaceAccess(mode) }
                     }
@@ -53,7 +57,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.4.0")
+                    LabeledContent("Relay", value: "0.4.1")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }

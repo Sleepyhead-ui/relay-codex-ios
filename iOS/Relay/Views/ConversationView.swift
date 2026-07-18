@@ -57,6 +57,15 @@ struct ConversationView: View {
             }
 
             Button {
+                store.showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17, weight: .medium))
+            }
+            .relayIconButton()
+            .accessibilityLabel("设置和工作区权限")
+
+            Button {
                 Task { await store.newThread() }
             } label: {
                 Image(systemName: "square.and.pencil")

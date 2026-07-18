@@ -1,10 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PhotosUI
 
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
     @FocusState private var focused: Bool
     @State private var showingFileImporter = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
 
     var body: some View {
         VStack(spacing: 8) {
@@ -27,14 +29,27 @@ struct ComposerView: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    Button {
-                        showingFileImporter = true
+                    Menu {
+                        PhotosPicker(
+                            selection: $selectedPhotos,
+                            maxSelectionCount: 10,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Label("照片图库", systemImage: "photo.on.rectangle")
+                        }
+
+                        Button {
+                            showingFileImporter = true
+                        } label: {
+                            Label("文件", systemImage: "folder")
+                        }
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 17, weight: .medium))
                             .frame(width: 36, height: 36)
                     }
-                    .accessibilityLabel("添加文件")
+                    .accessibilityLabel("添加照片或文件")
 
                     TextField("Message Codex", text: $store.composerText, axis: .vertical)
                         .font(.system(size: 16))
@@ -126,6 +141,39 @@ struct ComposerView: View {
             case .success(let urls): store.addAttachments(urls)
             case .failure(let error): store.errorMessage = error.localizedDescription
             }
+        }
+        .onChange(of: selectedPhotos) { photos in
+            guard !photos.isEmpty else { return }
+            Task { await importSelectedPhotos(photos) }
+        }
+    }
+
+    private func importSelectedPhotos(_ photos: [PhotosPickerItem]) async {
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Relay Photos", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+            var urls: [URL] = []
+            for (index, photo) in photos.enumerated() {
+                guard let data = try await photo.loadTransferable(type: Data.self) else { continue }
+                let imageType = photo.supportedContentTypes.first(where: { $0.conforms(to: .image) })
+                let fileExtension = imageType?.preferredFilenameExtension ?? "jpg"
+                let url = directory.appendingPathComponent("照片 \(index + 1).\(fileExtension)")
+                try data.write(to: url, options: .atomic)
+                urls.append(url)
+            }
+
+            selectedPhotos = []
+            guard !urls.isEmpty else {
+                store.errorMessage = "没有读取到可上传的照片。"
+                return
+            }
+            store.addAttachments(urls)
+        } catch {
+            selectedPhotos = []
+            store.errorMessage = "读取照片失败：\(error.localizedDescription)"
         }
     }
 
