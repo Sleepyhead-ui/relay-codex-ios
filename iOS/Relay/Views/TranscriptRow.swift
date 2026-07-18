@@ -98,10 +98,20 @@ private struct DownloadFileLinks: View {
 private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
+    @State private var expanded: Bool
+
+    init(items: [TranscriptItem], metadata: TurnMetadata) {
+        self.items = items
+        self.metadata = metadata
+        _expanded = State(initialValue: metadata.isRunning)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if let latestReasoningText {
+        VStack(alignment: .leading, spacing: 5) {
+            Button {
+                guard !activitySections.isEmpty else { return }
+                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     if metadata.isRunning {
                         ProgressView().controlSize(.mini).tint(.secondary)
@@ -110,80 +120,63 @@ private struct RunActivityView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(statusColor)
                     }
-                    CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
-                        .foregroundStyle(.secondary)
-                        .id(latestReasoningText)
-                        .transition(.opacity)
+
+                    if metadata.isRunning, let latestReasoningText {
+                        CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
+                            .foregroundStyle(.secondary)
+                            .id(latestReasoningText)
+                            .transition(.opacity)
+                    } else {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            Text(activityLabel)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     Spacer(minLength: 6)
-                    if metadata.isRunning {
-                        liveDuration
+                    if !activitySections.isEmpty {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 180 : 0))
                     }
                 }
-            } else if metadata.isRunning {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.mini).tint(.secondary)
-                    Text("正在处理")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    liveDuration
-                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 4)
             }
+            .buttonStyle(.plain)
 
-            ForEach(commentaryItems) { item in
-                MarkdownContentView(
-                    source: item.text,
-                    baseFontSize: 13,
-                    blockSpacing: 6,
-                    lineSpacing: 2
-                )
-                .foregroundStyle(Color.primary.opacity(0.9))
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !executionItems.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(executionItems) { item in
-                        if item.kind != .command {
-                            ToolEventRow(item: item)
-                        } else if item.id == commandItems.first?.id {
-                            if commandItems.count > 1 {
-                                CommandGroupView(items: commandItems)
-                            } else {
-                                ToolEventRow(item: item)
-                            }
+            if expanded {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(activitySections) { section in
+                        switch section {
+                        case .commentary(let item):
+                            MarkdownContentView(
+                                source: item.text,
+                                baseFontSize: 13,
+                                blockSpacing: 6,
+                                lineSpacing: 2
+                            )
+                            .foregroundStyle(Color.primary.opacity(0.9))
+                            .fixedSize(horizontal: false, vertical: true)
+                        case .execution(_, let executionItems):
+                            ExecutionGroupView(items: executionItems)
                         }
                     }
                 }
-            }
-
-            if !metadata.isRunning, elapsedMilliseconds > 0 {
-                Text(activityLabel)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 1)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .animation(.easeOut(duration: 0.16), value: latestReasoningText)
-    }
-
-    @ViewBuilder
-    private var liveDuration: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            if elapsedMilliseconds > 0 {
-                Text(formatDuration(milliseconds: elapsedMilliseconds))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+        .onChange(of: metadata.isRunning) { running in
+            if !running {
+                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
             }
         }
     }
 
     private var reasoningItems: [TranscriptItem] { items.filter { $0.kind == .reasoning } }
-    private var commentaryItems: [TranscriptItem] { items.filter(\.isCommentary) }
-    private var executionItems: [TranscriptItem] {
-        items.filter { $0.kind != .reasoning && !$0.isCommentary && $0.kind != .plan }
-    }
-    private var commandItems: [TranscriptItem] { executionItems.filter { $0.kind == .command } }
 
     private var latestReasoningText: String? {
         guard let item = reasoningItems.last else { return nil }
@@ -193,6 +186,29 @@ private struct RunActivityView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty } ?? []
         return lines.last?.nonEmpty
+    }
+
+    private var activitySections: [ActivitySection] {
+        var sections: [ActivitySection] = []
+        var pendingExecution: [TranscriptItem] = []
+
+        func flushExecution() {
+            guard !pendingExecution.isEmpty else { return }
+            sections.append(.execution(id: "execution.\(pendingExecution.first?.id ?? UUID().uuidString)", items: pendingExecution))
+            pendingExecution = []
+        }
+
+        for item in items {
+            if item.kind == .reasoning || item.kind == .plan { continue }
+            if item.isCommentary {
+                flushExecution()
+                sections.append(.commentary(item))
+            } else {
+                pendingExecution.append(item)
+            }
+        }
+        flushExecution()
+        return sections
     }
 
     private var elapsedMilliseconds: Int {
@@ -217,7 +233,18 @@ private struct RunActivityView: View {
     private var statusColor: Color {
         metadata.status == "failed" ? .red : metadata.status == "interrupted" ? .secondary : RelayTheme.accent
     }
+}
 
+private enum ActivitySection: Identifiable {
+    case commentary(TranscriptItem)
+    case execution(id: String, items: [TranscriptItem])
+
+    var id: String {
+        switch self {
+        case .commentary(let item): return "commentary.\(item.id)"
+        case .execution(let id, _): return id
+        }
+    }
 }
 
 private struct CompactMarkdownText: View {
@@ -241,11 +268,19 @@ private struct CompactMarkdownText: View {
     }
 }
 
-private struct CommandGroupView: View {
+private struct ExecutionGroupView: View {
     let items: [TranscriptItem]
     @State private var expanded = false
 
     var body: some View {
+        if items.count == 1, let item = items.first {
+            ToolEventRow(item: item)
+        } else {
+            groupedBody
+        }
+    }
+
+    private var groupedBody: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
                 withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
@@ -255,13 +290,10 @@ private struct CommandGroupView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(width: 18)
-                    Text("运行了多个命令")
+                    Text(summary)
                         .font(.system(size: 13, weight: .semibold))
-                    Text("\(items.count)")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
                     Spacer(minLength: 6)
-                    commandGroupStatus
+                    groupStatus
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
@@ -275,7 +307,11 @@ private struct CommandGroupView: View {
             if expanded {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(items) { item in
-                        CompactCommandRow(item: item)
+                        if item.kind == .command {
+                            CompactCommandRow(item: item)
+                        } else {
+                            ToolEventRow(item: item)
+                        }
                     }
                 }
                 .padding(.leading, 18)
@@ -285,7 +321,7 @@ private struct CommandGroupView: View {
     }
 
     @ViewBuilder
-    private var commandGroupStatus: some View {
+    private var groupStatus: some View {
         if items.contains(where: { $0.isRunningStatus }) {
             ProgressView().controlSize(.mini)
         } else if items.contains(where: { $0.isFailedStatus }) {
@@ -297,6 +333,17 @@ private struct CommandGroupView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(RelayTheme.accent)
         }
+    }
+
+    private var summary: String {
+        let commandCount = items.filter { $0.kind == .command }.count
+        let fileCount = items.filter { $0.kind == .fileChange }.count
+        let otherCount = items.count - commandCount - fileCount
+        var parts: [String] = []
+        if fileCount > 0 { parts.append(fileCount == 1 ? "编辑了文件" : "编辑了多个文件") }
+        if commandCount > 0 { parts.append(commandCount == 1 ? "运行了命令" : "运行了多个命令") }
+        if otherCount > 0 { parts.append(otherCount == 1 ? "使用了工具" : "使用了多个工具") }
+        return parts.isEmpty ? "执行了操作" : parts.joined(separator: "并")
     }
 }
 

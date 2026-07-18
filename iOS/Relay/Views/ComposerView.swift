@@ -5,7 +5,10 @@ import PhotosUI
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
     @FocusState private var focused: Bool
+    @State private var showingAttachmentOptions = false
+    @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
+    @State private var isImportingAttachments = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
 
     var body: some View {
@@ -34,26 +37,22 @@ struct ComposerView: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    Menu {
-                        PhotosPicker(
-                            selection: $selectedPhotos,
-                            maxSelectionCount: 10,
-                            matching: .images,
-                            photoLibrary: .shared()
-                        ) {
-                            Label("照片图库", systemImage: "photo.on.rectangle")
-                        }
-
-                        Button {
-                            showingFileImporter = true
-                        } label: {
-                            Label("文件", systemImage: "folder")
-                        }
+                    Button {
+                        focused = false
+                        showingAttachmentOptions = true
                     } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 17, weight: .medium))
-                            .frame(width: 36, height: 36)
+                        Group {
+                            if isImportingAttachments {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 17, weight: .medium))
+                            }
+                        }
+                        .frame(width: 36, height: 36)
                     }
+                    .buttonStyle(.plain)
+                    .disabled(isImportingAttachments)
                     .accessibilityLabel("添加照片或文件")
 
                     TextField("Message Codex", text: $store.composerText, axis: .vertical)
@@ -138,23 +137,60 @@ struct ComposerView: View {
                     .fontWeight(.semibold)
             }
         }
+        .confirmationDialog("添加附件", isPresented: $showingAttachmentOptions, titleVisibility: .visible) {
+            Button {
+                presentPhotoPicker()
+            } label: {
+                Label("照片图库", systemImage: "photo.on.rectangle")
+            }
+            Button {
+                presentFileImporter()
+            } label: {
+                Label("文件", systemImage: "folder")
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $selectedPhotos,
+            maxSelectionCount: 10,
+            matching: .images,
+            photoLibrary: .shared()
+        )
         .fileImporter(
             isPresented: $showingFileImporter,
             allowedContentTypes: [.item],
             allowsMultipleSelection: true
         ) { result in
             switch result {
-            case .success(let urls): store.addAttachments(urls)
+            case .success(let urls):
+                guard !urls.isEmpty else { return }
+                isImportingAttachments = true
+                Task { await importSelectedFiles(urls) }
             case .failure(let error): store.errorMessage = error.localizedDescription
             }
         }
         .onChange(of: selectedPhotos) { photos in
             guard !photos.isEmpty else { return }
+            isImportingAttachments = true
             Task { await importSelectedPhotos(photos) }
         }
     }
 
+    private func presentPhotoPicker() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            showingPhotoPicker = true
+        }
+    }
+
+    private func presentFileImporter() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            showingFileImporter = true
+        }
+    }
+
     private func importSelectedPhotos(_ photos: [PhotosPickerItem]) async {
+        defer { isImportingAttachments = false }
         do {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("Relay Photos", isDirectory: true)
@@ -180,6 +216,49 @@ struct ComposerView: View {
         } catch {
             selectedPhotos = []
             store.errorMessage = "读取照片失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func importSelectedFiles(_ urls: [URL]) async {
+        defer { isImportingAttachments = false }
+        do {
+            let stagedURLs = try await stageFiles(urls)
+            guard !stagedURLs.isEmpty else {
+                store.errorMessage = "没有读取到可上传的文件。"
+                return
+            }
+            store.addAttachments(stagedURLs)
+        } catch {
+            store.errorMessage = "读取文件失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func stageFiles(_ urls: [URL]) async throws -> [URL] {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let directory = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("Relay Imports", isDirectory: true)
+                        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+                    var staged: [URL] = []
+                    for url in urls {
+                        let accessed = url.startAccessingSecurityScopedResource()
+                        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                        guard data.count <= 50 * 1024 * 1024 else {
+                            throw AttachmentImportError.fileTooLarge(url.lastPathComponent)
+                        }
+                        let destination = directory.appendingPathComponent(url.lastPathComponent)
+                        try data.write(to: destination, options: .atomic)
+                        staged.append(destination)
+                    }
+                    continuation.resume(returning: staged)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
@@ -332,6 +411,16 @@ struct ComposerView: View {
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
         let isUploading = store.attachments.contains { $0.state == .uploading }
         return store.socket.state == .connected && !isUploading && (hasText || hasReadyFile)
+    }
+}
+
+private enum AttachmentImportError: LocalizedError {
+    case fileTooLarge(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .fileTooLarge(let name): return "\(name) 超过 50 MB。"
+        }
     }
 }
 

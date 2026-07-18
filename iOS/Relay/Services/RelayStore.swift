@@ -327,6 +327,7 @@ final class RelayStore: ObservableObject {
                 } catch {
                     guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
                     attachments[index].state = .failed(error.localizedDescription)
+                    errorMessage = "上传 \(attachments[index].name) 失败：\(error.localizedDescription)"
                 }
             }
         }
