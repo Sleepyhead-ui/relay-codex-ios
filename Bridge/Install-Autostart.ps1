@@ -1,7 +1,8 @@
 param(
     [string]$TaskName = "Relay Codex Bridge",
     [string]$WorkingDirectory = "",
-    [switch]$DesktopSync
+    [switch]$DesktopSync,
+    [int]$DesktopCdpPort = 9223
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,7 +12,7 @@ if ($WorkingDirectory) {
     $arguments += " -WorkingDirectory `"$WorkingDirectory`""
 }
 if ($DesktopSync) {
-    $arguments += " -DesktopSync"
+    $arguments += " -DesktopSync -DesktopCdpPort $DesktopCdpPort"
 }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments

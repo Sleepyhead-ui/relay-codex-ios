@@ -47,7 +47,8 @@ struct SettingsView: View {
                 }
 
                 Section("Conversation continuity") {
-                    Text("Start the Bridge with -DesktopSync to activate the same thread in the official Windows Codex app when a mobile turn starts or completes. This refresh mode is experimental and may briefly bring Codex to the foreground.")
+                    LabeledContent("桌面同步", value: desktopSyncLabel)
+                    Text("增强刷新会在手机任务完成后让 Windows Codex 重新读取当前线程。若显示“基础深链”，请完全退出 Windows Codex，再从手机发送一次消息；Bridge 会用仅限本机的增强模式重新启动它。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -57,7 +58,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.4.2")
+                    LabeledContent("Relay", value: "0.5.0")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }
@@ -86,6 +87,16 @@ struct SettingsView: View {
         case .reconnecting(let attempt): return "Reconnecting (\(attempt))"
         case .disconnected: return "Offline"
         case .failed: return "Connection lost"
+        }
+    }
+
+    private var desktopSyncLabel: String {
+        switch store.socket.desktopSyncMode {
+        case "enhanced": return "增强刷新"
+        case "deep-link": return "基础深链"
+        case "pending": return "等待检测"
+        case "off": return "关闭"
+        default: return "未知"
         }
     }
 }

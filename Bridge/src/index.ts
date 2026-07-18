@@ -21,7 +21,13 @@ const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
 let codexReady = false;
-const desktopSync = new DesktopSync(config.desktopSync, (message) => console.log(`[desktop] ${message}`));
+const desktopSync = new DesktopSync(
+  config.desktopSync,
+  config.desktopCdpPort,
+  config.desktopAppPath,
+  (message) => console.log(`[desktop] ${message}`),
+  (status) => broadcast({ type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: status }),
+);
 const fileTransfer = new FileTransferManager(config.defaultCwd);
 
 const codex = new CodexAppServer(config.codexBin, {
@@ -32,7 +38,7 @@ const codex = new CodexAppServer(config.codexBin, {
     if (message) console.log(`[codex] ${message}`);
     if (message.includes("initialized")) {
       codexReady = true;
-      broadcast({ type: "bridgeStatus", status: "ready", desktopSync: desktopSync.enabled });
+      broadcast({ type: "bridgeStatus", status: "ready", desktopSync: desktopSync.status });
     }
   },
   onExit: (code, signal) => {
@@ -51,6 +57,7 @@ const httpServer = createServer((request, response) => {
       status: codexReady ? "ready" : "starting",
       clients: clients.size,
       uptimeSeconds: Math.floor(process.uptime()),
+      desktopSync: desktopSync.status,
     }));
     return;
   }
@@ -79,7 +86,7 @@ webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
   console.log(`[socket] mobile client connected (${clients.size} total)`);
-  send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: desktopSync.enabled });
+  send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: desktopSync.status });
   for (const request of pendingServerRequests.values()) {
     send(socket, { type: "serverRequest", ...request });
   }

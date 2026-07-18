@@ -32,6 +32,7 @@ final class RelaySocket: ObservableObject {
     }
 
     @Published private(set) var state: State = .disconnected
+    @Published private(set) var desktopSyncMode = "unknown"
     var onConnected: (() -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
@@ -253,6 +254,11 @@ final class RelaySocket: ObservableObject {
         switch type {
         case "bridgeStatus":
             let status = raw["status"] as? String
+            if let desktopSync = raw["desktopSync"] as? [String: Any], let mode = desktopSync["mode"] as? String {
+                desktopSyncMode = mode
+            } else if let enabled = raw["desktopSync"] as? Bool {
+                desktopSyncMode = enabled ? "deep-link" : "off"
+            }
             if status == "ready" {
                 reconnectAttempt = 0
                 state = .connected

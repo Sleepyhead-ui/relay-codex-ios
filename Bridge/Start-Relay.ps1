@@ -3,7 +3,8 @@ param(
     [int]$Port = 8765,
     [string]$AdvertiseAddress = "",
     [string]$WorkingDirectory = "",
-    [switch]$DesktopSync
+    [switch]$DesktopSync,
+    [int]$DesktopCdpPort = 9223
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,8 +40,37 @@ $env:RELAY_HOST = $ListenAddress
 $env:RELAY_PORT = "$Port"
 $env:RELAY_ADVERTISE_URL = "ws://${AdvertiseAddress}:$Port"
 $env:RELAY_DESKTOP_SYNC = if ($DesktopSync) { "true" } else { "false" }
+$env:RELAY_DESKTOP_CDP_PORT = "$DesktopCdpPort"
 if ($WorkingDirectory) {
     $env:RELAY_DEFAULT_CWD = (Resolve-Path -LiteralPath $WorkingDirectory).Path
+}
+
+if ($DesktopSync) {
+    $package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $chatGptExe = if ($package) { Join-Path $package.InstallLocation "app\ChatGPT.exe" } else { "" }
+    $env:RELAY_DESKTOP_APP_PATH = if ($chatGptExe -and (Test-Path -LiteralPath $chatGptExe)) { $chatGptExe } else { "" }
+    $cdpReady = $false
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$DesktopCdpPort/json/version" -TimeoutSec 1
+        $cdpReady = $response.StatusCode -eq 200
+    }
+    catch {}
+
+    if (-not $cdpReady) {
+        $runningCodex = Get-Process -Name ChatGPT -ErrorAction SilentlyContinue
+        if ($runningCodex) {
+            Write-Warning "Enhanced desktop sync will activate after Codex is fully closed and reopened. Deep-link fallback remains active for this session."
+        }
+        else {
+            if ($chatGptExe -and (Test-Path -LiteralPath $chatGptExe)) {
+                Write-Host "Starting Codex with enhanced desktop sync on localhost:$DesktopCdpPort..."
+                Start-Process -FilePath $chatGptExe -ArgumentList "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=$DesktopCdpPort"
+            }
+            else {
+                Write-Warning "Codex desktop app was not found. Deep-link desktop sync will be used."
+            }
+        }
+    }
 }
 
 Push-Location $PSScriptRoot
