@@ -8,13 +8,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) {
     throw "Node.js 20 or newer is required. Install it from https://nodejs.org/."
 }
+$nodePath = $nodeCommand.Source
 
-$nodeMajor = [int]((node --version).TrimStart('v').Split('.')[0])
+$nodeMajor = [int]((& $nodePath --version).TrimStart('v').Split('.')[0])
 if ($nodeMajor -lt 20) {
-    throw "Node.js 20 or newer is required. Current version: $(node --version)"
+    throw "Node.js 20 or newer is required. Current version: $(& $nodePath --version)"
 }
 
 if (-not $ListenAddress) {
@@ -46,9 +48,20 @@ try {
     $bundledCodex = Join-Path $PSScriptRoot "node_modules\@openai\codex\bin\codex.js"
     if (-not (Test-Path -LiteralPath $bundledCodex)) {
         Write-Host "Installing Relay Bridge dependencies..."
-        npm ci
+        $npmCli = Join-Path (Split-Path -Parent $nodePath) "node_modules\npm\bin\npm-cli.js"
+        if (-not (Test-Path -LiteralPath $npmCli)) {
+            throw "npm-cli.js was not found next to Node.js. Reinstall Node.js with npm included."
+        }
+        & $nodePath $npmCli ci
+        if ($LASTEXITCODE -ne 0) { throw "Relay dependency installation failed with exit code $LASTEXITCODE." }
     }
-    npm start
+
+    $tsc = Join-Path $PSScriptRoot "node_modules\typescript\bin\tsc"
+    & $nodePath $tsc -p (Join-Path $PSScriptRoot "tsconfig.json")
+    if ($LASTEXITCODE -ne 0) { throw "Relay Bridge build failed with exit code $LASTEXITCODE." }
+
+    & $nodePath (Join-Path $PSScriptRoot "dist\index.js")
+    if ($LASTEXITCODE -ne 0) { throw "Relay Bridge exited with code $LASTEXITCODE." }
 }
 finally {
     Pop-Location
