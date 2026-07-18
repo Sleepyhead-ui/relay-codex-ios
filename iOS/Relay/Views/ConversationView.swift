@@ -52,10 +52,6 @@ struct ConversationView: View {
                     .frame(width: 26, height: 42)
             }
 
-            if let percentage = store.currentTokenUsage?.contextPercentage {
-                ContextRing(percentage: percentage)
-            }
-
             Button {
                 store.showingSettings = true
             } label: {
@@ -180,26 +176,6 @@ struct ConversationView: View {
         case .disconnected: return "Offline"
         case .failed: return "Connection lost"
         }
-    }
-}
-
-private struct ContextRing: View {
-    let percentage: Int
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 2.5)
-            Circle()
-                .trim(from: 0, to: CGFloat(percentage) / 100)
-                .stroke(percentage >= 85 ? Color.orange : RelayTheme.accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            Text("\(percentage)")
-                .font(.system(size: 8, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
-        }
-        .frame(width: 27, height: 27)
-        .accessibilityLabel("Context usage \(percentage) percent")
     }
 }
 

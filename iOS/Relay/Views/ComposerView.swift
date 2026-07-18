@@ -18,6 +18,16 @@ struct ComposerView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
+                ContextPressureNotice(
+                    percentage: percentage,
+                    isBusy: store.isRunning || store.isCompacting
+                ) {
+                    Task { await store.compactContext() }
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             if store.socket.state != .connected {
                 if store.socket.state.isConnecting {
                     Label("Reconnecting to Windows", systemImage: "arrow.triangle.2.circlepath")
@@ -395,7 +405,7 @@ struct ComposerView: View {
                     Text("\(percentage)%")
                 }
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(percentage >= 85 ? Color.orange : Color.secondary)
+                .foregroundStyle(percentage >= 80 ? Color.orange : Color.secondary)
                 .padding(.horizontal, 7)
                 .frame(height: 28)
             }
@@ -411,6 +421,34 @@ struct ComposerView: View {
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
         let isUploading = store.attachments.contains { $0.state == .uploading }
         return store.socket.state == .connected && !isUploading && (hasText || hasReadyFile)
+    }
+}
+
+private struct ContextPressureNotice: View {
+    let percentage: Int
+    let isBusy: Bool
+    let compact: () -> Void
+
+    var body: some View {
+        Button(action: compact) {
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 12, weight: .medium))
+                Text("上下文已使用 \(percentage)%")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(isBusy ? "稍后压缩" : "压缩")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(Color.orange)
+            .padding(.horizontal, 11)
+            .frame(height: 34)
+            .background(Color.orange.opacity(0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy)
+        .accessibilityLabel("上下文已使用 \(percentage)%，\(isBusy ? "稍后可压缩" : "点击压缩")")
     }
 }
 
