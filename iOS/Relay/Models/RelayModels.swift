@@ -51,7 +51,8 @@ struct TranscriptItem: Identifiable, Equatable {
     var status: String?
 
     static func from(json: JSONValue) -> TranscriptItem? {
-        guard let id = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
+        guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
+        let id = type == "userMessage" ? (json["clientId"]?.stringValue ?? serverId) : serverId
         switch type {
         case "userMessage":
             let text = json["content"]?.arrayValue?

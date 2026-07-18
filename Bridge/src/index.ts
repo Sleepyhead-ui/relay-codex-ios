@@ -12,6 +12,7 @@ interface PendingClientRequest {
 
 const config = await loadConfig();
 const clients = new Set<WebSocket>();
+const clientLiveness = new WeakMap<WebSocket, boolean>();
 const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
@@ -40,7 +41,11 @@ await codex.start();
 const httpServer = createServer((request, response) => {
   if (request.url === "/health") {
     response.writeHead(codexReady ? 200 : 503, { "content-type": "application/json" });
-    response.end(JSON.stringify({ status: codexReady ? "ready" : "starting", clients: clients.size }));
+    response.end(JSON.stringify({
+      status: codexReady ? "ready" : "starting",
+      clients: clients.size,
+      uptimeSeconds: Math.floor(process.uptime()),
+    }));
     return;
   }
   response.writeHead(404).end();
@@ -66,6 +71,8 @@ httpServer.on("upgrade", (request, socket, head) => {
 
 webSocketServer.on("connection", (socket) => {
   clients.add(socket);
+  clientLiveness.set(socket, true);
+  console.log(`[socket] mobile client connected (${clients.size} total)`);
   send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting" });
   for (const request of pendingServerRequests.values()) {
     send(socket, { type: "serverRequest", ...request });
@@ -82,9 +89,25 @@ webSocketServer.on("connection", (socket) => {
       sendError(socket, error instanceof Error ? error.message : "Invalid message.");
     }
   });
-  socket.on("close", () => clients.delete(socket));
+  socket.on("pong", () => clientLiveness.set(socket, true));
+  socket.on("close", () => {
+    clients.delete(socket);
+    clientLiveness.delete(socket);
+    console.log(`[socket] mobile client disconnected (${clients.size} total)`);
+  });
   socket.on("error", (error) => console.error(`[socket] ${error.message}`));
 });
+
+const heartbeatInterval = setInterval(() => {
+  for (const client of clients) {
+    if (clientLiveness.get(client) === false) {
+      client.terminate();
+      continue;
+    }
+    clientLiveness.set(client, false);
+    client.ping();
+  }
+}, 30_000);
 
 httpServer.listen(config.port, config.host, () => {
   const pairingUrl = new URL("relay://connect");
@@ -152,6 +175,7 @@ function sendError(socket: WebSocket, message: string): void {
 }
 
 function shutdown(): void {
+  clearInterval(heartbeatInterval);
   for (const client of clients) client.close(1001, "Bridge shutting down");
   codex.stop();
   httpServer.close(() => process.exit(0));

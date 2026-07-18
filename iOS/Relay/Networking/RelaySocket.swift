@@ -5,8 +5,16 @@ final class RelaySocket: ObservableObject {
     enum State: Equatable {
         case disconnected
         case connecting
+        case reconnecting(Int)
         case connected
         case failed(String)
+
+        var isConnecting: Bool {
+            switch self {
+            case .connecting, .reconnecting: return true
+            default: return false
+            }
+        }
     }
 
     enum SocketError: LocalizedError {
@@ -30,24 +38,39 @@ final class RelaySocket: ObservableObject {
 
     private var task: URLSessionWebSocketTask?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
+    private var endpoint: String?
+    private var token: String?
+    private var shouldReconnect = false
+    private var reconnectAttempt = 0
+    private var reconnectTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var connectionGeneration = UUID()
 
     func connect(endpoint: String, token: String) throws {
-        disconnect()
         guard let url = URL(string: endpoint), ["ws", "wss"].contains(url.scheme?.lowercased() ?? "") else {
             throw SocketError.invalidEndpoint
         }
 
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 15
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        state = .connecting
-        let socketTask = URLSession.shared.webSocketTask(with: request)
-        task = socketTask
-        socketTask.resume()
-        receiveNext()
+        self.endpoint = url.absoluteString
+        self.token = token
+        shouldReconnect = true
+        reconnectAttempt = 0
+        openConnection()
+    }
+
+    func reconnectIfNeeded() {
+        guard shouldReconnect, task == nil else { return }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        scheduleReconnect(immediate: true)
     }
 
     func disconnect() {
+        shouldReconnect = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         failPending(with: SocketError.disconnected)
@@ -55,7 +78,7 @@ final class RelaySocket: ObservableObject {
     }
 
     func rpc(method: String, params: [String: JSONValue] = [:]) async throws -> JSONValue {
-        guard task != nil else { throw SocketError.disconnected }
+        guard state == .connected, task != nil else { throw SocketError.disconnected }
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
@@ -82,18 +105,41 @@ final class RelaySocket: ObservableObject {
         ])
     }
 
+    private func openConnection() {
+        guard let endpoint, let token, let url = URL(string: endpoint), shouldReconnect else { return }
+
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        task?.cancel(with: .goingAway, reason: nil)
+        failPending(with: SocketError.disconnected)
+
+        let generation = UUID()
+        connectionGeneration = generation
+        state = reconnectAttempt == 0 ? .connecting : .reconnecting(reconnectAttempt)
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let socketTask = URLSession.shared.webSocketTask(with: request)
+        task = socketTask
+        socketTask.resume()
+        receiveNext(generation: generation)
+    }
+
     private func send(_ object: [String: Any]) async throws {
-        guard let task else { throw SocketError.disconnected }
+        guard let task, state == .connected else { throw SocketError.disconnected }
         let data = try JSONSerialization.data(withJSONObject: object)
         guard let text = String(data: data, encoding: .utf8) else { throw SocketError.remote("Could not encode request.") }
         try await task.send(.string(text))
     }
 
-    private func receiveNext() {
-        guard let task else { return }
+    private func receiveNext(generation: UUID) {
+        guard let task, generation == connectionGeneration else { return }
         task.receive { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, generation == self.connectionGeneration else { return }
                 switch result {
                 case .success(let message):
                     do {
@@ -103,21 +149,19 @@ final class RelaySocket: ObservableObject {
                         case .data(let value): data = value
                         @unknown default: throw SocketError.remote("Unsupported WebSocket message.")
                         }
-                        try self.handle(data)
-                        self.receiveNext()
+                        try self.handle(data, generation: generation)
+                        self.receiveNext(generation: generation)
                     } catch {
-                        self.state = .failed(error.localizedDescription)
+                        self.handleConnectionFailure(error, generation: generation)
                     }
                 case .failure(let error):
-                    self.state = .failed(error.localizedDescription)
-                    self.task = nil
-                    self.failPending(with: error)
+                    self.handleConnectionFailure(error, generation: generation)
                 }
             }
         }
     }
 
-    private func handle(_ data: Data) throws {
+    private func handle(_ data: Data, generation: UUID) throws {
         guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = raw["type"] as? String else { return }
         let message = JSONValue(any: raw)
@@ -126,9 +170,12 @@ final class RelaySocket: ObservableObject {
         case "bridgeStatus":
             let status = raw["status"] as? String
             if status == "ready" {
-                let wasConnected = state == .connected
+                reconnectAttempt = 0
                 state = .connected
-                if !wasConnected { onConnected?() }
+                startHeartbeat(generation: generation)
+                onConnected?()
+            } else if status == "codexExited" {
+                throw SocketError.remote("Codex App Server stopped on Windows.")
             }
         case "rpcResult":
             guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
@@ -145,6 +192,63 @@ final class RelaySocket: ObservableObject {
             throw SocketError.remote(raw["message"] as? String ?? "Bridge error.")
         default:
             break
+        }
+    }
+
+    private func startHeartbeat(generation: UUID) {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 15_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, generation == self.connectionGeneration,
+                      let currentTask = self.task, self.state == .connected else { return }
+                currentTask.sendPing { [weak self] error in
+                    guard let error else { return }
+                    Task { @MainActor in
+                        self?.handleConnectionFailure(error, generation: generation)
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleConnectionFailure(_ error: Error, generation: UUID) {
+        guard generation == connectionGeneration else { return }
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        failPending(with: error)
+
+        if shouldReconnect {
+            scheduleReconnect()
+        } else {
+            state = .disconnected
+        }
+    }
+
+    private func scheduleReconnect(immediate: Bool = false) {
+        guard shouldReconnect, reconnectTask == nil else { return }
+        reconnectAttempt += 1
+        let attempt = reconnectAttempt
+        let delay = immediate ? 0.0 : min(pow(2.0, Double(max(0, attempt - 1))), 20.0)
+        state = .reconnecting(attempt)
+
+        reconnectTask = Task { [weak self] in
+            if delay > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                } catch {
+                    return
+                }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            self.openConnection()
         }
     }
 

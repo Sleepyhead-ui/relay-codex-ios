@@ -14,10 +14,12 @@ final class RelayStore: ObservableObject {
     @Published var showingSettings = false
     @Published var pendingApproval: ApprovalRequest?
     @Published var errorMessage: String?
+    @Published var isLoadingThread = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
     private var activeTurnId: String?
+    private var threadLoadGeneration = UUID()
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -30,7 +32,7 @@ final class RelayStore: ObservableObject {
         token = KeychainStore.loadToken() ?? ""
 
         socket.onConnected = { [weak self] in
-            Task { await self?.refreshThreads() }
+            Task { await self?.handleConnectionRestored() }
         }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onServerRequest = { [weak self] message in self?.pendingApproval = ApprovalRequest(message: message) }
@@ -49,6 +51,10 @@ final class RelayStore: ObservableObject {
 
     func disconnect() {
         socket.disconnect()
+    }
+
+    func applicationBecameActive() {
+        socket.reconnectIfNeeded()
     }
 
     func forgetHost() {
@@ -76,25 +82,31 @@ final class RelayStore: ObservableObject {
         showingConnection = true
     }
 
-    func refreshThreads() async {
+    func refreshThreads(showErrors: Bool = true) async {
         guard socket.state == .connected else { return }
         do {
             let result = try await socket.rpc(method: "thread/list", params: [
                 "limit": .number(50),
                 "sortKey": .string("updated_at"),
-                "sortDirection": .string("desc")
+                "sortDirection": .string("desc"),
+                "useStateDbOnly": .bool(true)
             ])
             threads = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
         } catch {
-            errorMessage = error.localizedDescription
+            report(error, show: showErrors)
         }
     }
 
     func newThread() async {
+        guard socket.state == .connected else {
+            socket.reconnectIfNeeded()
+            return
+        }
         do {
             var params: [String: JSONValue] = [
                 "approvalPolicy": .string("on-request"),
-                "sandbox": .string("workspace-write")
+                "sandbox": .string("workspace-write"),
+                "threadSource": .string("relay-ios")
             ]
             if !host.workingDirectory.isEmpty { params["cwd"] = .string(host.workingDirectory) }
             let result = try await socket.rpc(method: "thread/start", params: params)
@@ -104,47 +116,60 @@ final class RelayStore: ObservableObject {
             sidebarOpen = false
             await refreshThreads()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
-    func selectThread(_ id: String) async {
+    func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
+        let loadGeneration = UUID()
+        threadLoadGeneration = loadGeneration
         selectedThreadId = id
-        sidebarOpen = false
+        if closeSidebar { sidebarOpen = false }
+        isLoadingThread = true
+        defer {
+            if threadLoadGeneration == loadGeneration { isLoadingThread = false }
+        }
+
         do {
-            let result = try await socket.rpc(method: "thread/read", params: [
-                "threadId": .string(id),
-                "includeTurns": .bool(true)
-            ])
+            let result = try await socket.rpc(method: "thread/resume", params: ["threadId": .string(id)])
+            guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             let turns = result["thread"]?["turns"]?.arrayValue ?? []
             messages = turns.flatMap { turn in
                 turn["items"]?.arrayValue?.compactMap(TranscriptItem.from(json:)) ?? []
             }
             let status = result["thread"]?["status"]?["type"]?.stringValue ?? "idle"
             isRunning = status == "active"
+            activeTurnId = turns.last(where: { $0["status"]?.stringValue == "inProgress" })?["id"]?.stringValue
         } catch {
-            errorMessage = error.localizedDescription
+            guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
+            report(error, show: showErrors)
         }
     }
 
     func sendPrompt() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        guard socket.state == .connected else {
+            socket.reconnectIfNeeded()
+            return
+        }
         if selectedThreadId == nil { await newThread() }
         guard let threadId = selectedThreadId else { return }
 
+        let clientMessageId = UUID().uuidString
         composerText = ""
         isRunning = true
-        messages.append(TranscriptItem(id: "local-\(UUID().uuidString)", role: .user, kind: .message, text: text))
+        messages.append(TranscriptItem(id: clientMessageId, role: .user, kind: .message, text: text))
         do {
             let result = try await socket.rpc(method: "turn/start", params: [
                 "threadId": .string(threadId),
+                "clientUserMessageId": .string(clientMessageId),
                 "input": .array([.object(["type": .string("text"), "text": .string(text)])])
             ])
             activeTurnId = result["turn"]?["id"]?.stringValue
         } catch {
             isRunning = false
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -156,7 +181,7 @@ final class RelayStore: ObservableObject {
                 "turnId": .string(activeTurnId)
             ])
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -175,7 +200,7 @@ final class RelayStore: ObservableObject {
             try await socket.respond(to: approval.rpcId, result: result)
             pendingApproval = nil
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -195,7 +220,7 @@ final class RelayStore: ObservableObject {
         case "turn/completed":
             isRunning = false
             activeTurnId = nil
-            Task { await refreshThreads() }
+            Task { await refreshThreads(showErrors: false) }
         case "item/started", "item/completed":
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON) { upsert(item) }
         case "item/agentMessage/delta":
@@ -226,5 +251,17 @@ final class RelayStore: ObservableObject {
     private func appendDetail(id: String?, delta: String?) {
         guard let id, let delta, let index = messages.firstIndex(where: { $0.id == id }) else { return }
         messages[index].detail = (messages[index].detail ?? "") + delta
+    }
+
+    private func handleConnectionRestored() async {
+        await refreshThreads(showErrors: false)
+        if let selectedThreadId {
+            await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
+        }
+    }
+
+    private func report(_ error: Error, show shouldShow: Bool = true) {
+        guard shouldShow, socket.state == .connected else { return }
+        errorMessage = error.localizedDescription
     }
 }

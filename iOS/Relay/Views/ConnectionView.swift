@@ -48,8 +48,8 @@ struct ConnectionView: View {
                         } label: {
                             HStack {
                                 Spacer()
-                                if store.socket.state == .connecting { ProgressView().tint(.white) }
-                                Text(store.socket.state == .connecting ? "Connecting" : "Connect")
+                                if store.socket.state.isConnecting { ProgressView().tint(.white) }
+                                Text(store.socket.state.isConnecting ? "Connecting" : "Connect")
                                     .font(.system(size: 16, weight: .semibold))
                                 Spacer()
                             }
@@ -59,7 +59,7 @@ struct ConnectionView: View {
                             .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                         }
                         .buttonStyle(.plain)
-                        .disabled(store.socket.state == .connecting)
+                        .disabled(store.socket.state.isConnecting)
 
                         Label("Use a Tailscale address for remote access. Do not expose this port directly to the public internet.", systemImage: "lock.shield")
                             .font(.system(size: 12))

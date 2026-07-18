@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct RelayApp: App {
     @StateObject private var store = RelayStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,9 @@ struct RelayApp: App {
                     if !store.needsConnection, store.socket.state == .disconnected {
                         store.connect()
                     }
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { store.applicationBecameActive() }
                 }
         }
     }

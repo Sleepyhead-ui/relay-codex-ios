@@ -93,7 +93,7 @@ struct SidebarView: View {
                     }
                     Spacer()
                     Circle()
-                        .fill(store.socket.state == .connected ? RelayTheme.accent : Color.secondary)
+                        .fill(store.socket.state == .connected ? RelayTheme.accent : (store.socket.state.isConnecting ? Color.orange : Color.secondary))
                         .frame(width: 7, height: 7)
                 }
                 .padding(.horizontal, 13)
@@ -152,4 +152,3 @@ private struct ThreadRow: View {
         RelativeDateTimeFormatter().localizedString(for: thread.updatedAt, relativeTo: Date())
     }
 }
-

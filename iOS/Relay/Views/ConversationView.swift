@@ -64,7 +64,9 @@ struct ConversationView: View {
 
     @ViewBuilder
     private var transcript: some View {
-        if store.messages.isEmpty {
+        if store.isLoadingThread {
+            LoadingConversationView()
+        } else if store.messages.isEmpty {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
@@ -100,7 +102,7 @@ struct ConversationView: View {
     private var connectionColor: Color {
         switch store.socket.state {
         case .connected: return RelayTheme.accent
-        case .connecting: return .orange
+        case .connecting, .reconnecting: return .orange
         case .disconnected, .failed: return .secondary
         }
     }
@@ -109,9 +111,25 @@ struct ConversationView: View {
         switch store.socket.state {
         case .connected: return store.host.name
         case .connecting: return "Connecting"
+        case .reconnecting(let attempt): return "Reconnecting · \(attempt)"
         case .disconnected: return "Offline"
         case .failed: return "Connection lost"
         }
+    }
+}
+
+private struct LoadingConversationView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            ProgressView()
+            Text("Loading conversation")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Spacer().frame(height: 68)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

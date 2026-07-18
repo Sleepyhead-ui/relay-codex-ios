@@ -26,12 +26,18 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Conversation continuity") {
+                    Text("Relay stores turns on this Windows host. A Codex desktop chat that is already open will not refresh live; reopen or resume the thread on Windows to load mobile turns.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section {
                     Button("Forget this host", role: .destructive) { store.forgetHost() }
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.1.1")
+                    LabeledContent("Relay", value: "0.2.0")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }
@@ -49,6 +55,7 @@ struct SettingsView: View {
         switch store.socket.state {
         case .connected: return "Connected"
         case .connecting: return "Connecting"
+        case .reconnecting(let attempt): return "Reconnecting (\(attempt))"
         case .disconnected: return "Offline"
         case .failed: return "Connection lost"
         }
