@@ -196,7 +196,13 @@ struct TurnMetadata: Equatable {
         errorMessage = json["error"]?["message"]?.stringValue
     }
 
-    var isRunning: Bool { status == "inProgress" || status == "active" }
+    var isRunning: Bool {
+        let normalized = status
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return normalized == "inprogress" || normalized == "active" || normalized == "running"
+    }
 }
 
 enum TranscriptRole: Equatable {
@@ -267,6 +273,17 @@ struct TranscriptItem: Identifiable, Equatable {
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
     var isFinalAnswer: Bool { role == .assistant && phase != "commentary" }
     var isActivity: Bool { role == .tool || isCommentary }
+    var isRunningStatus: Bool {
+        let normalized = status?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased() ?? ""
+        return normalized.contains("progress") || normalized == "running" || normalized == "active"
+    }
+    var isFailedStatus: Bool {
+        let normalized = status?.lowercased() ?? ""
+        return normalized.contains("fail") || (exitCode.map { $0 != 0 } ?? false)
+    }
     var downloadablePaths: [String] {
         if kind == .fileChange || kind == .image {
             return text.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }

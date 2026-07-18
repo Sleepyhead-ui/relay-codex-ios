@@ -3,11 +3,21 @@ import UIKit
 
 struct MarkdownContentView: View {
     let source: String
+    let baseFontSize: CGFloat
+    let blockSpacing: CGFloat
+    let lineSpacing: CGFloat
+
+    init(source: String, baseFontSize: CGFloat = 16, blockSpacing: CGFloat = 13, lineSpacing: CGFloat = 4) {
+        self.source = source
+        self.baseFontSize = baseFontSize
+        self.blockSpacing = blockSpacing
+        self.lineSpacing = lineSpacing
+    }
 
     private var blocks: [MarkdownBlock] { MarkdownParser.parse(source) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
@@ -19,33 +29,33 @@ struct MarkdownContentView: View {
     private func blockView(_ block: MarkdownBlock) -> some View {
         switch block {
         case .paragraph(let text):
-            InlineMarkdownText(text, size: 16)
+            InlineMarkdownText(text, size: baseFontSize, lineSpacing: lineSpacing)
         case .heading(let level, let text):
-            InlineMarkdownText(text, size: headingSize(level), weight: level <= 2 ? .bold : .semibold)
+            InlineMarkdownText(text, size: headingSize(level), weight: level <= 2 ? .bold : .semibold, lineSpacing: lineSpacing)
                 .padding(.top, level == 1 ? 5 : 2)
         case .code(let language, let code):
             CodeBlockView(language: language, code: code)
         case .unorderedList(let values):
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: max(4, blockSpacing * 0.6)) {
                 ForEach(Array(values.enumerated()), id: \.offset) { _, value in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Circle()
                             .fill(Color.secondary)
                             .frame(width: 5, height: 5)
                             .offset(y: -2)
-                        InlineMarkdownText(value, size: 16)
+                        InlineMarkdownText(value, size: baseFontSize, lineSpacing: lineSpacing)
                     }
                 }
             }
         case .orderedList(let values):
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: max(4, blockSpacing * 0.6)) {
                 ForEach(Array(values.enumerated()), id: \.offset) { index, value in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text("\(index + 1).")
-                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .font(.system(size: max(10, baseFontSize - 1), weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 20, alignment: .trailing)
-                        InlineMarkdownText(value, size: 16)
+                        InlineMarkdownText(value, size: baseFontSize, lineSpacing: lineSpacing)
                     }
                 }
             }
@@ -54,7 +64,7 @@ struct MarkdownContentView: View {
                 Capsule()
                     .fill(Color.secondary.opacity(0.35))
                     .frame(width: 3)
-                InlineMarkdownText(text, size: 15)
+                InlineMarkdownText(text, size: max(10, baseFontSize - 1), lineSpacing: lineSpacing)
                     .foregroundStyle(.secondary)
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -67,10 +77,10 @@ struct MarkdownContentView: View {
 
     private func headingSize(_ level: Int) -> CGFloat {
         switch level {
-        case 1: return 23
-        case 2: return 20
-        case 3: return 18
-        default: return 16
+        case 1: return baseFontSize + 7
+        case 2: return baseFontSize + 4
+        case 3: return baseFontSize + 2
+        default: return baseFontSize
         }
     }
 }
@@ -79,11 +89,13 @@ private struct InlineMarkdownText: View {
     let text: String
     let size: CGFloat
     let weight: Font.Weight
+    let lineSpacing: CGFloat
 
-    init(_ text: String, size: CGFloat, weight: Font.Weight = .regular) {
+    init(_ text: String, size: CGFloat, weight: Font.Weight = .regular, lineSpacing: CGFloat = 4) {
         self.text = text
         self.size = size
         self.weight = weight
+        self.lineSpacing = lineSpacing
     }
 
     var body: some View {
@@ -93,7 +105,7 @@ private struct InlineMarkdownText: View {
         ) {
             Text(attributed)
                 .font(.system(size: size, weight: weight))
-                .lineSpacing(4)
+                .lineSpacing(lineSpacing)
                 .tint(RelayTheme.accent)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,7 +113,7 @@ private struct InlineMarkdownText: View {
         } else {
             Text(text)
                 .font(.system(size: size, weight: weight))
-                .lineSpacing(4)
+                .lineSpacing(lineSpacing)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)

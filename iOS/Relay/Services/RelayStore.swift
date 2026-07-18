@@ -92,6 +92,7 @@ final class RelayStore: ObservableObject {
         }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onServerRequest = { [weak self] message in self?.pendingApproval = ApprovalRequest(message: message) }
+        socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
     }
 
     func connect() {
@@ -229,8 +230,8 @@ final class RelayStore: ObservableObject {
             messages = loadedMessages
             turnMetadata = loadedMetadata
             let status = result["thread"]?["status"]?["type"]?.stringValue ?? "idle"
-            isRunning = status == "active"
-            activeTurnId = turns.last(where: { $0["status"]?.stringValue == "inProgress" })?["id"]?.stringValue
+            activeTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
+            isRunning = isActiveStatus(status) || activeTurnId != nil
             if let model = result["model"]?.stringValue { selectedModelId = model }
             if let effort = result["reasoningEffort"]?.stringValue { selectedEffort = effort }
             normalizeEffortForSelectedModel()
@@ -289,7 +290,9 @@ final class RelayStore: ObservableObject {
                 turnMetadata[activeTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
             }
         } catch {
-            isRunning = false
+            // A lost RPC response does not prove the Windows turn stopped. Keep the
+            // stop control visible until thread/resume confirms the real state.
+            if socket.state == .connected { isRunning = false }
             attachments = readyAttachments
             report(error)
         }
@@ -462,9 +465,12 @@ final class RelayStore: ObservableObject {
                     if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
                 }
             }
-            isRunning = false
-            activeTurnId = nil
-            activePlan = []
+            let completedActiveTurn = activeTurnId == nil || turnId == activeTurnId
+            if completedActiveTurn {
+                isRunning = false
+                activeTurnId = nil
+                activePlan = []
+            }
             Task { await refreshThreads(showErrors: false) }
         case "item/started", "item/completed":
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
@@ -501,8 +507,6 @@ final class RelayStore: ObservableObject {
             persistGenerationSettings()
         case "error":
             errorMessage = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue ?? "Codex reported an error."
-            isRunning = false
-            activePlan = []
         default:
             break
         }
@@ -544,6 +548,14 @@ final class RelayStore: ObservableObject {
         if let selectedThreadId {
             await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
         }
+    }
+
+    private func isActiveStatus(_ status: String?) -> Bool {
+        let normalized = status?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased() ?? ""
+        return ["active", "inprogress", "running"].contains(normalized)
     }
 
     private func report(_ error: Error, show shouldShow: Bool = true) {

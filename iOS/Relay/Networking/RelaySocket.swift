@@ -36,6 +36,7 @@ final class RelaySocket: ObservableObject {
     var onConnected: (() -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
+    var onNonfatalError: ((String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
@@ -45,6 +46,7 @@ final class RelaySocket: ObservableObject {
     private var reconnectAttempt = 0
     private var reconnectTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
+    private var stableConnectionTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
 
     func connect(endpoint: String, token: String) throws {
@@ -72,6 +74,8 @@ final class RelaySocket: ObservableObject {
         reconnectTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        stableConnectionTask?.cancel()
+        stableConnectionTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         failPending(with: SocketError.disconnected)
@@ -197,6 +201,8 @@ final class RelaySocket: ObservableObject {
         reconnectTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        stableConnectionTask?.cancel()
+        stableConnectionTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         failPending(with: SocketError.disconnected)
 
@@ -235,10 +241,10 @@ final class RelaySocket: ObservableObject {
                         @unknown default: throw SocketError.remote("Unsupported WebSocket message.")
                         }
                         try self.handle(data, generation: generation)
-                        self.receiveNext(generation: generation)
                     } catch {
-                        self.handleConnectionFailure(error, generation: generation)
+                        self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
                     }
+                    self.receiveNext(generation: generation)
                 case .failure(let error):
                     self.handleConnectionFailure(error, generation: generation)
                 }
@@ -260,12 +266,15 @@ final class RelaySocket: ObservableObject {
                 desktopSyncMode = enabled ? "deep-link" : "off"
             }
             if status == "ready" {
-                reconnectAttempt = 0
+                let becameConnected = state != .connected
                 state = .connected
-                startHeartbeat(generation: generation)
-                onConnected?()
+                if becameConnected {
+                    startHeartbeat(generation: generation)
+                    markConnectionStable(after: 10, generation: generation)
+                    onConnected?()
+                }
             } else if status == "codexExited" {
-                throw SocketError.remote("Codex App Server stopped on Windows.")
+                onNonfatalError?("Codex App Server stopped on Windows. Relay will keep the connection and retry when it is available.")
             }
         case "rpcResult":
             guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
@@ -279,9 +288,26 @@ final class RelaySocket: ObservableObject {
         case "serverRequest":
             onServerRequest?(message)
         case "bridgeError":
-            throw SocketError.remote(raw["message"] as? String ?? "Bridge error.")
+            onNonfatalError?(raw["message"] as? String ?? "Bridge reported an error.")
         default:
             break
+        }
+    }
+
+    private func markConnectionStable(after seconds: UInt64, generation: UUID) {
+        stableConnectionTask?.cancel()
+        stableConnectionTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled,
+                  generation == self.connectionGeneration,
+                  self.state == .connected,
+                  self.task != nil else { return }
+            self.reconnectAttempt = 0
+            self.stableConnectionTask = nil
         }
     }
 
@@ -310,6 +336,8 @@ final class RelaySocket: ObservableObject {
         guard generation == connectionGeneration else { return }
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        stableConnectionTask?.cancel()
+        stableConnectionTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         failPending(with: error)

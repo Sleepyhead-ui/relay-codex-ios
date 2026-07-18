@@ -44,7 +44,8 @@ struct TranscriptRow: View {
             }
         case .assistant:
             if item.isCommentary {
-                CommentaryRow(item: item)
+                MarkdownContentView(source: item.text, baseFontSize: 13, blockSpacing: 6, lineSpacing: 2)
+                    .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
                     if let title = item.title {
@@ -97,122 +98,95 @@ private struct DownloadFileLinks: View {
 private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
-    @State private var expanded: Bool
-
-    init(items: [TranscriptItem], metadata: TurnMetadata) {
-        self.items = items
-        self.metadata = metadata
-        _expanded = State(initialValue: metadata.isRunning)
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                guard !executionItems.isEmpty else { return }
-                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
-            } label: {
-                HStack(alignment: .top, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
+            if let latestReasoningText {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
                     if metadata.isRunning {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(.secondary)
-                            .padding(.top, 1)
+                        ProgressView().controlSize(.mini).tint(.secondary)
                     } else {
                         Image(systemName: statusIcon)
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(statusColor)
-                            .padding(.top, 1)
                     }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        if metadata.isRunning, let latestProgressText {
-                            Text(latestProgressText)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .id(latestProgressText)
-                                .transition(.opacity)
-                        } else {
-                            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                Text(activityLabel)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        if metadata.isRunning, elapsedMilliseconds > 0 {
-                            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                Text(formatDuration(milliseconds: elapsedMilliseconds))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
+                    CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
+                        .foregroundStyle(.secondary)
+                        .id(latestReasoningText)
+                        .transition(.opacity)
+                    Spacer(minLength: 6)
+                    if metadata.isRunning {
+                        liveDuration
                     }
-
-                    if !executionItems.isEmpty {
-                        Text("· \(executionItems.count)")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 1)
-                    }
-
+                }
+            } else if metadata.isRunning {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.mini).tint(.secondary)
+                    Text("正在处理")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    if !executionItems.isEmpty {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 180 : 0))
-                            .padding(.top, 3)
-                    }
+                    liveDuration
                 }
-                .contentShape(Rectangle())
-                .padding(.vertical, 5)
             }
-            .buttonStyle(.plain)
 
-            if expanded, !executionItems.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
+            ForEach(commentaryItems) { item in
+                MarkdownContentView(
+                    source: item.text,
+                    baseFontSize: 13,
+                    blockSpacing: 6,
+                    lineSpacing: 2
+                )
+                .foregroundStyle(Color.primary.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !executionItems.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
                     ForEach(executionItems) { item in
-                        HStack(alignment: .top, spacing: 8) {
-                            VStack(spacing: 0) {
-                                Circle()
-                                    .fill(stepColor(item))
-                                    .frame(width: 5, height: 5)
-                                    .padding(.top, 13)
-                                Rectangle()
-                                    .fill(RelayTheme.hairline)
-                                    .frame(width: 1)
+                        if item.kind != .command {
+                            ToolEventRow(item: item)
+                        } else if item.id == commandItems.first?.id {
+                            if commandItems.count > 1 {
+                                CommandGroupView(items: commandItems)
+                            } else {
+                                ToolEventRow(item: item)
                             }
-                            .frame(width: 8)
-
-                            TranscriptRow(item: item)
-                                .padding(.bottom, 1)
                         }
                     }
                 }
-                .padding(.leading, 2)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if !metadata.isRunning, elapsedMilliseconds > 0 {
+                Text(activityLabel)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 1)
             }
         }
-        .animation(.easeOut(duration: 0.16), value: latestProgressText)
-        .onChange(of: metadata.isRunning) { running in
-            if !running {
-                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
+        .animation(.easeOut(duration: 0.16), value: latestReasoningText)
+    }
+
+    @ViewBuilder
+    private var liveDuration: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            if elapsedMilliseconds > 0 {
+                Text(formatDuration(milliseconds: elapsedMilliseconds))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
             }
         }
     }
 
-    private var progressItems: [TranscriptItem] {
-        items.filter { $0.kind == .reasoning || $0.isCommentary }
-    }
-
+    private var reasoningItems: [TranscriptItem] { items.filter { $0.kind == .reasoning } }
+    private var commentaryItems: [TranscriptItem] { items.filter(\.isCommentary) }
     private var executionItems: [TranscriptItem] {
         items.filter { $0.kind != .reasoning && !$0.isCommentary && $0.kind != .plan }
     }
+    private var commandItems: [TranscriptItem] { executionItems.filter { $0.kind == .command } }
 
-    private var latestProgressText: String? {
-        guard let item = progressItems.last else { return nil }
+    private var latestReasoningText: String? {
+        guard let item = reasoningItems.last else { return nil }
         let source = item.text.nonEmpty ?? item.detail?.nonEmpty
         let lines = source?
             .components(separatedBy: .newlines)
@@ -244,27 +218,177 @@ private struct RunActivityView: View {
         metadata.status == "failed" ? .red : metadata.status == "interrupted" ? .secondary : RelayTheme.accent
     }
 
-    private func stepColor(_ item: TranscriptItem) -> Color {
-        let status = item.status?.lowercased() ?? ""
-        if status.contains("fail") { return .red }
-        if status.contains("progress") || status.contains("running") { return .orange }
-        return Color.secondary.opacity(0.55)
+}
+
+private struct CompactMarkdownText: View {
+    let source: String
+    let size: CGFloat
+    var weight: Font.Weight = .regular
+
+    var body: some View {
+        if let attributed = try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            Text(attributed)
+                .font(.system(size: size, weight: weight))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(source.replacingOccurrences(of: "**", with: ""))
+                .font(.system(size: size, weight: weight))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
-private struct CommentaryRow: View {
-    let item: TranscriptItem
+private struct CommandGroupView: View {
+    let items: [TranscriptItem]
+    @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("进展")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            MarkdownContentView(source: item.text)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    Text("运行了多个命令")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(items.count)")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 6)
+                    commandGroupStatus
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(items) { item in
+                        CompactCommandRow(item: item)
+                    }
+                }
+                .padding(.leading, 18)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .padding(.vertical, 8)
     }
+
+    @ViewBuilder
+    private var commandGroupStatus: some View {
+        if items.contains(where: { $0.isRunningStatus }) {
+            ProgressView().controlSize(.mini)
+        } else if items.contains(where: { $0.isFailedStatus }) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+        } else {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(RelayTheme.accent)
+        }
+    }
+}
+
+private struct CompactCommandRow: View {
+    let item: TranscriptItem
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button {
+                guard hasDetails else { return }
+                withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    Text(commandSummary)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(item.isFailedStatus ? Color.red : Color.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 5)
+                    if let exitCode = item.exitCode, exitCode != 0 {
+                        Text("exit \(exitCode)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.red)
+                    }
+                    if item.isRunningStatus {
+                        ProgressView().controlSize(.mini)
+                    }
+                    if hasDetails {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 180 : 0))
+                    }
+                }
+                .contentShape(Rectangle())
+                .padding(.vertical, 3)
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                if let error = item.errorMessage?.nonEmpty {
+                    Text(error)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let cwd = item.cwd?.nonEmpty {
+                    Text(cwd)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                if let detail = item.detail?.nonEmpty {
+                    CompactTechnicalDetail(detail: detail)
+                }
+            }
+        }
+    }
+
+    private var commandSummary: String {
+        item.text.components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nonEmpty ?? "命令"
+    }
+    private var hasDetails: Bool {
+        item.detail?.nonEmpty != nil || item.errorMessage?.nonEmpty != nil || item.cwd?.nonEmpty != nil
+    }
+}
+
+private struct CompactTechnicalDetail: View {
+    let detail: String
+
+    var body: some View {
+        ScrollView([.horizontal, .vertical], showsIndicators: lineCount > 10) {
+            Text(detail)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(9)
+        }
+        .frame(height: detailHeight)
+        .background(RelayTheme.codeFill)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var lineCount: Int { max(1, detail.components(separatedBy: .newlines).count) }
+    private var detailHeight: CGFloat { CGFloat(min(lineCount, 10)) * 14 + 18 }
 }
 
 private struct ToolEventRow: View {
@@ -395,16 +519,7 @@ private struct ToolEventRow: View {
                     Capsule().fill(Color.secondary.opacity(0.25)).frame(width: 2)
                 }
         } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(detail)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(12)
-            }
-            .frame(maxHeight: 280)
-            .background(RelayTheme.codeFill)
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            CompactTechnicalDetail(detail: detail)
         }
     }
 
