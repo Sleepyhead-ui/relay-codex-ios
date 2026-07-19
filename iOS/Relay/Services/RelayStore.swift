@@ -33,6 +33,7 @@ final class RelayStore: ObservableObject {
     private let modelDefaultsKey = "relay.model"
     private let effortDefaultsKey = "relay.reasoningEffort"
     private let accessDefaultsKey = "relay.workspaceAccess"
+    private let lastThreadDefaultsKey = "relay.lastThreadId"
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
     private var threadSnapshots: [String: ThreadSnapshot] = [:]
@@ -96,6 +97,7 @@ final class RelayStore: ObservableObject {
             host = stored
         }
         token = KeychainStore.loadToken() ?? ""
+        selectedThreadId = UserDefaults.standard.string(forKey: lastThreadDefaultsKey)
         selectedModelId = UserDefaults.standard.string(forKey: modelDefaultsKey) ?? ""
         selectedEffort = UserDefaults.standard.string(forKey: effortDefaultsKey) ?? ""
         if let storedAccess = UserDefaults.standard.string(forKey: accessDefaultsKey),
@@ -133,7 +135,7 @@ final class RelayStore: ObservableObject {
         token = ""
         host = HostConfiguration()
         threads = []
-        selectedThreadId = nil
+        setSelectedThread(nil)
         messages = []
         turnMetadata = [:]
         tokenUsageByThread = [:]
@@ -184,7 +186,11 @@ final class RelayStore: ObservableObject {
                 "sortKey": .string("updated_at"),
                 "sortDirection": .string("desc")
             ])
-            threads = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
+            let fetched = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
+            if fetched.isEmpty, !threads.isEmpty {
+                return
+            }
+            threads = fetched
         } catch {
             report(error, show: showErrors)
         }
@@ -212,7 +218,7 @@ final class RelayStore: ObservableObject {
                 throw RelaySocket.SocketError.remote("Codex did not return a thread id.")
             }
             cacheCurrentThread()
-            selectedThreadId = id
+            setSelectedThread(id)
             if !projectDirectory.isEmpty { workingDirectoryOverrides[id] = projectDirectory }
             messages = []
             turnMetadata = [:]
@@ -251,7 +257,7 @@ final class RelayStore: ObservableObject {
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
         if switchingThreads { cacheCurrentThread() }
-        selectedThreadId = id
+        setSelectedThread(id)
         let restoredFromCache = switchingThreads && restoreThreadSnapshot(id)
         if switchingThreads && !restoredFromCache {
             messages = []
@@ -493,6 +499,15 @@ final class RelayStore: ObservableObject {
         UserDefaults.standard.set(selectedEffort, forKey: effortDefaultsKey)
     }
 
+    private func setSelectedThread(_ id: String?) {
+        selectedThreadId = id
+        if let id {
+            UserDefaults.standard.set(id, forKey: lastThreadDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: lastThreadDefaultsKey)
+        }
+    }
+
     private func normalizeEffortForSelectedModel() {
         guard let model = selectedModel else { return }
         let ids = Set(model.efforts.map(\.id))
@@ -599,8 +614,9 @@ final class RelayStore: ObservableObject {
     private func handleConnectionRestored() async {
         if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         await refreshThreads(showErrors: false)
-        if let selectedThreadId {
-            await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
+        let targetThreadId = selectedThreadId ?? threads.first?.id
+        if let targetThreadId {
+            await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
         }
     }
 

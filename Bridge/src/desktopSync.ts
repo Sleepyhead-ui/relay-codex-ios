@@ -56,6 +56,9 @@ export class DesktopSync {
     this.statusValue = { ...this.statusValue, lastAttemptAt: new Date().toISOString() };
     this.onStatusChange(this.status);
     await this.ensureDesktopDebugging();
+    const openedBeforeRefresh = this.openThread(threadId);
+    if (openedBeforeRefresh) await delay(320);
+
     let enhanced = false;
     try {
       enhanced = await this.reloadDesktopRenderer();
@@ -64,13 +67,13 @@ export class DesktopSync {
     }
 
     if (enhanced) await delay(550);
-    const opened = this.openThread(threadId);
+    const opened = enhanced ? (this.openThread(threadId) || openedBeforeRefresh) : openedBeforeRefresh;
     this.statusValue = {
       enabled: true,
       mode: enhanced ? "enhanced" : "deep-link",
       lastAttemptAt: new Date().toISOString(),
       lastResult: opened
-        ? enhanced ? "Renderer refreshed and thread reopened." : "Thread deep link opened."
+        ? enhanced ? "Thread opened, renderer refreshed, and thread reopened." : "Thread deep link opened."
         : "Could not open the desktop thread.",
     };
     this.onStatusChange(this.status);
