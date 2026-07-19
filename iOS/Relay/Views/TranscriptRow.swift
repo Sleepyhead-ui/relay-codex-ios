@@ -4,17 +4,25 @@ struct TurnGroupView: View {
     let group: TranscriptGroup
 
     var body: some View {
+        let timeline = timelineSegments
+        let firstActivityIndex = timeline.firstIndex(where: \.isActivity)
+        let lastActivityIndex = timeline.lastIndex(where: \.isActivity)
+
         VStack(alignment: .leading, spacing: 14) {
-            ForEach(group.userItems) { item in
-                TranscriptRow(item: item)
-            }
-
-            if !group.activityItems.isEmpty || group.metadata.isRunning {
-                RunActivityView(items: group.activityItems, metadata: group.metadata)
-            }
-
-            ForEach(group.answerItems) { item in
-                TranscriptRow(item: item)
+            ForEach(Array(timeline.enumerated()), id: \.element.id) { index, segment in
+                switch segment {
+                case .user(let item, let isFollowUp):
+                    TranscriptRow(item: item, isFollowUp: isFollowUp)
+                case .activity(_, let items):
+                    RunActivityView(
+                        items: items,
+                        metadata: group.metadata,
+                        isLive: group.metadata.isRunning && index == lastActivityIndex,
+                        showsTurnDuration: index == firstActivityIndex
+                    )
+                case .item(let item):
+                    TranscriptRow(item: item)
+                }
             }
 
             if group.answerItems.isEmpty, let error = group.metadata.errorMessage, !error.isEmpty {
@@ -25,22 +33,90 @@ struct TurnGroupView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private var timelineSegments: [TurnTimelineSegment] {
+        var result: [TurnTimelineSegment] = []
+        var pendingActivity: [TranscriptItem] = []
+        var hasSeenUserMessage = false
+
+        func flushActivity() {
+            guard let first = pendingActivity.first else { return }
+            result.append(.activity(id: "activity.\(first.id)", items: pendingActivity))
+            pendingActivity = []
+        }
+
+        for item in group.items {
+            if item.isActivity {
+                pendingActivity.append(item)
+                continue
+            }
+            flushActivity()
+            if item.role == .user {
+                result.append(.user(item, isFollowUp: hasSeenUserMessage))
+                hasSeenUserMessage = true
+            } else {
+                result.append(.item(item))
+            }
+        }
+        flushActivity()
+
+        if group.metadata.isRunning, !result.contains(where: \.isActivity) {
+            result.append(.activity(id: "activity.pending.\(group.id)", items: []))
+        }
+        return result
+    }
+}
+
+private enum TurnTimelineSegment: Identifiable {
+    case user(TranscriptItem, isFollowUp: Bool)
+    case activity(id: String, items: [TranscriptItem])
+    case item(TranscriptItem)
+
+    var id: String {
+        switch self {
+        case .user(let item, _): return "user.\(item.id)"
+        case .activity(let id, _): return id
+        case .item(let item): return "item.\(item.id)"
+        }
+    }
+
+    var isActivity: Bool {
+        if case .activity = self { return true }
+        return false
+    }
 }
 
 struct TranscriptRow: View {
     let item: TranscriptItem
+    let isFollowUp: Bool
     @EnvironmentObject private var store: RelayStore
+
+    init(item: TranscriptItem, isFollowUp: Bool = false) {
+        self.item = item
+        self.isFollowUp = isFollowUp
+    }
 
     var body: some View {
         switch item.role {
         case .user:
             HStack {
                 Spacer(minLength: 46)
-                MarkdownContentView(source: item.text)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(RelayTheme.softFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(alignment: .trailing, spacing: 4) {
+                    if isFollowUp {
+                        Text("引导")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .padding(.trailing, 3)
+                    }
+                    MarkdownContentView(source: item.text)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background(RelayTheme.softFill)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    if let deliveryState = item.deliveryState {
+                        deliveryStatus(deliveryState)
+                    }
+                }
             }
         case .assistant:
             if item.isCommentary {
@@ -67,6 +143,41 @@ struct TranscriptRow: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func deliveryStatus(_ state: MessageDeliveryState) -> some View {
+        HStack(spacing: 5) {
+            switch state {
+            case .sending:
+                ProgressView().controlSize(.mini)
+                Text("发送中")
+            case .accepted:
+                Image(systemName: "checkmark")
+                Text("Bridge 已接收")
+            case .uncertain(_):
+                Image(systemName: "questionmark.circle")
+                Text("待确认")
+                Button("检查") { Task { await store.confirmMessageDelivery(item.id) } }
+                    .fontWeight(.semibold)
+            case .failed(_):
+                Image(systemName: "exclamationmark.circle.fill")
+                Text("未发送")
+                Button("恢复") { store.restoreMessageToComposer(item.id) }
+                    .fontWeight(.semibold)
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(deliveryColor(state))
+        .padding(.trailing, 3)
+    }
+
+    private func deliveryColor(_ state: MessageDeliveryState) -> Color {
+        switch state {
+        case .failed(_): return .red
+        case .uncertain(_): return .orange
+        case .sending, .accepted: return .secondary
         }
     }
 }
@@ -98,12 +209,16 @@ private struct DownloadFileLinks: View {
 private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
+    let isLive: Bool
+    let showsTurnDuration: Bool
     @State private var expanded: Bool
 
-    init(items: [TranscriptItem], metadata: TurnMetadata) {
+    init(items: [TranscriptItem], metadata: TurnMetadata, isLive: Bool, showsTurnDuration: Bool) {
         self.items = items
         self.metadata = metadata
-        _expanded = State(initialValue: metadata.isRunning)
+        self.isLive = isLive
+        self.showsTurnDuration = showsTurnDuration
+        _expanded = State(initialValue: isLive)
     }
 
     var body: some View {
@@ -114,7 +229,7 @@ private struct RunActivityView: View {
             } label: {
                 HStack(alignment: .top, spacing: 7) {
                     Group {
-                        if metadata.isRunning {
+                        if isLive {
                             ProgressView()
                                 .controlSize(.mini)
                                 .tint(.secondary)
@@ -126,7 +241,7 @@ private struct RunActivityView: View {
                     }
                     .frame(width: 14, height: 16, alignment: .center)
 
-                    if metadata.isRunning, let latestReasoningText {
+                    if isLive, let latestReasoningText {
                         CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
                             .foregroundStyle(.secondary)
                             .id(latestReasoningText)
@@ -176,7 +291,7 @@ private struct RunActivityView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: latestReasoningText)
-        .onChange(of: metadata.isRunning) { running in
+        .onChange(of: isLive) { running in
             if !running {
                 withAnimation(.easeInOut(duration: 0.16)) { expanded = false }
             }
@@ -228,9 +343,11 @@ private struct RunActivityView: View {
 
     private var activityLabel: String {
         let duration = formatDuration(milliseconds: elapsedMilliseconds)
-        if metadata.isRunning { return elapsedMilliseconds > 0 ? "正在处理 · \(duration)" : "正在处理" }
-        if metadata.status == "failed" { return "处理失败 · \(duration)" }
-        if metadata.status == "interrupted" { return "已停止 · \(duration)" }
+        if isLive { return elapsedMilliseconds > 0 ? "正在处理 · \(duration)" : "正在处理" }
+        if metadata.isRunning { return "已完成上一阶段" }
+        if metadata.status == "failed" { return showsTurnDuration ? "处理失败 · \(duration)" : "后续处理失败" }
+        if metadata.status == "interrupted" { return showsTurnDuration ? "已停止 · \(duration)" : "后续处理已停止" }
+        if !showsTurnDuration { return "继续处理" }
         return elapsedMilliseconds > 0 ? "已处理 · \(duration)" : "处理过程"
     }
 

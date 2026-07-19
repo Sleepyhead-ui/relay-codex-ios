@@ -76,15 +76,23 @@ function listModels() {
 function rpc(id, method, params) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+    let accepted = false;
     const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${method}.`)), 15_000);
     socket.on("message", (data) => {
       const message = JSON.parse(data.toString("utf8"));
       if (message.type === "bridgeStatus" && message.status === "ready") {
         socket.send(JSON.stringify({ type: "rpc", id, method, params }));
       }
+      if (message.type === "rpcAccepted" && message.id === id && message.method === method) {
+        accepted = true;
+      }
       if (message.type === "rpcResult" && message.id === id) {
         clearTimeout(timer);
         socket.close();
+        if (!accepted) {
+          reject(new Error(`${method} completed without an rpcAccepted acknowledgement.`));
+          return;
+        }
         if (message.error) reject(new Error(message.error.message ?? `${method} failed`));
         else resolve(message.result);
       }

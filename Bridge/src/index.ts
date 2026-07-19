@@ -27,6 +27,15 @@ const socketDiagnostics = {
   lastClose: null as string | null,
   lastError: null as string | null,
 };
+const rpcDiagnostics = {
+  lastReceivedAt: null as string | null,
+  lastAcceptedAt: null as string | null,
+  lastCompletedAt: null as string | null,
+  lastMethod: null as string | null,
+  lastCompletedMethod: null as string | null,
+  lastErrorAt: null as string | null,
+  lastError: null as string | null,
+};
 const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
@@ -69,7 +78,9 @@ const httpServer = createServer((request, response) => {
       clients: clients.size,
       uptimeSeconds: Math.floor(process.uptime()),
       activeTurns: runtimeState.activeCount,
+      pendingRpcCount: pendingClientRequests.size,
       socket: socketDiagnostics,
+      rpc: rpcDiagnostics,
       desktopSync: desktopSync.status,
     }));
     return;
@@ -166,15 +177,27 @@ httpServer.listen(config.port, config.host, () => {
 async function handleClientMessage(socket: WebSocket, raw: string): Promise<void> {
   const message = parseClientMessage(raw);
   if (message.type === "rpc") {
+    rpcDiagnostics.lastReceivedAt = new Date().toISOString();
+    rpcDiagnostics.lastMethod = message.method;
     if (message.method === "relay/thread/runtime") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       send(socket, { type: "rpcResult", id: message.id, result: runtimeState.snapshot(message.params.threadId) });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
     if (message.method.startsWith("relay/")) {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       try {
         const result = await fileTransfer.handle(message.method, message.params);
         send(socket, { type: "rpcResult", id: message.id, result });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
       } catch (error) {
+        rpcDiagnostics.lastErrorAt = new Date().toISOString();
+        rpcDiagnostics.lastError = error instanceof Error ? error.message : "File transfer failed.";
         send(socket, {
           type: "rpcResult",
           id: message.id,
@@ -183,14 +206,36 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       }
       return;
     }
-    if (!codexReady) throw new Error("Codex is still starting.");
+    if (!codexReady) {
+      rpcDiagnostics.lastErrorAt = new Date().toISOString();
+      rpcDiagnostics.lastError = "Codex is still starting.";
+      send(socket, {
+        type: "rpcResult",
+        id: message.id,
+        error: { message: "Codex is still starting." },
+      });
+      return;
+    }
     const bridgeId = `relay.${nextRequestId++}`;
     const params = { ...message.params };
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
       params.cwd = config.defaultCwd;
     }
     pendingClientRequests.set(bridgeId, { socket, clientId: message.id, method: message.method, params });
-    codex.send({ method: message.method, id: bridgeId, params });
+    try {
+      codex.send({ method: message.method, id: bridgeId, params });
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+    } catch (error) {
+      pendingClientRequests.delete(bridgeId);
+      rpcDiagnostics.lastErrorAt = new Date().toISOString();
+      rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not forward RPC to Codex.";
+      send(socket, {
+        type: "rpcResult",
+        id: message.id,
+        error: { message: rpcDiagnostics.lastError },
+      });
+    }
     return;
   }
 
@@ -209,6 +254,16 @@ function handleCodexResponse(message: JsonObject): void {
   const pending = pendingClientRequests.get(id);
   if (!pending) return;
   pendingClientRequests.delete(id);
+  rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+  rpcDiagnostics.lastCompletedMethod = pending.method;
+  if ("error" in message) {
+    rpcDiagnostics.lastErrorAt = rpcDiagnostics.lastCompletedAt;
+    rpcDiagnostics.lastError = isObject(message.error) && typeof message.error.message === "string"
+      ? message.error.message
+      : "Codex RPC failed.";
+  } else {
+    rpcDiagnostics.lastError = null;
+  }
   const payload: JsonObject = { type: "rpcResult", id: pending.clientId };
   if ("result" in message) payload.result = message.result;
   if ("error" in message) payload.error = message.error;

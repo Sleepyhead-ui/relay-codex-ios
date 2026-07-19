@@ -244,6 +244,13 @@ enum TranscriptRole: Equatable {
     case system
 }
 
+enum MessageDeliveryState: Equatable {
+    case sending
+    case accepted
+    case uncertain(String)
+    case failed(String)
+}
+
 enum TranscriptKind: Equatable {
     case message
     case command
@@ -271,6 +278,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var exitCode: Int?
     var cwd: String?
     var errorMessage: String?
+    var deliveryState: MessageDeliveryState?
 
     init(
         id: String,
@@ -285,7 +293,8 @@ struct TranscriptItem: Identifiable, Equatable {
         durationMs: Int? = nil,
         exitCode: Int? = nil,
         cwd: String? = nil,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        deliveryState: MessageDeliveryState? = nil
     ) {
         self.id = id
         self.turnId = turnId
@@ -300,6 +309,7 @@ struct TranscriptItem: Identifiable, Equatable {
         self.exitCode = exitCode
         self.cwd = cwd
         self.errorMessage = errorMessage
+        self.deliveryState = deliveryState
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }

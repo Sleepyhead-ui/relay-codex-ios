@@ -41,6 +41,7 @@ final class RelaySocket: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pendingAccepted: [String: () -> Void] = [:]
     private var pendingTimeouts: [String: Task<Void, Never>] = [:]
     private var endpoint: String?
     private var token: String?
@@ -93,12 +94,14 @@ final class RelaySocket: ObservableObject {
         method: String,
         params: [String: JSONValue] = [:],
         timeoutSeconds: UInt64 = 45,
-        reconnectOnTimeout: Bool = true
+        reconnectOnTimeout: Bool = true,
+        onAccepted: (() -> Void)? = nil
     ) async throws -> JSONValue {
         guard state == .connected, task != nil else { throw SocketError.disconnected }
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
+            if let onAccepted { pendingAccepted[id] = onAccepted }
             pendingTimeouts[id] = Task { [weak self] in
                 do {
                     try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
@@ -107,6 +110,7 @@ final class RelaySocket: ObservableObject {
                 }
                 guard let self, !Task.isCancelled,
                       let continuation = self.pending.removeValue(forKey: id) else { return }
+                self.pendingAccepted.removeValue(forKey: id)
                 self.pendingTimeouts.removeValue(forKey: id)
                 let error = SocketError.remote(
                     reconnectOnTimeout
@@ -128,6 +132,7 @@ final class RelaySocket: ObservableObject {
                     ])
                 } catch {
                     pendingTimeouts.removeValue(forKey: id)?.cancel()
+                    pendingAccepted.removeValue(forKey: id)
                     pending.removeValue(forKey: id)?.resume(throwing: error)
                 }
             }
@@ -323,8 +328,12 @@ final class RelaySocket: ObservableObject {
             } else if status == "codexExited" {
                 onNonfatalError?("Codex App Server stopped on Windows. Relay will keep the connection and retry when it is available.")
             }
+        case "rpcAccepted":
+            guard let id = raw["id"] as? String else { return }
+            pendingAccepted.removeValue(forKey: id)?()
         case "rpcResult":
             guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
+            pendingAccepted.removeValue(forKey: id)
             pendingTimeouts.removeValue(forKey: id)?.cancel()
             if let error = raw["error"] as? [String: Any] {
                 continuation.resume(throwing: SocketError.remote(error["message"] as? String ?? "Codex request failed."))
@@ -443,6 +452,7 @@ final class RelaySocket: ObservableObject {
         timeouts.forEach { $0.cancel() }
         let continuations = pending.values
         pending.removeAll()
+        pendingAccepted.removeAll()
         continuations.forEach { $0.resume(throwing: error) }
     }
 }

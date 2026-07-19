@@ -49,6 +49,9 @@ final class RelayStore: ObservableObject {
     private var threadSnapshots: [String: ThreadSnapshot] = [:]
     private var olderTurnsCursorByThread: [String: String] = [:]
     private var workingDirectoryOverrides: [String: String] = [:]
+    private var acceptedMessageIds = Set<String>()
+    private var outboundDrafts: [String: OutboundDraft] = [:]
+    private var completedTurnIds = Set<String>()
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -176,6 +179,9 @@ final class RelayStore: ObservableObject {
         activeTurnIdsByThread = [:]
         sendingThreadIds = []
         queuedFollowUps = []
+        acceptedMessageIds = []
+        outboundDrafts = [:]
+        completedTurnIds = []
         threadSnapshots = [:]
         olderTurnsCursorByThread = [:]
         hasOlderTurns = false
@@ -377,6 +383,21 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
+            let unresolvedMessages = messages.filter {
+                $0.deliveryState != nil && outboundDrafts[$0.id]?.threadId == id
+            }
+            let loadedIds = Set(loadedMessages.map(\.id))
+            for unresolved in unresolvedMessages where !loadedIds.contains(unresolved.id) {
+                var preserved = unresolved
+                if preserved.deliveryState == .sending || preserved.deliveryState == .accepted {
+                    preserved.deliveryState = .uncertain("连接恢复后仍在确认是否送达。")
+                }
+                loadedMessages.append(preserved)
+            }
+            for deliveredId in unresolvedMessages.map(\.id).filter({ loadedIds.contains($0) }) {
+                outboundDrafts.removeValue(forKey: deliveredId)
+                acceptedMessageIds.remove(deliveredId)
+            }
             messages = loadedMessages
             turnMetadata = loadedMetadata
             let status = result["thread"]?["status"]?["type"]?.stringValue ?? "idle"
@@ -492,13 +513,24 @@ final class RelayStore: ObservableObject {
 
     private func startTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
         let clientMessageId = UUID().uuidString
+        outboundDrafts[clientMessageId] = OutboundDraft(
+            threadId: threadId,
+            text: text,
+            attachments: readyAttachments
+        )
         activePlan = []
         sendingThreadIds.insert(threadId)
         isRunning = true
         setThreadStatus(threadId, status: "active")
         let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
-        messages.append(TranscriptItem(id: clientMessageId, role: .user, kind: .message, text: displayText))
+        messages.append(TranscriptItem(
+            id: clientMessageId,
+            role: .user,
+            kind: .message,
+            text: displayText,
+            deliveryState: .sending
+        ))
         defer { sendingThreadIds.remove(threadId) }
         do {
             var params: [String: JSONValue] = [
@@ -510,34 +542,62 @@ final class RelayStore: ObservableObject {
             ]
             if let model = selectedModel?.model { params["model"] = .string(model) }
             if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
-            let result = try await socket.rpc(method: "turn/start", params: params)
+            let result = try await socket.rpc(
+                method: "turn/start",
+                params: params,
+                timeoutSeconds: 120,
+                reconnectOnTimeout: false,
+                onAccepted: { [weak self] in
+                    self?.markMessageAccepted(clientMessageId, threadId: threadId)
+                }
+            )
             let confirmedTurnId = result["turn"]?["id"]?.stringValue
             if let confirmedTurnId {
-                activeTurnIdsByThread[threadId] = confirmedTurnId
-                if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
+                let existingMetadata = turnMetadata[confirmedTurnId]
+                let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
+                    || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
+                if !alreadyCompleted {
+                    activeTurnIdsByThread[threadId] = confirmedTurnId
+                    if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
+                }
                 if selectedThreadId == threadId,
                    let index = messages.firstIndex(where: { $0.id == clientMessageId }) {
                     messages[index].turnId = confirmedTurnId
+                    messages[index].deliveryState = nil
                 }
-                if selectedThreadId == threadId {
+                if selectedThreadId == threadId, !alreadyCompleted {
                     turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
-                } else {
+                } else if selectedThreadId != threadId, !alreadyCompleted {
                     updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: confirmedTurnId)
                 }
             }
+            updateDeliveryState(
+                clientMessageId,
+                state: nil,
+                threadId: threadId,
+                turnId: confirmedTurnId
+            )
+            acceptedMessageIds.remove(clientMessageId)
+            outboundDrafts.removeValue(forKey: clientMessageId)
         } catch {
-            if selectedThreadId == threadId {
-                messages.removeAll { $0.id == clientMessageId }
-                if composerText.isEmpty { composerText = text }
-                if attachments.isEmpty { attachments = readyAttachments }
-            }
-            if socket.state == .connected {
+            let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
+            let uncertain = wasAccepted || isUncertainDeliveryError(error)
+            updateDeliveryState(
+                clientMessageId,
+                state: uncertain
+                    ? .uncertain("Bridge 可能已接收，正在等待历史确认。")
+                    : .failed(error.localizedDescription),
+                threadId: threadId
+            )
+            if !uncertain || !wasAccepted {
                 activeTurnIdsByThread.removeValue(forKey: threadId)
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
                 if selectedThreadId == threadId { isRunning = false }
             }
-            errorMessage = "消息未被确认：\(error.localizedDescription) 内容已恢复到输入框。"
+            errorMessage = uncertain
+                ? "消息已保留在对话中，Relay 将在重连后确认是否送达。"
+                : "消息发送失败，内容已保留；可在消息下方恢复并重试。"
         }
     }
 
@@ -547,6 +607,11 @@ final class RelayStore: ObservableObject {
             return
         }
         let clientMessageId = UUID().uuidString
+        outboundDrafts[clientMessageId] = OutboundDraft(
+            threadId: threadId,
+            text: text,
+            attachments: readyAttachments
+        )
         let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
         composerText = ""
@@ -557,27 +622,131 @@ final class RelayStore: ObservableObject {
             turnId: expectedTurnId,
             role: .user,
             kind: .message,
-            text: displayText
+            text: displayText,
+            deliveryState: .sending
         ))
         defer { sendingThreadIds.remove(threadId) }
         do {
-            let result = try await socket.rpc(method: "turn/steer", params: [
-                "threadId": .string(threadId),
-                "expectedTurnId": .string(expectedTurnId),
-                "clientUserMessageId": .string(clientMessageId),
-                "input": .array(userInput(text: text, attachments: readyAttachments))
-            ])
+            let result = try await socket.rpc(
+                method: "turn/steer",
+                params: [
+                    "threadId": .string(threadId),
+                    "expectedTurnId": .string(expectedTurnId),
+                    "clientUserMessageId": .string(clientMessageId),
+                    "input": .array(userInput(text: text, attachments: readyAttachments))
+                ],
+                timeoutSeconds: 120,
+                reconnectOnTimeout: false,
+                onAccepted: { [weak self] in
+                    self?.markMessageAccepted(clientMessageId, threadId: threadId)
+                }
+            )
             let confirmedTurnId = result["turnId"]?.stringValue ?? expectedTurnId
-            activeTurnIdsByThread[threadId] = confirmedTurnId
-            if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
-            setThreadStatus(threadId, status: "active")
-        } catch {
-            if selectedThreadId == threadId {
-                messages.removeAll { $0.id == clientMessageId }
-                if composerText.isEmpty { composerText = text }
-                if attachments.isEmpty { attachments = readyAttachments }
+            let existingMetadata = turnMetadata[confirmedTurnId]
+            let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
+                || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
+            if !alreadyCompleted {
+                activeTurnIdsByThread[threadId] = confirmedTurnId
+                if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
+                setThreadStatus(threadId, status: "active")
             }
-            errorMessage = "引导未送达：\(error.localizedDescription) 内容已恢复到输入框。"
+            updateDeliveryState(
+                clientMessageId,
+                state: nil,
+                threadId: threadId,
+                turnId: confirmedTurnId
+            )
+            acceptedMessageIds.remove(clientMessageId)
+            outboundDrafts.removeValue(forKey: clientMessageId)
+        } catch {
+            let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
+            let uncertain = wasAccepted || isUncertainDeliveryError(error)
+            updateDeliveryState(
+                clientMessageId,
+                state: uncertain
+                    ? .uncertain("引导可能已接收，正在等待历史确认。")
+                    : .failed(error.localizedDescription),
+                threadId: threadId
+            )
+            errorMessage = uncertain
+                ? "引导已保留在实际位置，Relay 将在重连后确认是否送达。"
+                : "引导发送失败，内容已保留；可在消息下方恢复并重试。"
+        }
+    }
+
+    func restoreMessageToComposer(_ id: String) {
+        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
+        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
+            errorMessage = "请先发送或清空当前输入框，再恢复这条消息。"
+            return
+        }
+        composerText = draft.text
+        attachments = draft.attachments
+        messages.removeAll { $0.id == id }
+        outboundDrafts.removeValue(forKey: id)
+        acceptedMessageIds.remove(id)
+    }
+
+    func confirmMessageDelivery(_ id: String) async {
+        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
+        await selectThread(draft.threadId, closeSidebar: false, showErrors: false)
+        if messages.contains(where: { $0.id == id && $0.deliveryState == nil }) {
+            outboundDrafts.removeValue(forKey: id)
+            acceptedMessageIds.remove(id)
+        } else {
+            updateDeliveryState(
+                id,
+                state: .failed("Windows 对话历史中暂未找到这条消息。"),
+                threadId: draft.threadId
+            )
+        }
+    }
+
+    private func markMessageAccepted(_ id: String, threadId: String) {
+        acceptedMessageIds.insert(id)
+        sendingThreadIds.remove(threadId)
+        updateDeliveryState(id, state: .accepted, threadId: threadId)
+    }
+
+    private func updateDeliveryState(
+        _ id: String,
+        state: MessageDeliveryState?,
+        threadId: String? = nil,
+        turnId: String? = nil
+    ) {
+        let targetThreadId = threadId ?? selectedThreadId
+        if targetThreadId == selectedThreadId,
+           let index = messages.firstIndex(where: { $0.id == id }) {
+            messages[index].deliveryState = state
+            if let turnId { messages[index].turnId = turnId }
+        }
+        guard let targetThreadId,
+              targetThreadId != selectedThreadId,
+              let snapshot = threadSnapshots[targetThreadId],
+              let index = snapshot.messages.firstIndex(where: { $0.id == id }) else { return }
+        var cachedMessages = snapshot.messages
+        cachedMessages[index].deliveryState = state
+        if let turnId { cachedMessages[index].turnId = turnId }
+        threadSnapshots[targetThreadId] = ThreadSnapshot(
+            messages: cachedMessages,
+            turnMetadata: snapshot.turnMetadata,
+            isRunning: snapshot.isRunning,
+            activeTurnId: snapshot.activeTurnId,
+            activePlan: snapshot.activePlan,
+            modelId: snapshot.modelId,
+            effort: snapshot.effort,
+            cachedAt: Date()
+        )
+    }
+
+    private func isUncertainDeliveryError(_ error: Error) -> Bool {
+        guard let socketError = error as? RelaySocket.SocketError else { return socket.state != .connected }
+        switch socketError {
+        case .disconnected: return true
+        case .invalidEndpoint: return false
+        case .remote(let message):
+            let normalized = message.lowercased()
+            return normalized.contains("timed out") || normalized.contains("没有完成请求") || socket.state != .connected
         }
     }
 
@@ -788,11 +957,13 @@ final class RelayStore: ObservableObject {
         case "turn/started":
             activePlan = []
             let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))
+            if let turnId = params["turn"]?["id"]?.stringValue { completedTurnIds.remove(turnId) }
             markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
         case "turn/completed":
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
             if let turnId {
+                completedTurnIds.insert(turnId)
                 var metadata = TurnMetadata(json: turn)
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 turnMetadata[turnId] = metadata
@@ -865,10 +1036,12 @@ final class RelayStore: ObservableObject {
              "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
              "item/reasoning/textDelta", "item/commandExecution/outputDelta", "turn/plan/updated":
             let wasRunning = isThreadRunning(threadId)
+            if method == "turn/started", let turnId { completedTurnIds.remove(turnId) }
             if let turnId { activeTurnIdsByThread[threadId] = turnId }
             if !wasRunning { setThreadStatus(threadId, status: "active") }
             updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: turnId)
         case "turn/completed":
+            if let turnId { completedTurnIds.insert(turnId) }
             let completesKnownTurn = activeTurnIdsByThread[threadId] == nil
                 || turnId == nil
                 || activeTurnIdsByThread[threadId] == turnId
@@ -1065,4 +1238,10 @@ private struct ThreadSnapshot {
     let modelId: String
     let effort: String
     let cachedAt: Date
+}
+
+private struct OutboundDraft {
+    let threadId: String
+    let text: String
+    let attachments: [PendingAttachment]
 }

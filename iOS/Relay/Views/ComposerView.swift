@@ -5,7 +5,6 @@ import PhotosUI
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
     @FocusState private var focused: Bool
-    @State private var showingAttachmentOptions = false
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
     @State private var isImportingAttachments = false
@@ -57,9 +56,19 @@ struct ComposerView: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    Button {
-                        focused = false
-                        showingAttachmentOptions = true
+                    Menu {
+                        Button {
+                            focused = false
+                            showingPhotoPicker = true
+                        } label: {
+                            Label("照片图库", systemImage: "photo.on.rectangle")
+                        }
+                        Button {
+                            focused = false
+                            showingFileImporter = true
+                        } label: {
+                            Label("文件", systemImage: "folder")
+                        }
                     } label: {
                         Group {
                             if isImportingAttachments {
@@ -169,19 +178,6 @@ struct ComposerView: View {
                     .fontWeight(.semibold)
             }
         }
-        .confirmationDialog("添加附件", isPresented: $showingAttachmentOptions, titleVisibility: .visible) {
-            Button {
-                presentPhotoPicker()
-            } label: {
-                Label("照片图库", systemImage: "photo.on.rectangle")
-            }
-            Button {
-                presentFileImporter()
-            } label: {
-                Label("文件", systemImage: "folder")
-            }
-            Button("取消", role: .cancel) {}
-        }
         .photosPicker(
             isPresented: $showingPhotoPicker,
             selection: $selectedPhotos,
@@ -206,18 +202,6 @@ struct ComposerView: View {
             guard !photos.isEmpty else { return }
             isImportingAttachments = true
             Task { await importSelectedPhotos(photos) }
-        }
-    }
-
-    private func presentPhotoPicker() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            showingPhotoPicker = true
-        }
-    }
-
-    private func presentFileImporter() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            showingFileImporter = true
         }
     }
 
