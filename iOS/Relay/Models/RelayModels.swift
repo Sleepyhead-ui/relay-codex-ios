@@ -130,13 +130,13 @@ struct ThreadSummary: Identifiable, Equatable, Codable {
             ?? preview.nonEmpty
             ?? "New task"
         cwd = json["cwd"]?.stringValue ?? ""
-        let updatedSeconds = json["updatedAt"]?.doubleValue
-            ?? json["updated_at"]?.doubleValue
-            ?? json["recencyAt"]?.doubleValue
-            ?? json["recency_at"]?.doubleValue
-            ?? json["createdAt"]?.doubleValue
-            ?? json["created_at"]?.doubleValue
-            ?? 0
+        var updatedSeconds = 0.0
+        for key in ["updatedAt", "updated_at", "recencyAt", "recency_at", "createdAt", "created_at"] {
+            if let value = json[key]?.doubleValue {
+                updatedSeconds = value
+                break
+            }
+        }
         updatedAt = Date(timeIntervalSince1970: updatedSeconds)
         status = json["status"]?["type"]?.stringValue
             ?? json["status"]?.stringValue
