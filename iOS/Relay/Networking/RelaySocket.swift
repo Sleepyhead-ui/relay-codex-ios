@@ -230,6 +230,7 @@ final class RelaySocket: ObservableObject {
         request.timeoutInterval = 12
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let socketTask = socketSession.webSocketTask(with: request)
+        socketTask.maximumMessageSize = 32 * 1024 * 1024
         session = socketSession
         task = socketTask
         socketTask.resume()
