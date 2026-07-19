@@ -118,17 +118,29 @@ struct ThreadSummary: Identifiable, Equatable, Codable {
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
-        return normalized == "active" || normalized == "running" || normalized == "inprogress"
+        return ["active", "running", "inprogress", "started", "pending", "queued", "processing"].contains(normalized)
     }
 
     init?(json: JSONValue) {
         guard let id = json["id"]?.stringValue else { return nil }
         self.id = id
         preview = json["preview"]?.stringValue ?? ""
-        title = json["name"]?.stringValue?.nonEmpty ?? preview.nonEmpty ?? "New task"
+        title = json["name"]?.stringValue?.nonEmpty
+            ?? json["title"]?.stringValue?.nonEmpty
+            ?? preview.nonEmpty
+            ?? "New task"
         cwd = json["cwd"]?.stringValue ?? ""
-        updatedAt = Date(timeIntervalSince1970: json["updatedAt"]?.doubleValue ?? 0)
-        status = json["status"]?["type"]?.stringValue ?? "idle"
+        let updatedSeconds = json["updatedAt"]?.doubleValue
+            ?? json["updated_at"]?.doubleValue
+            ?? json["recencyAt"]?.doubleValue
+            ?? json["recency_at"]?.doubleValue
+            ?? json["createdAt"]?.doubleValue
+            ?? json["created_at"]?.doubleValue
+            ?? 0
+        updatedAt = Date(timeIntervalSince1970: updatedSeconds)
+        status = json["status"]?["type"]?.stringValue
+            ?? json["status"]?.stringValue
+            ?? "idle"
     }
 }
 
@@ -233,7 +245,7 @@ struct TurnMetadata: Equatable {
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
-        return normalized == "inprogress" || normalized == "active" || normalized == "running"
+        return ["inprogress", "active", "running", "started", "pending", "queued", "processing"].contains(normalized)
     }
 }
 

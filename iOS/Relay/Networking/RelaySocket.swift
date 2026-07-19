@@ -99,6 +99,7 @@ final class RelaySocket: ObservableObject {
     ) async throws -> JSONValue {
         guard state == .connected, task != nil else { throw SocketError.disconnected }
         let id = UUID().uuidString
+        let requestGeneration = connectionGeneration
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
             if let onAccepted { pendingAccepted[id] = onAccepted }
@@ -134,6 +135,7 @@ final class RelaySocket: ObservableObject {
                     pendingTimeouts.removeValue(forKey: id)?.cancel()
                     pendingAccepted.removeValue(forKey: id)
                     pending.removeValue(forKey: id)?.resume(throwing: error)
+                    self.handleConnectionFailure(error, generation: requestGeneration)
                 }
             }
         }

@@ -52,6 +52,7 @@ final class RelayStore: ObservableObject {
     private var acceptedMessageIds = Set<String>()
     private var outboundDrafts: [String: OutboundDraft] = [:]
     private var completedTurnIds = Set<String>()
+    private var restorationTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -136,7 +137,7 @@ final class RelayStore: ObservableObject {
         }
 
         socket.onConnected = { [weak self] in
-            Task { await self?.handleConnectionRestored() }
+            self?.scheduleRestoration()
         }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onServerRequest = { [weak self] message in self?.pendingApproval = ApprovalRequest(message: message) }
@@ -158,13 +159,15 @@ final class RelayStore: ObservableObject {
 
     func applicationBecameActive() {
         if socket.state == .connected {
-            Task { await refreshThreads(showErrors: false) }
+            scheduleRestoration()
         } else {
             socket.reconnectIfNeeded()
         }
     }
 
     func forgetHost() {
+        restorationTask?.cancel()
+        restorationTask = nil
         disconnect()
         KeychainStore.deleteToken()
         UserDefaults.standard.removeObject(forKey: hostDefaultsKey)
@@ -400,9 +403,15 @@ final class RelayStore: ObservableObject {
             }
             messages = loadedMessages
             turnMetadata = loadedMetadata
-            let status = result["thread"]?["status"]?["type"]?.stringValue ?? "idle"
+            let status = result["thread"]?["status"]?["type"]?.stringValue
+                ?? result["thread"]?["status"]?.stringValue
+                ?? "idle"
+            let threadIsActive = isActiveStatus(status)
             activeTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
-            isRunning = isActiveStatus(status) || activeTurnId != nil
+            if activeTurnId == nil, threadIsActive {
+                activeTurnId = turns.last?["id"]?.stringValue
+            }
+            isRunning = threadIsActive || activeTurnId != nil
             if let runtime = try? await socket.rpc(
                 method: "relay/thread/runtime",
                 params: ["threadId": .string(id)]
@@ -411,7 +420,15 @@ final class RelayStore: ObservableObject {
                 reconcileRuntimeState(runtime)
             }
             if isRunning {
-                if let activeTurnId { activeTurnIdsByThread[id] = activeTurnId }
+                if let activeTurnId {
+                    activeTurnIdsByThread[id] = activeTurnId
+                    var activeMetadata = turnMetadata[activeTurnId] ?? TurnMetadata()
+                    activeMetadata.status = "inProgress"
+                    activeMetadata.completedAt = nil
+                    activeMetadata.durationMs = nil
+                    if activeMetadata.startedAt == nil { activeMetadata.startedAt = Date() }
+                    turnMetadata[activeTurnId] = activeMetadata
+                }
                 setThreadStatus(id, status: "active", touchUpdatedAt: false)
             } else {
                 activeTurnIdsByThread.removeValue(forKey: id)
@@ -1168,16 +1185,23 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleConnectionRestored() async {
+        await refreshThreads(showErrors: false)
+        if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         if let selectedThreadId {
             await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
-            if modelOptions.isEmpty { await refreshModels(showErrors: false) }
-            await refreshThreads(showErrors: false)
         } else {
-            if modelOptions.isEmpty { await refreshModels(showErrors: false) }
-            await refreshThreads(showErrors: false)
             if let targetThreadId = threads.first?.id {
                 await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
             }
+        }
+    }
+
+    private func scheduleRestoration() {
+        guard restorationTask == nil else { return }
+        restorationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.handleConnectionRestored()
+            self.restorationTask = nil
         }
     }
 
@@ -1220,11 +1244,11 @@ final class RelayStore: ObservableObject {
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
             .lowercased() ?? ""
-        return ["active", "inprogress", "running"].contains(normalized)
+        return ["active", "inprogress", "running", "started", "pending", "queued", "processing"].contains(normalized)
     }
 
     private func report(_ error: Error, show shouldShow: Bool = true) {
-        guard shouldShow, socket.state == .connected else { return }
+        guard shouldShow else { return }
         errorMessage = error.localizedDescription
     }
 }
