@@ -275,7 +275,10 @@ final class RelaySocket: ObservableObject {
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 12
-        configuration.timeoutIntervalForResource = 20
+        // A WebSocket is a long-lived resource. The previous 20-second
+        // resource timeout closed healthy Tailscale connections shortly
+        // after they became ready, leaving accepted prompts uncertain.
+        configuration.timeoutIntervalForResource = 24 * 60 * 60
         configuration.waitsForConnectivity = false
         let socketSession = URLSession(configuration: configuration)
         var request = URLRequest(url: url)
