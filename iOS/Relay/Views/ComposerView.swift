@@ -30,9 +30,11 @@ struct ComposerView: View {
 
             if store.socket.state != .connected {
                 if store.socket.state.isConnecting {
-                    Label("Reconnecting to Windows", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    if store.messages.isEmpty {
+                        Label("Reconnecting to Windows", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Button { store.showingConnection = true } label: {
                         Label("Connect to Windows", systemImage: "bolt.horizontal.circle")

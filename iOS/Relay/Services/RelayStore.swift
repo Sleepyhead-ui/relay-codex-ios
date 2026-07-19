@@ -34,6 +34,7 @@ final class RelayStore: ObservableObject {
     private let accessDefaultsKey = "relay.workspaceAccess"
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
+    private var threadSnapshots: [String: ThreadSnapshot] = [:]
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -121,6 +122,7 @@ final class RelayStore: ObservableObject {
         messages = []
         turnMetadata = [:]
         tokenUsageByThread = [:]
+        threadSnapshots = [:]
         showingSettings = false
         showingConnection = true
     }
@@ -191,9 +193,12 @@ final class RelayStore: ObservableObject {
             guard let id = result["thread"]?["id"]?.stringValue else {
                 throw RelaySocket.SocketError.remote("Codex did not return a thread id.")
             }
+            cacheCurrentThread()
             selectedThreadId = id
             messages = []
             turnMetadata = [:]
+            isRunning = false
+            activeTurnId = nil
             sidebarOpen = false
             if let model = result["model"]?.stringValue { selectedModelId = model }
             await applyThreadSettings(showErrors: false)
@@ -206,10 +211,19 @@ final class RelayStore: ObservableObject {
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
+        let switchingThreads = selectedThreadId != id
+        if switchingThreads { cacheCurrentThread() }
         selectedThreadId = id
-        activePlan = []
+        let restoredFromCache = switchingThreads && restoreThreadSnapshot(id)
+        if switchingThreads && !restoredFromCache {
+            messages = []
+            turnMetadata = [:]
+            isRunning = false
+            activeTurnId = nil
+            activePlan = []
+        }
         if closeSidebar { sidebarOpen = false }
-        isLoadingThread = true
+        isLoadingThread = switchingThreads && !restoredFromCache
         defer {
             if threadLoadGeneration == loadGeneration { isLoadingThread = false }
         }
@@ -236,6 +250,7 @@ final class RelayStore: ObservableObject {
             if let effort = result["reasoningEffort"]?.stringValue { selectedEffort = effort }
             normalizeEffortForSelectedModel()
             persistGenerationSettings()
+            cacheCurrentThread()
         } catch {
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             report(error, show: showErrors)
@@ -544,11 +559,45 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleConnectionRestored() async {
-        await refreshModels(showErrors: false)
+        if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         await refreshThreads(showErrors: false)
         if let selectedThreadId {
             await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
         }
+    }
+
+    private func cacheCurrentThread() {
+        guard let selectedThreadId else { return }
+        threadSnapshots[selectedThreadId] = ThreadSnapshot(
+            messages: messages,
+            turnMetadata: turnMetadata,
+            isRunning: isRunning,
+            activeTurnId: activeTurnId,
+            activePlan: activePlan,
+            modelId: selectedModelId,
+            effort: selectedEffort,
+            cachedAt: Date()
+        )
+
+        if threadSnapshots.count > 8,
+           let oldest = threadSnapshots
+            .filter({ $0.key != selectedThreadId })
+            .min(by: { $0.value.cachedAt < $1.value.cachedAt })?.key {
+            threadSnapshots.removeValue(forKey: oldest)
+        }
+    }
+
+    @discardableResult
+    private func restoreThreadSnapshot(_ threadId: String) -> Bool {
+        guard let snapshot = threadSnapshots[threadId] else { return false }
+        messages = snapshot.messages
+        turnMetadata = snapshot.turnMetadata
+        isRunning = snapshot.isRunning
+        activeTurnId = snapshot.activeTurnId
+        activePlan = snapshot.activePlan
+        selectedModelId = snapshot.modelId
+        selectedEffort = snapshot.effort
+        return true
     }
 
     private func isActiveStatus(_ status: String?) -> Bool {
@@ -563,4 +612,15 @@ final class RelayStore: ObservableObject {
         guard shouldShow, socket.state == .connected else { return }
         errorMessage = error.localizedDescription
     }
+}
+
+private struct ThreadSnapshot {
+    let messages: [TranscriptItem]
+    let turnMetadata: [String: TurnMetadata]
+    let isRunning: Bool
+    let activeTurnId: String?
+    let activePlan: [ExecutionPlanStep]
+    let modelId: String
+    let effort: String
+    let cachedAt: Date
 }
