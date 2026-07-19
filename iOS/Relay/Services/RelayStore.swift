@@ -182,8 +182,7 @@ final class RelayStore: ObservableObject {
             let result = try await socket.rpc(method: "thread/list", params: [
                 "limit": .number(50),
                 "sortKey": .string("updated_at"),
-                "sortDirection": .string("desc"),
-                "useStateDbOnly": .bool(true)
+                "sortDirection": .string("desc")
             ])
             threads = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
         } catch {

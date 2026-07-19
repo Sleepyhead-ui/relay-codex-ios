@@ -138,9 +138,11 @@ struct ComposerView: View {
         .frame(maxWidth: RelayTheme.contentWidth)
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 2)
+        .padding(.bottom, 0)
+        .offset(y: focused ? 0 : 12)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.activePlan)
+        .animation(.easeOut(duration: 0.18), value: focused)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
