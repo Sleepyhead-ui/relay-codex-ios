@@ -610,6 +610,13 @@ final class RelayStore: ObservableObject {
                    let index = messages.firstIndex(where: { $0.id == clientMessageId }) {
                     messages[index].turnId = confirmedTurnId
                     messages[index].deliveryState = nil
+                    // A fast Codex event can arrive before turn/start returns.
+                    // Once the turn id is known, keep the user prompt at the
+                    // start of that turn instead of letting it jump below the
+                    // already-streamed assistant activity.
+                    let prompt = messages.remove(at: index)
+                    let insertion = messages.firstIndex(where: { $0.turnId == confirmedTurnId }) ?? messages.endIndex
+                    messages.insert(prompt, at: insertion)
                 }
                 if selectedThreadId == threadId, !alreadyCompleted {
                     turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
@@ -1188,12 +1195,28 @@ final class RelayStore: ObservableObject {
 
     private func upsert(_ item: TranscriptItem) {
         if let index = messages.firstIndex(where: { $0.id == item.id }) {
-            var replacement = item
-            if replacement.turnId == nil { replacement.turnId = messages[index].turnId }
-            messages[index] = replacement
+            messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
         } else if item.role != .user || !messages.contains(where: { $0.role == .user && $0.text == item.text }) {
             messages.append(item)
         }
+    }
+
+    private func mergeTranscriptItem(existing: TranscriptItem, incoming: TranscriptItem) -> TranscriptItem {
+        var merged = incoming
+        if merged.turnId == nil { merged.turnId = existing.turnId }
+        if merged.title == nil { merged.title = existing.title }
+        if merged.phase == nil { merged.phase = existing.phase }
+        if merged.status == nil { merged.status = existing.status }
+        if merged.text.isEmpty { merged.text = existing.text }
+        if merged.detail?.isEmpty != false, let detail = existing.detail, !detail.isEmpty {
+            merged.detail = detail
+        }
+        if merged.durationMs == nil { merged.durationMs = existing.durationMs }
+        if merged.exitCode == nil { merged.exitCode = existing.exitCode }
+        if merged.cwd == nil { merged.cwd = existing.cwd }
+        if merged.errorMessage == nil { merged.errorMessage = existing.errorMessage }
+        if merged.deliveryState == nil { merged.deliveryState = existing.deliveryState }
+        return merged
     }
 
     private func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
@@ -1322,8 +1345,12 @@ final class RelayStore: ObservableObject {
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
         let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
         let existing = messages.filter { $0.turnId == turnId }
+        let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
         let snapshotIds = Set(snapshotItems.map(\.id))
-        var merged = snapshotItems
+        var merged = snapshotItems.map { item in
+            guard let previous = existingById[item.id] else { return item }
+            return mergeTranscriptItem(existing: previous, incoming: item)
+        }
         merged.append(contentsOf: existing.filter { !snapshotIds.contains($0.id) })
         guard merged != existing else { return }
         messages.removeAll { $0.turnId == turnId }
