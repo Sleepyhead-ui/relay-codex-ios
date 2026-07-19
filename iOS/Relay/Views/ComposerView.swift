@@ -588,7 +588,7 @@ private struct ExecutionPlanPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "list.bullet.clipboard")
@@ -612,29 +612,32 @@ private struct ExecutionPlanPanel: View {
             .buttonStyle(.plain)
 
             if expanded {
-                Divider().opacity(0.45)
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(visibleSteps) { step in
-                        HStack(alignment: .top, spacing: 7) {
-                            planStatus(step)
-                                .frame(width: 14, height: 16)
-                            Text(step.text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(step.isCompleted ? Color.secondary : Color.primary)
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider().opacity(0.45)
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(visibleSteps) { step in
+                            HStack(alignment: .top, spacing: 7) {
+                                planStatus(step)
+                                    .frame(width: 14, height: 16)
+                                Text(step.text)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(step.isCompleted ? Color.secondary : Color.primary)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        if hiddenStepCount > 0 {
+                            Text("还有 \(hiddenStepCount) 项")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 21)
                         }
                     }
-                    if hiddenStepCount > 0 {
-                        Text("还有 \(hiddenStepCount) 项")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 21)
-                    }
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
         }
         .background(RelayTheme.elevated)

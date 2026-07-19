@@ -110,7 +110,7 @@ private struct RunActivityView: View {
         VStack(alignment: .leading, spacing: 5) {
             Button {
                 guard !activitySections.isEmpty else { return }
-                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack(alignment: .top, spacing: 7) {
                     Group {
@@ -171,13 +171,14 @@ private struct RunActivityView: View {
                         }
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.16), value: latestReasoningText)
         .onChange(of: metadata.isRunning) { running in
             if !running {
-                withAnimation(.easeOut(duration: 0.2)) { expanded = false }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded = false }
             }
         }
     }
@@ -290,7 +291,7 @@ private struct ExecutionGroupView: View {
     private var groupedBody: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
-                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "terminal")
@@ -322,7 +323,8 @@ private struct ExecutionGroupView: View {
                     }
                 }
                 .padding(.leading, 18)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
         }
     }
@@ -362,7 +364,7 @@ private struct CompactCommandRow: View {
         VStack(alignment: .leading, spacing: 3) {
             Button {
                 guard hasDetails else { return }
-                withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "terminal")
@@ -395,21 +397,25 @@ private struct CompactCommandRow: View {
             .buttonStyle(.plain)
 
             if expanded {
-                if let error = item.errorMessage?.nonEmpty {
-                    Text(error)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    if let error = item.errorMessage?.nonEmpty {
+                        Text(error)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let cwd = item.cwd?.nonEmpty {
+                        Text(cwd)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    if let detail = item.detail?.nonEmpty {
+                        CompactTechnicalDetail(detail: detail)
+                    }
                 }
-                if let cwd = item.cwd?.nonEmpty {
-                    Text(cwd)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-                if let detail = item.detail?.nonEmpty {
-                    CompactTechnicalDetail(detail: detail)
-                }
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
         }
     }
@@ -454,7 +460,7 @@ private struct ToolEventRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 guard hasExpandableContent else { return }
-                withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon)
@@ -557,7 +563,8 @@ private struct ToolEventRow: View {
                 }
                 .padding(.leading, 29)
                 .padding(.bottom, 10)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
         }
     }
