@@ -320,7 +320,7 @@ struct TranscriptItem: Identifiable, Equatable {
         case "userMessage":
             let text = json["content"]?.arrayValue?
                 .compactMap { content -> String? in
-                    if let text = content["text"]?.stringValue { return text }
+                    if let text = content["text"]?.stringValue { return cleanDesktopUserText(text) }
                     if content["type"]?.stringValue == "mention" {
                         return "📎 \(content["name"]?.stringValue ?? content["path"]?.stringValue?.lastPathComponentForDisplay ?? "文件")"
                     }
@@ -416,6 +416,15 @@ struct TranscriptItem: Identifiable, Equatable {
         case "run": return "运行命令"
         default: return "运行命令"
         }
+    }
+
+    private static func cleanDesktopUserText(_ text: String) -> String {
+        let pattern = #"(?im)^\s*#{0,6}\s*My request for Codex:\s*$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let markerRange = Range(match.range, in: text) else { return text }
+        return String(text[markerRange.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func commandFailureSummary(_ output: String?) -> String? {
