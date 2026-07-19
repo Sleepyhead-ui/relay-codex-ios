@@ -16,6 +16,8 @@ final class RelayStore: ObservableObject {
     @Published var pendingApproval: ApprovalRequest?
     @Published var errorMessage: String?
     @Published var isLoadingThread = false
+    @Published var isLoadingOlderTurns = false
+    @Published var hasOlderTurns = false
     @Published var modelOptions: [CodexModelOption] = []
     @Published var selectedModelId = ""
     @Published var selectedEffort = ""
@@ -45,6 +47,7 @@ final class RelayStore: ObservableObject {
     private var reconcilingThreadId: String?
     private var queuedEvents: [(method: String, params: JSONValue)] = []
     private var threadSnapshots: [String: ThreadSnapshot] = [:]
+    private var olderTurnsCursorByThread: [String: String] = [:]
     private var workingDirectoryOverrides: [String: String] = [:]
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
@@ -174,6 +177,8 @@ final class RelayStore: ObservableObject {
         sendingThreadIds = []
         queuedFollowUps = []
         threadSnapshots = [:]
+        olderTurnsCursorByThread = [:]
+        hasOlderTurns = false
         workingDirectoryOverrides = [:]
         showingSettings = false
         showingConnection = true
@@ -258,6 +263,7 @@ final class RelayStore: ObservableObject {
             }
             cacheCurrentThread()
             setSelectedThread(id)
+            hasOlderTurns = false
             if let summary = ThreadSummary(json: result["thread"] ?? .object([:])) {
                 threads.removeAll { $0.id == summary.id }
                 threads.insert(summary, at: 0)
@@ -315,6 +321,7 @@ final class RelayStore: ObservableObject {
         let switchingThreads = selectedThreadId != id
         if switchingThreads { cacheCurrentThread() }
         setSelectedThread(id)
+        hasOlderTurns = olderTurnsCursorByThread[id] != nil
         reconcilingThreadId = id
         queuedEvents = []
         let restoredFromCache = switchingThreads && restoreThreadSnapshot(id)
@@ -335,9 +342,32 @@ final class RelayStore: ObservableObject {
         }
 
         do {
-            let result = try await socket.rpc(method: "thread/resume", params: ["threadId": .string(id)])
+            let result = try await socket.rpc(
+                method: "thread/resume",
+                params: [
+                    "threadId": .string(id),
+                    "excludeTurns": .bool(true),
+                    "initialTurnsPage": .object([
+                        "limit": .number(8),
+                        "sortDirection": .string("desc"),
+                        "itemsView": .string("full")
+                    ])
+                ],
+                timeoutSeconds: 600,
+                reconnectOnTimeout: false
+            )
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
-            let turns = result["thread"]?["turns"]?.arrayValue ?? []
+            let pageTurns = result["initialTurnsPage"]?["data"]?.arrayValue ?? []
+            let turns = pageTurns.isEmpty
+                ? (result["thread"]?["turns"]?.arrayValue ?? [])
+                : Array(pageTurns.reversed())
+            if let nextCursor = result["initialTurnsPage"]?["nextCursor"]?.stringValue {
+                olderTurnsCursorByThread[id] = nextCursor
+                hasOlderTurns = true
+            } else {
+                olderTurnsCursorByThread.removeValue(forKey: id)
+                hasOlderTurns = false
+            }
             var loadedMessages: [TranscriptItem] = []
             var loadedMetadata: [String: TurnMetadata] = [:]
             for turn in turns {
@@ -377,6 +407,51 @@ final class RelayStore: ObservableObject {
         } catch {
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             report(error, show: showErrors)
+        }
+    }
+
+    func loadOlderTurns() async {
+        guard let threadId = selectedThreadId,
+              let cursor = olderTurnsCursorByThread[threadId],
+              !isLoadingOlderTurns,
+              socket.state == .connected else { return }
+        isLoadingOlderTurns = true
+        defer { isLoadingOlderTurns = false }
+        do {
+            let result = try await socket.rpc(
+                method: "thread/turns/list",
+                params: [
+                    "threadId": .string(threadId),
+                    "cursor": .string(cursor),
+                    "limit": .number(8),
+                    "sortDirection": .string("desc"),
+                    "itemsView": .string("full")
+                ],
+                timeoutSeconds: 600,
+                reconnectOnTimeout: false
+            )
+            guard selectedThreadId == threadId else { return }
+            let turns = Array((result["data"]?.arrayValue ?? []).reversed())
+            var olderMessages: [TranscriptItem] = []
+            for turn in turns {
+                guard let turnId = turn["id"]?.stringValue else { continue }
+                turnMetadata[turnId] = TurnMetadata(json: turn)
+                olderMessages.append(contentsOf: turn["items"]?.arrayValue?.compactMap {
+                    TranscriptItem.from(json: $0, turnId: turnId)
+                } ?? [])
+            }
+            let existingIds = Set(messages.map(\.id))
+            messages = olderMessages.filter { !existingIds.contains($0.id) } + messages
+            if let nextCursor = result["nextCursor"]?.stringValue {
+                olderTurnsCursorByThread[threadId] = nextCursor
+                hasOlderTurns = true
+            } else {
+                olderTurnsCursorByThread.removeValue(forKey: threadId)
+                hasOlderTurns = false
+            }
+            cacheCurrentThread()
+        } catch {
+            errorMessage = "加载更早对话失败：\(error.localizedDescription)"
         }
     }
 

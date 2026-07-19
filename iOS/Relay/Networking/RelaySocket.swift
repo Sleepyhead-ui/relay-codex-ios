@@ -89,23 +89,34 @@ final class RelaySocket: ObservableObject {
         state = .disconnected
     }
 
-    func rpc(method: String, params: [String: JSONValue] = [:]) async throws -> JSONValue {
+    func rpc(
+        method: String,
+        params: [String: JSONValue] = [:],
+        timeoutSeconds: UInt64 = 45,
+        reconnectOnTimeout: Bool = true
+    ) async throws -> JSONValue {
         guard state == .connected, task != nil else { throw SocketError.disconnected }
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
             pendingTimeouts[id] = Task { [weak self] in
                 do {
-                    try await Task.sleep(nanoseconds: 45_000_000_000)
+                    try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
                 } catch {
                     return
                 }
                 guard let self, !Task.isCancelled,
                       let continuation = self.pending.removeValue(forKey: id) else { return }
                 self.pendingTimeouts.removeValue(forKey: id)
-                let error = SocketError.remote("Windows 长时间没有确认请求，Relay 正在重新连接。")
+                let error = SocketError.remote(
+                    reconnectOnTimeout
+                        ? "Windows 长时间没有确认请求，Relay 正在重新连接。"
+                        : "Windows 长时间没有完成请求，但连接仍保持。"
+                )
                 continuation.resume(throwing: error)
-                self.handleConnectionFailure(error, generation: self.connectionGeneration)
+                if reconnectOnTimeout {
+                    self.handleConnectionFailure(error, generation: self.connectionGeneration)
+                }
             }
             Task {
                 do {

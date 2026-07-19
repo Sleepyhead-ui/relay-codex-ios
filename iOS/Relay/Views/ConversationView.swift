@@ -86,6 +86,28 @@ struct ConversationView: View {
                 ZStack(alignment: .bottom) {
                     ScrollView {
                         LazyVStack(spacing: 30) {
+                            if store.hasOlderTurns {
+                                Button {
+                                    Task { await store.loadOlderTurns() }
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        if store.isLoadingOlderTurns {
+                                            ProgressView().controlSize(.mini)
+                                        } else {
+                                            Image(systemName: "clock.arrow.circlepath")
+                                                .font(.system(size: 12, weight: .medium))
+                                        }
+                                        Text(store.isLoadingOlderTurns ? "正在加载更早对话" : "加载更早对话")
+                                            .font(.system(size: 12, weight: .semibold))
+                                    }
+                                    .foregroundStyle(.secondary)
+                                    .frame(height: 32)
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(store.isLoadingOlderTurns)
+                            }
+
                             ForEach(store.transcriptGroups) { group in
                                 TurnGroupView(group: group)
                                     .id(group.id)
