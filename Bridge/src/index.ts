@@ -28,7 +28,7 @@ const desktopSync = new DesktopSync(
   (message) => console.log(`[desktop] ${message}`),
   (status) => broadcast({ type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: status }),
 );
-const fileTransfer = new FileTransferManager(config.defaultCwd);
+const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
 
 const codex = new CodexAppServer(config.codexBin, {
   onResponse: handleCodexResponse,

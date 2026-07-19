@@ -11,6 +11,7 @@ export interface RelayConfig {
   advertiseUrl: string;
   codexBin: string;
   defaultCwd?: string;
+  filesRoot?: string;
   desktopSync: boolean;
   desktopCdpPort: number;
   desktopAppPath: string | undefined;
@@ -25,6 +26,7 @@ export async function loadConfig(): Promise<RelayConfig> {
   const bundledCodex = path.join(bridgeRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
   const codexBin = process.env.CODEX_BIN ?? bundledCodex;
   const defaultCwd = process.env.RELAY_DEFAULT_CWD?.trim();
+  const filesRoot = process.env.RELAY_FILES_ROOT?.trim();
   const desktopSync = parseBoolean(process.env.RELAY_DESKTOP_SYNC ?? "false");
   const desktopCdpPort = parsePort(process.env.RELAY_DESKTOP_CDP_PORT ?? "9223");
   const desktopAppPath = process.env.RELAY_DESKTOP_APP_PATH?.trim() || undefined;
@@ -39,6 +41,7 @@ export async function loadConfig(): Promise<RelayConfig> {
     desktopCdpPort,
     desktopAppPath,
     ...(defaultCwd ? { defaultCwd } : {}),
+    ...(filesRoot ? { filesRoot } : {}),
   };
 }
 

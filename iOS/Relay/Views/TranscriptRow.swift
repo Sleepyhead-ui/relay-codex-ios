@@ -112,14 +112,19 @@ private struct RunActivityView: View {
                 guard !activitySections.isEmpty else { return }
                 withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    if metadata.isRunning {
-                        ProgressView().controlSize(.mini).tint(.secondary)
-                    } else {
-                        Image(systemName: statusIcon)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(statusColor)
+                HStack(alignment: .top, spacing: 7) {
+                    Group {
+                        if metadata.isRunning {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(.secondary)
+                        } else {
+                            Image(systemName: statusIcon)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(statusColor)
+                        }
                     }
+                    .frame(width: 14, height: 16, alignment: .center)
 
                     if metadata.isRunning, let latestReasoningText {
                         CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
@@ -140,6 +145,7 @@ private struct RunActivityView: View {
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .frame(height: 16, alignment: .center)
                     }
                 }
                 .contentShape(Rectangle())

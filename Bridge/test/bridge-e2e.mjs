@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
@@ -6,6 +8,7 @@ import WebSocket from "ws";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const token = "relay-integration-test-token-00000000";
 const endpoint = "ws://127.0.0.1:8876";
+const filesRoot = await mkdtemp(path.join(tmpdir(), "relay-e2e-"));
 const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
   cwd: root,
   windowsHide: true,
@@ -15,6 +18,7 @@ const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
     RELAY_PORT: "8876",
     RELAY_ADVERTISE_URL: endpoint,
     RELAY_TOKEN: token,
+    RELAY_FILES_ROOT: filesRoot,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -45,6 +49,7 @@ try {
   throw error;
 } finally {
   bridge.kill();
+  await rm(filesRoot, { recursive: true, force: true });
 }
 
 async function waitForHealth() {

@@ -130,7 +130,7 @@ struct ComposerView: View {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(focused ? RelayTheme.accent.opacity(0.55) : RelayTheme.hairline, lineWidth: 1)
             }
-            .shadow(color: .black.opacity(0.06), radius: 10, y: 3)
+            .shadow(color: .black.opacity(0.16), radius: 16, y: 6)
             .animation(.easeOut(duration: 0.16), value: focused)
         }
         .frame(maxWidth: RelayTheme.contentWidth)
@@ -138,7 +138,6 @@ struct ComposerView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial)
         .animation(.easeOut(duration: 0.2), value: store.activePlan)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {

@@ -49,7 +49,7 @@ export class CodexAppServer {
       method: "initialize",
       id: "relay.initialize",
       params: {
-        clientInfo: { name: "relay_ios", title: "Relay", version: "0.5.3" },
+        clientInfo: { name: "relay_ios", title: "Relay", version: "0.5.4" },
         capabilities: { experimentalApi: false },
       },
     });
