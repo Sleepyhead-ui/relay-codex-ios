@@ -33,6 +33,7 @@ final class RelayStore: ObservableObject {
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published private(set) var activeTurnIdsByThread: [String: String] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
+    @Published private(set) var isPreparingPrompt = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -58,6 +59,7 @@ final class RelayStore: ObservableObject {
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
     var isSendingPrompt: Bool {
+        if isPreparingPrompt { return true }
         guard let selectedThreadId else { return false }
         return sendingThreadIds.contains(selectedThreadId)
     }
@@ -332,11 +334,15 @@ final class RelayStore: ObservableObject {
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
-        liveSessionSyncTask?.cancel()
-        liveSessionSyncTask = nil
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
+        // Keep the live snapshot poller alive when restoring the same active
+        // thread. Cancelling it here creates a gap in incremental output.
+        if switchingThreads {
+            liveSessionSyncTask?.cancel()
+            liveSessionSyncTask = nil
+        }
         if switchingThreads { cacheCurrentThread() }
         setSelectedThread(id)
         hasOlderTurns = olderTurnsCursorByThread[id] != nil
@@ -511,6 +517,18 @@ final class RelayStore: ObservableObject {
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             errorMessage = "尚未连接到 Windows，消息仍保留在输入框中。Relay 正在重新连接。"
+            return
+        }
+        guard !isPreparingPrompt else { return }
+        isPreparingPrompt = true
+        defer { isPreparingPrompt = false }
+        // A fresh socket starts thread restoration immediately. Waiting here
+        // prevents the first prompt from racing with thread/resume and being
+        // held back with the restoration event queue.
+        await waitForRestoration()
+        guard socket.state == .connected else {
+            socket.reconnectIfNeeded()
+            errorMessage = "Windows 连接已恢复，请稍后重试；输入内容仍保留在输入框中。"
             return
         }
         if selectedThreadId == nil { await newThread() }
@@ -1208,6 +1226,11 @@ final class RelayStore: ObservableObject {
                 await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
             }
         }
+    }
+
+    private func waitForRestoration() async {
+        guard let task = restorationTask else { return }
+        await task.value
     }
 
     private func scheduleRestoration() {
