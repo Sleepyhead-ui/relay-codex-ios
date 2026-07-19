@@ -190,6 +190,15 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
+    if (message.method === "relay/thread/session/snapshot") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      const result = await sessionActivity.turnSnapshot(message.params.threadId);
+      send(socket, { type: "rpcResult", id: message.id, result });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
     if (message.method.startsWith("relay/")) {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();

@@ -53,6 +53,7 @@ final class RelayStore: ObservableObject {
     private var outboundDrafts: [String: OutboundDraft] = [:]
     private var completedTurnIds = Set<String>()
     private var restorationTask: Task<Void, Never>?
+    private var liveSessionSyncTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -168,6 +169,8 @@ final class RelayStore: ObservableObject {
     func forgetHost() {
         restorationTask?.cancel()
         restorationTask = nil
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
         disconnect()
         KeychainStore.deleteToken()
         UserDefaults.standard.removeObject(forKey: hostDefaultsKey)
@@ -266,7 +269,11 @@ final class RelayStore: ObservableObject {
             ]
             if !projectDirectory.isEmpty { params["cwd"] = .string(projectDirectory) }
             if let model = selectedModel?.model { params["model"] = .string(model) }
-            let result = try await socket.rpc(method: "thread/start", params: params)
+            let result = try await socket.rpc(
+                method: "thread/start",
+                params: params,
+                onAccepted: { }
+            )
             guard let id = result["thread"]?["id"]?.stringValue else {
                 throw RelaySocket.SocketError.remote("Codex did not return a thread id.")
             }
@@ -325,6 +332,8 @@ final class RelayStore: ObservableObject {
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
@@ -362,7 +371,7 @@ final class RelayStore: ObservableObject {
                         "itemsView": .string("full")
                     ])
                 ],
-                timeoutSeconds: 600,
+                timeoutSeconds: 25,
                 reconnectOnTimeout: false
             )
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
@@ -439,7 +448,9 @@ final class RelayStore: ObservableObject {
             normalizeEffortForSelectedModel()
             persistGenerationSettings()
             cacheCurrentThread()
-            if !isRunning {
+            if isRunning {
+                ensureLiveSessionSync()
+            } else {
                 Task { [weak self] in await self?.sendNextQueuedFollowUpIfNeeded(threadId: id) }
             }
         } catch {
@@ -997,6 +1008,8 @@ final class RelayStore: ObservableObject {
                 isRunning = false
                 activeTurnId = nil
                 activePlan = []
+                liveSessionSyncTask?.cancel()
+                liveSessionSyncTask = nil
             }
             Task { await refreshThreads(showErrors: false) }
             scheduleCompletionReconciliation(threadId: selectedThreadId)
@@ -1092,6 +1105,7 @@ final class RelayStore: ObservableObject {
         metadata.durationMs = nil
         if metadata.startedAt == nil { metadata.startedAt = startedAt ?? Date() }
         turnMetadata[turnId] = metadata
+        ensureLiveSessionSync()
     }
 
     private func reconcileRuntimeState(_ runtime: JSONValue) {
@@ -1203,6 +1217,94 @@ final class RelayStore: ObservableObject {
             await self.handleConnectionRestored()
             self.restorationTask = nil
         }
+    }
+
+    private func ensureLiveSessionSync() {
+        guard liveSessionSyncTask == nil,
+              isRunning,
+              selectedThreadId != nil,
+              socket.state == .connected else { return }
+        liveSessionSyncTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self,
+                      let threadId = self.selectedThreadId,
+                      self.isRunning,
+                      self.socket.state == .connected else { break }
+                await self.syncSessionSnapshot(threadId: threadId)
+                do {
+                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                } catch {
+                    break
+                }
+            }
+            self?.liveSessionSyncTask = nil
+        }
+    }
+
+    private func syncSessionSnapshot(threadId: String) async {
+        do {
+            let result = try await socket.rpc(
+                method: "relay/thread/session/snapshot",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            guard selectedThreadId == threadId,
+                  result["known"]?.boolValue == true,
+                  let turnId = result["turnId"]?.stringValue else { return }
+
+            let snapshotItems = result["items"]?.arrayValue?.compactMap {
+                TranscriptItem.from(json: $0, turnId: turnId)
+            } ?? []
+            if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
+
+            var metadata = turnMetadata[turnId] ?? TurnMetadata()
+            if let startedAt = result["startedAt"]?.doubleValue {
+                metadata.startedAt = Date(timeIntervalSince1970: startedAt)
+            }
+            if result["isRunning"]?.boolValue == true {
+                metadata.status = "inProgress"
+                metadata.completedAt = nil
+                metadata.durationMs = nil
+                turnMetadata[turnId] = metadata
+                isRunning = true
+                activeTurnId = turnId
+                activeTurnIdsByThread[threadId] = turnId
+                setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
+            } else {
+                metadata.status = "completed"
+                if let completedAt = result["completedAt"]?.doubleValue {
+                    metadata.completedAt = Date(timeIntervalSince1970: completedAt)
+                } else if metadata.completedAt == nil {
+                    metadata.completedAt = Date()
+                }
+                turnMetadata[turnId] = metadata
+                if activeTurnId == nil || activeTurnId == turnId {
+                    completedTurnIds.insert(turnId)
+                    isRunning = false
+                    activeTurnId = nil
+                    activeTurnIdsByThread.removeValue(forKey: threadId)
+                    setThreadStatus(threadId, status: "idle")
+                    activePlan = []
+                    liveSessionSyncTask?.cancel()
+                    liveSessionSyncTask = nil
+                }
+            }
+            cacheCurrentThread()
+        } catch {
+            // Connection recovery owns transport errors; polling should not raise repeated alerts.
+        }
+    }
+
+    private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
+        let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
+        let existing = messages.filter { $0.turnId == turnId }
+        let snapshotIds = Set(snapshotItems.map(\.id))
+        var merged = snapshotItems
+        merged.append(contentsOf: existing.filter { !snapshotIds.contains($0.id) })
+        guard merged != existing else { return }
+        messages.removeAll { $0.turnId == turnId }
+        messages.insert(contentsOf: merged, at: min(firstIndex, messages.endIndex))
     }
 
     private func cacheCurrentThread() {

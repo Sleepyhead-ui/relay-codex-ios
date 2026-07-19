@@ -12,11 +12,23 @@ test("infers an active desktop turn from the rollout file after bridge restart",
   const threadId = "thread.desktop";
   const turnId = "turn.desktop";
   try {
-    await writeFile(sessionPath, `${JSON.stringify({
-      timestamp: "2026-07-19T16:16:26.622Z",
-      type: "event_msg",
-      payload: { type: "task_started", turn_id: turnId, started_at: 1784477786 },
-    })}\n`, "utf8");
+    await writeFile(sessionPath, [
+      {
+        timestamp: "2026-07-19T16:16:26.622Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turnId, started_at: 1784477786 },
+      },
+      {
+        timestamp: "2026-07-19T16:16:30.000Z",
+        type: "response_item",
+        payload: { type: "reasoning", id: "reasoning.1", summary: [{ type: "summary_text", text: "Inspecting state" }] },
+      },
+      {
+        timestamp: "2026-07-19T16:16:31.000Z",
+        type: "response_item",
+        payload: { type: "message", id: "message.1", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Still working" }] },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
 
     const sessions = new SessionActivityTracker();
     sessions.observeThreadList({ data: [{ id: threadId, path: sessionPath }] });
@@ -27,6 +39,9 @@ test("infers an active desktop turn from the rollout file after bridge restart",
     assert.equal(active.isRunning, true);
     assert.equal(active.activeTurnId, turnId);
     assert.equal(active.startedAt, 1784477786);
+    const turn = await sessions.turnSnapshot(threadId);
+    assert.equal(turn.items.length, 2);
+    assert.deepEqual(turn.items.map((item) => item.type), ["reasoning", "agentMessage"]);
 
     await writeFile(sessionPath, `${JSON.stringify({
       timestamp: "2026-07-19T16:20:00.000Z",

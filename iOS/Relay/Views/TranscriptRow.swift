@@ -255,6 +255,13 @@ private struct RunActivityView: View {
                     }
 
                     Spacer(minLength: 6)
+                    if isLive, metadata.startedAt != nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            Text(formatDuration(milliseconds: elapsedMilliseconds))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                     if !activitySections.isEmpty {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))

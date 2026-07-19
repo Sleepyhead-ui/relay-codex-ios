@@ -42,6 +42,7 @@ final class RelaySocket: ObservableObject {
     private var session: URLSession?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
     private var pendingAccepted: [String: () -> Void] = [:]
+    private var pendingAcceptanceTimeouts: [String: Task<Void, Never>] = [:]
     private var pendingTimeouts: [String: Task<Void, Never>] = [:]
     private var endpoint: String?
     private var token: String?
@@ -102,7 +103,23 @@ final class RelaySocket: ObservableObject {
         let requestGeneration = connectionGeneration
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
-            if let onAccepted { pendingAccepted[id] = onAccepted }
+            if let onAccepted {
+                pendingAccepted[id] = onAccepted
+                pendingAcceptanceTimeouts[id] = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: 8_000_000_000)
+                    } catch {
+                        return
+                    }
+                    guard let self, !Task.isCancelled,
+                          self.pending.removeValue(forKey: id) != nil else { return }
+                    self.pendingAccepted.removeValue(forKey: id)
+                    self.pendingTimeouts.removeValue(forKey: id)?.cancel()
+                    let error = SocketError.remote("Bridge 在 8 秒内没有确认收到消息。")
+                    continuation.resume(throwing: error)
+                    self.handleConnectionFailure(error, generation: requestGeneration)
+                }
+            }
             pendingTimeouts[id] = Task { [weak self] in
                 do {
                     try await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
@@ -111,6 +128,7 @@ final class RelaySocket: ObservableObject {
                 }
                 guard let self, !Task.isCancelled,
                       let continuation = self.pending.removeValue(forKey: id) else { return }
+                self.pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
                 self.pendingAccepted.removeValue(forKey: id)
                 self.pendingTimeouts.removeValue(forKey: id)
                 let error = SocketError.remote(
@@ -133,6 +151,7 @@ final class RelaySocket: ObservableObject {
                     ])
                 } catch {
                     pendingTimeouts.removeValue(forKey: id)?.cancel()
+                    pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
                     pendingAccepted.removeValue(forKey: id)
                     pending.removeValue(forKey: id)?.resume(throwing: error)
                     self.handleConnectionFailure(error, generation: requestGeneration)
@@ -332,9 +351,11 @@ final class RelaySocket: ObservableObject {
             }
         case "rpcAccepted":
             guard let id = raw["id"] as? String else { return }
+            pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
             pendingAccepted.removeValue(forKey: id)?()
         case "rpcResult":
             guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
+            pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
             pendingAccepted.removeValue(forKey: id)
             pendingTimeouts.removeValue(forKey: id)?.cancel()
             if let error = raw["error"] as? [String: Any] {
@@ -454,6 +475,8 @@ final class RelaySocket: ObservableObject {
         timeouts.forEach { $0.cancel() }
         let continuations = pending.values
         pending.removeAll()
+        pendingAcceptanceTimeouts.values.forEach { $0.cancel() }
+        pendingAcceptanceTimeouts.removeAll()
         pendingAccepted.removeAll()
         continuations.forEach { $0.resume(throwing: error) }
     }
