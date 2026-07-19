@@ -16,17 +16,40 @@ struct MarkdownContentView: View {
 
     private var blocks: [MarkdownBlock] { MarkdownParser.parse(source) }
 
+    private var numberedBlocks: [(block: MarkdownBlock, orderedStart: Int?)] {
+        var nextOrderedNumber = 1
+        var sequenceActive = false
+        return blocks.map { block in
+            switch block {
+            case .orderedList(let values):
+                let start = sequenceActive ? nextOrderedNumber : 1
+                nextOrderedNumber = start + values.count
+                sequenceActive = true
+                return (block, start)
+            case .paragraph(_):
+                // Markdown renderers commonly split a numbered list around
+                // continuation paragraphs. Keep numbering through those
+                // paragraphs instead of restarting at 1.
+                return (block, nil)
+            default:
+                sequenceActive = false
+                nextOrderedNumber = 1
+                return (block, nil)
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: blockSpacing) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(Array(numberedBlocks.enumerated()), id: \.offset) { _, entry in
+                blockView(entry.block, orderedStart: entry.orderedStart)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private func blockView(_ block: MarkdownBlock) -> some View {
+    private func blockView(_ block: MarkdownBlock, orderedStart: Int? = nil) -> some View {
         switch block {
         case .paragraph(let text):
             InlineMarkdownText(text, size: baseFontSize, lineSpacing: lineSpacing)
@@ -51,7 +74,7 @@ struct MarkdownContentView: View {
             VStack(alignment: .leading, spacing: max(4, blockSpacing * 0.6)) {
                 ForEach(Array(values.enumerated()), id: \.offset) { index, value in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text("\(index + 1).")
+                        Text("\((orderedStart ?? 1) + index).")
                             .font(.system(size: max(10, baseFontSize - 1), weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 20, alignment: .trailing)
