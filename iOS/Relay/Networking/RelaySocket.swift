@@ -41,6 +41,7 @@ final class RelaySocket: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
+    private var pendingTimeouts: [String: Task<Void, Never>] = [:]
     private var endpoint: String?
     private var token: String?
     private var shouldReconnect = false
@@ -93,6 +94,19 @@ final class RelaySocket: ObservableObject {
         let id = UUID().uuidString
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
+            pendingTimeouts[id] = Task { [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: 45_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled,
+                      let continuation = self.pending.removeValue(forKey: id) else { return }
+                self.pendingTimeouts.removeValue(forKey: id)
+                let error = SocketError.remote("Windows 长时间没有确认请求，Relay 正在重新连接。")
+                continuation.resume(throwing: error)
+                self.handleConnectionFailure(error, generation: self.connectionGeneration)
+            }
             Task {
                 do {
                     try await send([
@@ -102,6 +116,7 @@ final class RelaySocket: ObservableObject {
                         "params": JSONValue.object(params).rawValue
                     ])
                 } catch {
+                    pendingTimeouts.removeValue(forKey: id)?.cancel()
                     pending.removeValue(forKey: id)?.resume(throwing: error)
                 }
             }
@@ -299,6 +314,7 @@ final class RelaySocket: ObservableObject {
             }
         case "rpcResult":
             guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
+            pendingTimeouts.removeValue(forKey: id)?.cancel()
             if let error = raw["error"] as? [String: Any] {
                 continuation.resume(throwing: SocketError.remote(error["message"] as? String ?? "Codex request failed."))
             } else {
@@ -411,6 +427,9 @@ final class RelaySocket: ObservableObject {
     }
 
     private func failPending(with error: Error) {
+        let timeouts = pendingTimeouts.values
+        pendingTimeouts.removeAll()
+        timeouts.forEach { $0.cancel() }
         let continuations = pending.values
         pending.removeAll()
         continuations.forEach { $0.resume(throwing: error) }

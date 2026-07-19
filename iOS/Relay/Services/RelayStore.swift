@@ -27,6 +27,10 @@ final class RelayStore: ObservableObject {
     @Published var sharedFile: SharedFile?
     @Published var downloadingPath: String?
     @Published var activePlan: [ExecutionPlanStep] = []
+    @Published var followUpBehavior: FollowUpBehavior = .steer
+    @Published var queuedFollowUps: [QueuedFollowUp] = []
+    @Published private(set) var activeTurnIdsByThread: [String: String] = [:]
+    @Published private(set) var sendingThreadIds = Set<String>()
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -34,6 +38,8 @@ final class RelayStore: ObservableObject {
     private let effortDefaultsKey = "relay.reasoningEffort"
     private let accessDefaultsKey = "relay.workspaceAccess"
     private let lastThreadDefaultsKey = "relay.lastThreadId"
+    private let threadCacheDefaultsKey = "relay.cachedThreads"
+    private let followUpDefaultsKey = "relay.followUpBehavior"
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
     private var reconcilingThreadId: String?
@@ -43,6 +49,14 @@ final class RelayStore: ObservableObject {
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
+    var isSendingPrompt: Bool {
+        guard let selectedThreadId else { return false }
+        return sendingThreadIds.contains(selectedThreadId)
+    }
+    var currentQueuedFollowUps: [QueuedFollowUp] {
+        guard let selectedThreadId else { return [] }
+        return queuedFollowUps.filter { $0.threadId == selectedThreadId }
+    }
     var currentWorkingDirectory: String {
         if let cwd = selectedThread?.cwd.nonEmpty { return cwd }
         if let selectedThreadId, let cwd = workingDirectoryOverrides[selectedThreadId]?.nonEmpty { return cwd }
@@ -99,12 +113,20 @@ final class RelayStore: ObservableObject {
             host = stored
         }
         token = KeychainStore.loadToken() ?? ""
+        if let data = UserDefaults.standard.data(forKey: threadCacheDefaultsKey),
+           let cachedThreads = try? JSONDecoder().decode([ThreadSummary].self, from: data) {
+            threads = cachedThreads
+        }
         selectedThreadId = UserDefaults.standard.string(forKey: lastThreadDefaultsKey)
         selectedModelId = UserDefaults.standard.string(forKey: modelDefaultsKey) ?? ""
         selectedEffort = UserDefaults.standard.string(forKey: effortDefaultsKey) ?? ""
         if let storedAccess = UserDefaults.standard.string(forKey: accessDefaultsKey),
            let access = WorkspaceAccessMode(rawValue: storedAccess) {
             workspaceAccess = access
+        }
+        if let storedFollowUp = UserDefaults.standard.string(forKey: followUpDefaultsKey),
+           let behavior = FollowUpBehavior(rawValue: storedFollowUp) {
+            followUpBehavior = behavior
         }
 
         socket.onConnected = { [weak self] in
@@ -128,7 +150,13 @@ final class RelayStore: ObservableObject {
 
     func disconnect() { socket.disconnect() }
 
-    func applicationBecameActive() { socket.reconnectIfNeeded() }
+    func applicationBecameActive() {
+        if socket.state == .connected {
+            Task { await refreshThreads(showErrors: false) }
+        } else {
+            socket.reconnectIfNeeded()
+        }
+    }
 
     func forgetHost() {
         disconnect()
@@ -137,10 +165,14 @@ final class RelayStore: ObservableObject {
         token = ""
         host = HostConfiguration()
         threads = []
+        UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
         setSelectedThread(nil)
         messages = []
         turnMetadata = [:]
         tokenUsageByThread = [:]
+        activeTurnIdsByThread = [:]
+        sendingThreadIds = []
+        queuedFollowUps = []
         threadSnapshots = [:]
         workingDirectoryOverrides = [:]
         showingSettings = false
@@ -184,15 +216,20 @@ final class RelayStore: ObservableObject {
         guard socket.state == .connected else { return }
         do {
             let result = try await socket.rpc(method: "thread/list", params: [
-                "limit": .number(50),
+                "limit": .number(200),
                 "sortKey": .string("updated_at"),
-                "sortDirection": .string("desc")
+                "sortDirection": .string("desc"),
+                "useStateDbOnly": .bool(true)
             ])
-            let fetched = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
+            var fetched = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
             if fetched.isEmpty, !threads.isEmpty {
                 return
             }
+            for index in fetched.indices where activeTurnIdsByThread[fetched[index].id] != nil {
+                fetched[index].status = "active"
+            }
             threads = fetched
+            persistThreadCache()
         } catch {
             report(error, show: showErrors)
         }
@@ -221,6 +258,11 @@ final class RelayStore: ObservableObject {
             }
             cacheCurrentThread()
             setSelectedThread(id)
+            if let summary = ThreadSummary(json: result["thread"] ?? .object([:])) {
+                threads.removeAll { $0.id == summary.id }
+                threads.insert(summary, at: 0)
+                persistThreadCache()
+            }
             if !projectDirectory.isEmpty { workingDirectoryOverrides[id] = projectDirectory }
             messages = []
             turnMetadata = [:]
@@ -252,6 +294,19 @@ final class RelayStore: ObservableObject {
     func saveHostConfiguration() {
         guard let data = try? JSONEncoder().encode(host) else { return }
         UserDefaults.standard.set(data, forKey: hostDefaultsKey)
+    }
+
+    func isThreadRunning(_ threadId: String) -> Bool {
+        activeTurnIdsByThread[threadId] != nil || threads.first(where: { $0.id == threadId })?.isRunning == true
+    }
+
+    func selectFollowUpBehavior(_ behavior: FollowUpBehavior) {
+        followUpBehavior = behavior
+        UserDefaults.standard.set(behavior.rawValue, forKey: followUpDefaultsKey)
+    }
+
+    func removeQueuedFollowUp(_ id: UUID) {
+        queuedFollowUps.removeAll { $0.id == id }
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
@@ -304,11 +359,21 @@ final class RelayStore: ObservableObject {
                 guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
                 reconcileRuntimeState(runtime)
             }
+            if isRunning {
+                if let activeTurnId { activeTurnIdsByThread[id] = activeTurnId }
+                setThreadStatus(id, status: "active", touchUpdatedAt: false)
+            } else {
+                activeTurnIdsByThread.removeValue(forKey: id)
+                setThreadStatus(id, status: "idle", touchUpdatedAt: false)
+            }
             if let model = result["model"]?.stringValue { selectedModelId = model }
             if let effort = result["reasoningEffort"]?.stringValue { selectedEffort = effort }
             normalizeEffortForSelectedModel()
             persistGenerationSettings()
             cacheCurrentThread()
+            if !isRunning {
+                Task { [weak self] in await self?.sendNextQueuedFollowUpIfNeeded(threadId: id) }
+            }
         } catch {
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             report(error, show: showErrors)
@@ -321,54 +386,138 @@ final class RelayStore: ObservableObject {
         guard !text.isEmpty || !readyAttachments.isEmpty else { return }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
+            errorMessage = "尚未连接到 Windows，消息仍保留在输入框中。Relay 正在重新连接。"
             return
         }
         if selectedThreadId == nil { await newThread() }
         guard let threadId = selectedThreadId else { return }
 
-        let clientMessageId = UUID().uuidString
-        activePlan = []
+        if isRunning, followUpBehavior == .queue {
+            queuedFollowUps.append(QueuedFollowUp(
+                id: UUID(),
+                threadId: threadId,
+                text: text,
+                attachments: readyAttachments,
+                createdAt: Date()
+            ))
+            composerText = ""
+            attachments = []
+            return
+        }
+
+        if isRunning {
+            await steerActiveTurn(text: text, readyAttachments: readyAttachments, threadId: threadId)
+            return
+        }
+
         composerText = ""
         attachments = []
+        await startTurn(text: text, readyAttachments: readyAttachments, threadId: threadId)
+    }
+
+    private func startTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
+        let clientMessageId = UUID().uuidString
+        activePlan = []
+        sendingThreadIds.insert(threadId)
         isRunning = true
+        setThreadStatus(threadId, status: "active")
         let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
         messages.append(TranscriptItem(id: clientMessageId, role: .user, kind: .message, text: displayText))
+        defer { sendingThreadIds.remove(threadId) }
         do {
-            var input: [JSONValue] = []
-            if !text.isEmpty { input.append(.object(["type": .string("text"), "text": .string(text)])) }
-            for attachment in readyAttachments {
-                guard let path = attachment.remotePath else { continue }
-                if attachment.isImage {
-                    input.append(.object(["type": .string("localImage"), "path": .string(path)]))
-                } else {
-                    input.append(.object(["type": .string("mention"), "name": .string(attachment.name), "path": .string(path)]))
-                }
-            }
             var params: [String: JSONValue] = [
                 "threadId": .string(threadId),
                 "clientUserMessageId": .string(clientMessageId),
-                "input": .array(input),
+                "input": .array(userInput(text: text, attachments: readyAttachments)),
                 "summary": .string("detailed"),
                 "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
             ]
             if let model = selectedModel?.model { params["model"] = .string(model) }
             if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
             let result = try await socket.rpc(method: "turn/start", params: params)
-            activeTurnId = result["turn"]?["id"]?.stringValue
-            if let activeTurnId {
-                if let index = messages.firstIndex(where: { $0.id == clientMessageId }) {
-                    messages[index].turnId = activeTurnId
+            let confirmedTurnId = result["turn"]?["id"]?.stringValue
+            if let confirmedTurnId {
+                activeTurnIdsByThread[threadId] = confirmedTurnId
+                if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
+                if selectedThreadId == threadId,
+                   let index = messages.firstIndex(where: { $0.id == clientMessageId }) {
+                    messages[index].turnId = confirmedTurnId
                 }
-                turnMetadata[activeTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
+                if selectedThreadId == threadId {
+                    turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
+                } else {
+                    updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: confirmedTurnId)
+                }
             }
         } catch {
-            // A lost RPC response does not prove the Windows turn stopped. Keep the
-            // stop control visible until thread/resume confirms the real state.
-            if socket.state == .connected { isRunning = false }
-            attachments = readyAttachments
-            report(error)
+            if selectedThreadId == threadId {
+                messages.removeAll { $0.id == clientMessageId }
+                if composerText.isEmpty { composerText = text }
+                if attachments.isEmpty { attachments = readyAttachments }
+            }
+            if socket.state == .connected {
+                activeTurnIdsByThread.removeValue(forKey: threadId)
+                setThreadStatus(threadId, status: "idle")
+                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
+                if selectedThreadId == threadId { isRunning = false }
+            }
+            errorMessage = "消息未被确认：\(error.localizedDescription) 内容已恢复到输入框。"
         }
+    }
+
+    private func steerActiveTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
+        guard let expectedTurnId = activeTurnId ?? activeTurnIdsByThread[threadId] else {
+            errorMessage = "Relay 尚未取得当前任务的运行编号，请稍后重试。"
+            return
+        }
+        let clientMessageId = UUID().uuidString
+        let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
+        let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        composerText = ""
+        attachments = []
+        sendingThreadIds.insert(threadId)
+        messages.append(TranscriptItem(
+            id: clientMessageId,
+            turnId: expectedTurnId,
+            role: .user,
+            kind: .message,
+            text: displayText
+        ))
+        defer { sendingThreadIds.remove(threadId) }
+        do {
+            let result = try await socket.rpc(method: "turn/steer", params: [
+                "threadId": .string(threadId),
+                "expectedTurnId": .string(expectedTurnId),
+                "clientUserMessageId": .string(clientMessageId),
+                "input": .array(userInput(text: text, attachments: readyAttachments))
+            ])
+            let confirmedTurnId = result["turnId"]?.stringValue ?? expectedTurnId
+            activeTurnIdsByThread[threadId] = confirmedTurnId
+            if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
+            setThreadStatus(threadId, status: "active")
+        } catch {
+            if selectedThreadId == threadId {
+                messages.removeAll { $0.id == clientMessageId }
+                if composerText.isEmpty { composerText = text }
+                if attachments.isEmpty { attachments = readyAttachments }
+            }
+            errorMessage = "引导未送达：\(error.localizedDescription) 内容已恢复到输入框。"
+        }
+    }
+
+    private func userInput(text: String, attachments: [PendingAttachment]) -> [JSONValue] {
+        var input: [JSONValue] = []
+        if !text.isEmpty { input.append(.object(["type": .string("text"), "text": .string(text)])) }
+        for attachment in attachments {
+            guard let path = attachment.remotePath else { continue }
+            if attachment.isImage {
+                input.append(.object(["type": .string("localImage"), "path": .string(path)]))
+            } else {
+                input.append(.object(["type": .string("mention"), "name": .string(attachment.name), "path": .string(path)]))
+            }
+        }
+        return input
     }
 
     func addAttachments(_ urls: [URL]) {
@@ -513,6 +662,22 @@ final class RelayStore: ObservableObject {
         UserDefaults.standard.set(selectedEffort, forKey: effortDefaultsKey)
     }
 
+    private func persistThreadCache() {
+        guard let data = try? JSONEncoder().encode(Array(threads.prefix(200))) else { return }
+        UserDefaults.standard.set(data, forKey: threadCacheDefaultsKey)
+    }
+
+    private func setThreadStatus(_ threadId: String, status: String, touchUpdatedAt: Bool = true) {
+        guard let index = threads.firstIndex(where: { $0.id == threadId }) else { return }
+        let changed = threads[index].status != status
+        threads[index].status = status
+        if touchUpdatedAt { threads[index].updatedAt = Date() }
+        if changed || touchUpdatedAt {
+            threads.sort { $0.updatedAt > $1.updatedAt }
+            persistThreadCache()
+        }
+    }
+
     private func setSelectedThread(_ id: String?) {
         selectedThreadId = id
         if let id {
@@ -531,7 +696,10 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleEvent(method: String, params: JSONValue) {
-        guard params["threadId"]?.stringValue == nil || params["threadId"]?.stringValue == selectedThreadId else { return }
+        if let eventThreadId = params["threadId"]?.stringValue, eventThreadId != selectedThreadId {
+            applyBackgroundEvent(method: method, params: params, threadId: eventThreadId)
+            return
+        }
         if let reconcilingThreadId, reconcilingThreadId == selectedThreadId {
             queuedEvents.append((method, params))
             return
@@ -559,6 +727,10 @@ final class RelayStore: ObservableObject {
             }
             let completedActiveTurn = activeTurnId == nil || turnId == activeTurnId
             if completedActiveTurn {
+                if let selectedThreadId {
+                    activeTurnIdsByThread.removeValue(forKey: selectedThreadId)
+                    setThreadStatus(selectedThreadId, status: "idle")
+                }
                 isRunning = false
                 activeTurnId = nil
                 activePlan = []
@@ -611,8 +783,42 @@ final class RelayStore: ObservableObject {
         }
     }
 
+    private func applyBackgroundEvent(method: String, params: JSONValue, threadId: String) {
+        let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
+        switch method {
+        case "turn/started", "item/started", "item/completed", "item/agentMessage/delta",
+             "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
+             "item/reasoning/textDelta", "item/commandExecution/outputDelta", "turn/plan/updated":
+            let wasRunning = isThreadRunning(threadId)
+            if let turnId { activeTurnIdsByThread[threadId] = turnId }
+            if !wasRunning { setThreadStatus(threadId, status: "active") }
+            updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: turnId)
+        case "turn/completed":
+            let completesKnownTurn = activeTurnIdsByThread[threadId] == nil
+                || turnId == nil
+                || activeTurnIdsByThread[threadId] == turnId
+            if completesKnownTurn {
+                activeTurnIdsByThread.removeValue(forKey: threadId)
+                setThreadStatus(threadId, status: "idle")
+                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
+            }
+            Task { await refreshThreads(showErrors: false) }
+        case "thread/tokenUsage/updated":
+            if let usage = params["tokenUsage"] {
+                tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
+            }
+        default:
+            break
+        }
+    }
+
     private func markTurnActive(_ turnId: String?, startedAt: Date? = nil) {
+        let wasRunning = selectedThreadId.map { isThreadRunning($0) } ?? false
         isRunning = true
+        if let selectedThreadId {
+            if let turnId { activeTurnIdsByThread[selectedThreadId] = turnId }
+            if !wasRunning { setThreadStatus(selectedThreadId, status: "active") }
+        }
         guard let turnId else { return }
         activeTurnId = turnId
         var metadata = turnMetadata[turnId] ?? TurnMetadata()
@@ -635,6 +841,10 @@ final class RelayStore: ObservableObject {
                 turnMetadata[staleTurnId] = metadata
             }
             isRunning = false
+            if let selectedThreadId {
+                activeTurnIdsByThread.removeValue(forKey: selectedThreadId)
+                setThreadStatus(selectedThreadId, status: "idle", touchUpdatedAt: false)
+            }
             activeTurnId = nil
             activePlan = []
         }
@@ -656,6 +866,27 @@ final class RelayStore: ObservableObject {
             guard let self, self.selectedThreadId == threadId, !self.isRunning, self.activeTurnId == nil else { return }
             await self.selectThread(threadId, closeSidebar: false, showErrors: false)
         }
+    }
+
+    private func updateCachedSnapshot(threadId: String, isRunning: Bool, activeTurnId: String?) {
+        guard let snapshot = threadSnapshots[threadId] else { return }
+        threadSnapshots[threadId] = ThreadSnapshot(
+            messages: snapshot.messages,
+            turnMetadata: snapshot.turnMetadata,
+            isRunning: isRunning,
+            activeTurnId: activeTurnId,
+            activePlan: isRunning ? snapshot.activePlan : [],
+            modelId: snapshot.modelId,
+            effort: snapshot.effort,
+            cachedAt: Date()
+        )
+    }
+
+    private func sendNextQueuedFollowUpIfNeeded(threadId: String) async {
+        guard selectedThreadId == threadId, !isRunning, socket.state == .connected,
+              let index = queuedFollowUps.firstIndex(where: { $0.threadId == threadId }) else { return }
+        let followUp = queuedFollowUps.remove(at: index)
+        await startTurn(text: followUp.text, readyAttachments: followUp.attachments, threadId: threadId)
     }
 
     private func upsert(_ item: TranscriptItem) {

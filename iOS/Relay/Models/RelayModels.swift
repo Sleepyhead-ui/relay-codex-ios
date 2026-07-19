@@ -62,6 +62,30 @@ struct PendingAttachment: Identifiable, Equatable {
     var isImage: Bool
 }
 
+enum FollowUpBehavior: String, Codable, CaseIterable, Identifiable {
+    case steer
+    case queue
+
+    var id: String { rawValue }
+    var title: String { self == .steer ? "引导" : "排队" }
+    var detail: String {
+        self == .steer ? "立即补充到当前任务" : "当前任务结束后自动发送"
+    }
+}
+
+struct QueuedFollowUp: Identifiable, Equatable {
+    let id: UUID
+    let threadId: String
+    let text: String
+    let attachments: [PendingAttachment]
+    let createdAt: Date
+
+    var displayText: String {
+        if let text = text.nonEmpty { return text }
+        return attachments.map(\.name).joined(separator: "、")
+    }
+}
+
 struct SharedFile: Identifiable {
     let id = UUID()
     let url: URL
@@ -81,13 +105,21 @@ struct ExecutionPlanStep: Identifiable, Equatable {
     }
 }
 
-struct ThreadSummary: Identifiable, Equatable {
+struct ThreadSummary: Identifiable, Equatable, Codable {
     let id: String
     var title: String
     var preview: String
     var cwd: String
     var updatedAt: Date
     var status: String
+
+    var isRunning: Bool {
+        let normalized = status
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return normalized == "active" || normalized == "running" || normalized == "inprogress"
+    }
 
     init?(json: JSONValue) {
         guard let id = json["id"]?.stringValue else { return nil }

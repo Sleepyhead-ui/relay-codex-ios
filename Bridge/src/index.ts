@@ -218,6 +218,11 @@ function handleCodexResponse(message: JsonObject): void {
     runtimeState.observeTurnStart(pending.params.threadId, result.turn);
     desktopSync.activateThread(pending.params.threadId, "turn-started");
   }
+  if (pending.method === "turn/steer" && !("error" in message)) {
+    const result = isObject(message.result) ? message.result : {};
+    runtimeState.observeTurnStart(pending.params.threadId, { id: result.turnId });
+    desktopSync.activateThread(pending.params.threadId, "turn-steered");
+  }
 }
 
 function handleCodexNotification(message: JsonObject): void {

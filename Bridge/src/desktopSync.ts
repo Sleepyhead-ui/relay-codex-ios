@@ -38,7 +38,7 @@ export class DesktopSync {
 
   get status(): DesktopSyncStatus { return { ...this.statusValue }; }
 
-  activateThread(threadId: unknown, reason: "turn-started" | "turn-completed"): void {
+  activateThread(threadId: unknown, reason: "turn-started" | "turn-steered" | "turn-completed"): void {
     if (!this.enabled || process.platform !== "win32" || typeof threadId !== "string" || !THREAD_ID_PATTERN.test(threadId)) {
       return;
     }
@@ -52,7 +52,7 @@ export class DesktopSync {
     setTimeout(() => void this.performSync(threadId, reason), delay).unref();
   }
 
-  private async performSync(threadId: string, reason: "turn-started" | "turn-completed"): Promise<void> {
+  private async performSync(threadId: string, reason: "turn-started" | "turn-steered" | "turn-completed"): Promise<void> {
     this.statusValue = { ...this.statusValue, lastAttemptAt: new Date().toISOString() };
     this.onStatusChange(this.status);
     await this.ensureDesktopDebugging();

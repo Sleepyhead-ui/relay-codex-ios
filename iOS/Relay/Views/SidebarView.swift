@@ -82,7 +82,11 @@ struct SidebarView: View {
 
                         if search.isEmpty ? !collapsedProjects.contains(group.id) : true {
                             ForEach(group.threads) { thread in
-                                ThreadRow(thread: thread, selected: thread.id == store.selectedThreadId) {
+                                ThreadRow(
+                                    thread: thread,
+                                    selected: thread.id == store.selectedThreadId,
+                                    running: store.isThreadRunning(thread.id)
+                                ) {
                                     Task { await store.selectThread(thread.id) }
                                 }
                                 .padding(.leading, 15)
@@ -161,6 +165,7 @@ private struct ProjectGroup: Identifiable {
 
     var name: String { path.isEmpty ? "未归类" : path.lastPathComponentForDisplay }
     var updatedAt: Date { threads.map(\.updatedAt).max() ?? .distantPast }
+    var runningCount: Int { threads.filter(\.isRunning).count }
 }
 
 private struct ProjectHeader: View {
@@ -183,6 +188,12 @@ private struct ProjectHeader: View {
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer()
+                if group.runningCount > 0 {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(RelayTheme.accent)
+                        .accessibilityHidden(true)
+                }
                 Text("\(group.threads.count)")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.tertiary)
@@ -200,11 +211,19 @@ private struct ProjectHeader: View {
 private struct ThreadRow: View {
     let thread: ThreadSummary
     let selected: Bool
+    let running: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
+                if running {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(RelayTheme.accent)
+                        .frame(width: 13, height: 13)
+                        .transition(.scale.combined(with: .opacity))
+                }
                 Text(thread.title)
                     .font(.system(size: 14, weight: selected ? .semibold : .regular))
                     .lineLimit(1)
@@ -220,6 +239,8 @@ private struct ThreadRow: View {
             .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
         }
         .buttonStyle(.plain)
+        .animation(.easeOut(duration: 0.18), value: running)
+        .accessibilityValue(running ? "正在运行" : relativeDate)
     }
 
     private var relativeDate: String {

@@ -13,6 +13,13 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if !store.currentQueuedFollowUps.isEmpty {
+                FollowUpQueuePanel(items: store.currentQueuedFollowUps) { id in
+                    store.removeQueuedFollowUp(id)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             if store.isRunning, !store.activePlan.isEmpty {
                 ExecutionPlanPanel(steps: store.activePlan)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -30,11 +37,12 @@ struct ComposerView: View {
 
             if store.socket.state != .connected {
                 if store.socket.state.isConnecting {
-                    if store.messages.isEmpty {
-                        Label("Reconnecting to Windows", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.mini)
+                        Text("正在重新连接，输入内容会保留")
+                            .font(.system(size: 12, weight: .semibold))
                     }
+                    .foregroundStyle(Color.orange)
                 } else {
                     Button { store.showingConnection = true } label: {
                         Label("Connect to Windows", systemImage: "bolt.horizontal.circle")
@@ -67,7 +75,7 @@ struct ComposerView: View {
                     .disabled(isImportingAttachments)
                     .accessibilityLabel("添加照片或文件")
 
-                    TextField("Message Codex", text: $store.composerText, axis: .vertical)
+                    TextField(store.isRunning ? "引导当前任务" : "Message Codex", text: $store.composerText, axis: .vertical)
                         .font(.system(size: 16))
                         .lineLimit(1...8)
                         .textFieldStyle(.plain)
@@ -84,27 +92,37 @@ struct ComposerView: View {
 
                     Button {
                         Task {
-                            if store.isRunning { await store.stopTurn() }
-                            else {
+                            if showsStopControl {
+                                await store.stopTurn()
+                            } else {
                                 focused = false
                                 await store.sendPrompt()
                             }
                         }
                     } label: {
-                        Image(systemName: store.isRunning ? "stop.fill" : "arrow.up")
-                            .font(.system(size: store.isRunning ? 11 : 15, weight: .bold))
-                            .foregroundStyle(canSend || store.isRunning ? RelayTheme.canvas : Color.secondary)
-                            .frame(width: 34, height: 34)
-                            .background(canSend || store.isRunning ? Color.primary : RelayTheme.softFill)
-                            .clipShape(Circle())
+                        Group {
+                            if store.isSendingPrompt {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(RelayTheme.canvas)
+                            } else {
+                                Image(systemName: showsStopControl ? "stop.fill" : "arrow.up")
+                                    .font(.system(size: showsStopControl ? 11 : 15, weight: .bold))
+                            }
+                        }
+                        .foregroundStyle(actionEnabled ? RelayTheme.canvas : Color.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(actionEnabled || store.isSendingPrompt ? Color.primary : RelayTheme.softFill)
+                        .clipShape(Circle())
                     }
-                    .disabled(!canSend && !store.isRunning)
-                    .accessibilityLabel(store.isRunning ? "Stop task" : "Send")
+                    .disabled(!actionEnabled || store.isSendingPrompt)
+                    .accessibilityLabel(sendButtonLabel)
                 }
 
                 HStack(spacing: 3) {
                     modelMenu
                     effortMenu
+                    if store.isRunning { followUpMenu }
                     Spacer(minLength: 4)
                     contextMenu
 
@@ -142,6 +160,7 @@ struct ComposerView: View {
         .offset(y: focused ? 0 : 12)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.activePlan)
+        .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
         .animation(.easeOut(duration: 0.18), value: focused)
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
@@ -386,6 +405,36 @@ struct ComposerView: View {
         }
     }
 
+    private var followUpMenu: some View {
+        Menu {
+            ForEach(FollowUpBehavior.allCases) { behavior in
+                Button {
+                    store.selectFollowUpBehavior(behavior)
+                } label: {
+                    if store.followUpBehavior == behavior {
+                        Label("\(behavior.title) · \(behavior.detail)", systemImage: "checkmark")
+                    } else {
+                        Text("\(behavior.title) · \(behavior.detail)")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: store.followUpBehavior == .steer ? "arrow.turn.up.right" : "text.badge.plus")
+                Text(store.followUpBehavior.title)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(RelayTheme.accent)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(RelayTheme.accent.opacity(0.09))
+            .clipShape(Capsule())
+        }
+        .accessibilityLabel("后续消息方式：\(store.followUpBehavior.title)")
+    }
+
     @ViewBuilder
     private var contextMenu: some View {
         if let usage = store.currentTokenUsage, let percentage = usage.contextPercentage {
@@ -419,11 +468,78 @@ struct ComposerView: View {
         store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "推理"
     }
 
-    private var canSend: Bool {
+    private var hasDraft: Bool {
         let hasText = !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
+        return hasText || hasReadyFile
+    }
+
+    private var canSend: Bool {
         let isUploading = store.attachments.contains { $0.state == .uploading }
-        return store.socket.state == .connected && !isUploading && (hasText || hasReadyFile)
+        return store.socket.state == .connected && !isUploading && hasDraft
+    }
+
+    private var showsStopControl: Bool { store.isRunning && !hasDraft }
+    private var actionEnabled: Bool {
+        store.socket.state == .connected && (canSend || showsStopControl)
+    }
+    private var sendButtonLabel: String {
+        if store.isSendingPrompt { return "正在发送" }
+        if showsStopControl { return "停止任务" }
+        if store.isRunning { return store.followUpBehavior == .steer ? "引导当前任务" : "排队到下一轮" }
+        return "发送"
+    }
+}
+
+private struct FollowUpQueuePanel: View {
+    let items: [QueuedFollowUp]
+    let remove: (UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "text.badge.plus")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text("已排队 \(items.count) 条后续消息")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("任务结束后发送")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 32)
+
+            Divider().opacity(0.45)
+
+            ForEach(Array(items.prefix(3))) { item in
+                HStack(spacing: 8) {
+                    Text(item.displayText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Button { remove(item.id) } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("删除排队消息")
+                }
+                .padding(.leading, 11)
+                .padding(.trailing, 4)
+                .frame(height: 34)
+            }
+        }
+        .background(RelayTheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(RelayTheme.hairline, lineWidth: 1)
+        }
     }
 }
 
