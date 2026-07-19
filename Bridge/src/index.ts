@@ -7,6 +7,7 @@ import { DesktopSync } from "./desktopSync.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
+import { SessionActivityTracker } from "./sessionActivity.js";
 
 interface PendingClientRequest {
   socket: WebSocket;
@@ -49,6 +50,7 @@ const desktopSync = new DesktopSync(
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
 const runtimeState = new RuntimeStateTracker();
+const sessionActivity = new SessionActivityTracker();
 
 const codex = new CodexAppServer(config.codexBin, {
   onResponse: handleCodexResponse,
@@ -182,7 +184,8 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     if (message.method === "relay/thread/runtime") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
-      send(socket, { type: "rpcResult", id: message.id, result: runtimeState.snapshot(message.params.threadId) });
+      const result = await runtimeState.snapshotWithExternal(message.params.threadId, sessionActivity);
+      send(socket, { type: "rpcResult", id: message.id, result });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
@@ -268,6 +271,11 @@ function handleCodexResponse(message: JsonObject): void {
   if ("result" in message) payload.result = message.result;
   if ("error" in message) payload.error = message.error;
   send(pending.socket, payload);
+  if (pending.method === "thread/list" && "result" in message) {
+    sessionActivity.observeThreadList(message.result);
+  } else if (pending.method === "thread/resume" && "result" in message) {
+    sessionActivity.observeThreadResume(message.result);
+  }
   if (pending.method === "turn/start" && !("error" in message)) {
     const result = isObject(message.result) ? message.result : {};
     runtimeState.observeTurnStart(pending.params.threadId, result.turn);

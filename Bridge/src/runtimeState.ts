@@ -1,4 +1,5 @@
 import { isObject, type JsonObject } from "./protocol.js";
+import type { SessionActivityTracker } from "./sessionActivity.js";
 
 export interface ThreadRuntimeSnapshot extends JsonObject {
   known: boolean;
@@ -58,6 +59,19 @@ export class RuntimeStateTracker {
     const state = this.threads.get(threadId);
     if (!state) return { known: false, isRunning: false, updatedAt: Date.now() / 1000 };
     return { known: true, ...state };
+  }
+
+  async snapshotWithExternal(threadId: unknown, external: SessionActivityTracker): Promise<ThreadRuntimeSnapshot> {
+    const current = this.snapshot(threadId);
+    const observed = await external.snapshot(threadId);
+    if (!observed?.active) return current;
+    return {
+      known: true,
+      isRunning: true,
+      ...(observed.turnId ? { activeTurnId: observed.turnId } : current.activeTurnId ? { activeTurnId: current.activeTurnId } : {}),
+      ...(observed.startedAt ? { startedAt: observed.startedAt } : {}),
+      updatedAt: Math.max(current.updatedAt, observed.updatedAt),
+    };
   }
 
   get activeCount(): number {
