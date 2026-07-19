@@ -1,0 +1,39 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { RuntimeStateTracker } from "../dist/runtimeState.js";
+
+test("tracks an active turn from the turn/start response", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-1", { id: "turn-1", startedAt: 123 });
+  assert.deepEqual(tracker.snapshot("thread-1"), {
+    known: true,
+    isRunning: true,
+    activeTurnId: "turn-1",
+    startedAt: 123,
+    updatedAt: tracker.snapshot("thread-1").updatedAt,
+  });
+  assert.equal(tracker.activeCount, 1);
+});
+
+test("marks only the matching active turn completed", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-1", { id: "turn-2" });
+  tracker.observeNotification({
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "older-turn", status: "completed" } },
+  });
+  assert.equal(tracker.snapshot("thread-1").isRunning, true);
+  tracker.observeNotification({
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-2", status: "completed" } },
+  });
+  assert.deepEqual(tracker.snapshot("thread-1").isRunning, false);
+  assert.equal(tracker.activeCount, 0);
+});
+
+test("returns unknown when the bridge has not observed a thread", () => {
+  const tracker = new RuntimeStateTracker();
+  const snapshot = tracker.snapshot("thread-missing");
+  assert.equal(snapshot.known, false);
+  assert.equal(snapshot.isRunning, false);
+});

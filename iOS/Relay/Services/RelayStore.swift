@@ -36,6 +36,8 @@ final class RelayStore: ObservableObject {
     private let lastThreadDefaultsKey = "relay.lastThreadId"
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
+    private var reconcilingThreadId: String?
+    private var queuedEvents: [(method: String, params: JSONValue)] = []
     private var threadSnapshots: [String: ThreadSnapshot] = [:]
     private var workingDirectoryOverrides: [String: String] = [:]
 
@@ -258,6 +260,8 @@ final class RelayStore: ObservableObject {
         let switchingThreads = selectedThreadId != id
         if switchingThreads { cacheCurrentThread() }
         setSelectedThread(id)
+        reconcilingThreadId = id
+        queuedEvents = []
         let restoredFromCache = switchingThreads && restoreThreadSnapshot(id)
         if switchingThreads && !restoredFromCache {
             messages = []
@@ -269,7 +273,10 @@ final class RelayStore: ObservableObject {
         if closeSidebar { sidebarOpen = false }
         isLoadingThread = switchingThreads && !restoredFromCache
         defer {
-            if threadLoadGeneration == loadGeneration { isLoadingThread = false }
+            if threadLoadGeneration == loadGeneration {
+                isLoadingThread = false
+                finishThreadReconciliation(id)
+            }
         }
 
         do {
@@ -290,6 +297,13 @@ final class RelayStore: ObservableObject {
             let status = result["thread"]?["status"]?["type"]?.stringValue ?? "idle"
             activeTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
             isRunning = isActiveStatus(status) || activeTurnId != nil
+            if let runtime = try? await socket.rpc(
+                method: "relay/thread/runtime",
+                params: ["threadId": .string(id)]
+            ) {
+                guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
+                reconcileRuntimeState(runtime)
+            }
             if let model = result["model"]?.stringValue { selectedModelId = model }
             if let effort = result["reasoningEffort"]?.stringValue { selectedEffort = effort }
             normalizeEffortForSelectedModel()
@@ -518,18 +532,27 @@ final class RelayStore: ObservableObject {
 
     private func handleEvent(method: String, params: JSONValue) {
         guard params["threadId"]?.stringValue == nil || params["threadId"]?.stringValue == selectedThreadId else { return }
+        if let reconcilingThreadId, reconcilingThreadId == selectedThreadId {
+            queuedEvents.append((method, params))
+            return
+        }
+        applyEvent(method: method, params: params)
+    }
+
+    private func applyEvent(method: String, params: JSONValue) {
         let eventTurnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
         switch method {
         case "turn/started":
-            isRunning = true
             activePlan = []
-            activeTurnId = params["turn"]?["id"]?.stringValue
-            if let activeTurnId { turnMetadata[activeTurnId] = TurnMetadata(json: params["turn"] ?? .object([:])) }
+            let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))
+            markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
         case "turn/completed":
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
             if let turnId {
-                turnMetadata[turnId] = TurnMetadata(json: turn)
+                var metadata = TurnMetadata(json: turn)
+                if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
+                turnMetadata[turnId] = metadata
                 for itemJSON in turn["items"]?.arrayValue ?? [] {
                     if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
                 }
@@ -541,18 +564,25 @@ final class RelayStore: ObservableObject {
                 activePlan = []
             }
             Task { await refreshThreads(showErrors: false) }
+            scheduleCompletionReconciliation(threadId: selectedThreadId)
         case "item/started", "item/completed":
+            markTurnActive(eventTurnId)
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
         case "item/agentMessage/delta":
+            markTurnActive(eventTurnId)
             appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .assistant, kind: .message)
         case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta":
+            markTurnActive(eventTurnId)
             appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .tool, kind: .reasoning, title: "思考")
         case "item/reasoning/textDelta":
+            markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .reasoning)
         case "item/commandExecution/outputDelta":
+            markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .command)
         case "turn/plan/updated":
             guard let turnId = eventTurnId else { break }
+            markTurnActive(turnId)
             let steps = params["plan"]?.arrayValue ?? []
             activePlan = steps.enumerated().compactMap { index, step in
                 guard let text = step["step"]?.stringValue, !text.isEmpty else { return nil }
@@ -578,6 +608,53 @@ final class RelayStore: ObservableObject {
             errorMessage = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue ?? "Codex reported an error."
         default:
             break
+        }
+    }
+
+    private func markTurnActive(_ turnId: String?, startedAt: Date? = nil) {
+        isRunning = true
+        guard let turnId else { return }
+        activeTurnId = turnId
+        var metadata = turnMetadata[turnId] ?? TurnMetadata()
+        metadata.status = "inProgress"
+        metadata.completedAt = nil
+        metadata.durationMs = nil
+        if metadata.startedAt == nil { metadata.startedAt = startedAt ?? Date() }
+        turnMetadata[turnId] = metadata
+    }
+
+    private func reconcileRuntimeState(_ runtime: JSONValue) {
+        guard runtime["known"]?.boolValue == true else { return }
+        if runtime["isRunning"]?.boolValue == true {
+            let startedAt = runtime["startedAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
+            markTurnActive(runtime["activeTurnId"]?.stringValue, startedAt: startedAt)
+        } else {
+            if let staleTurnId = activeTurnId, var metadata = turnMetadata[staleTurnId], metadata.isRunning {
+                metadata.status = "completed"
+                if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
+                turnMetadata[staleTurnId] = metadata
+            }
+            isRunning = false
+            activeTurnId = nil
+            activePlan = []
+        }
+    }
+
+    private func finishThreadReconciliation(_ threadId: String) {
+        guard reconcilingThreadId == threadId, selectedThreadId == threadId else { return }
+        reconcilingThreadId = nil
+        let events = queuedEvents
+        queuedEvents = []
+        for event in events { applyEvent(method: event.method, params: event.params) }
+        cacheCurrentThread()
+    }
+
+    private func scheduleCompletionReconciliation(threadId: String?) {
+        guard let threadId else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, self.selectedThreadId == threadId, !self.isRunning, self.activeTurnId == nil else { return }
+            await self.selectThread(threadId, closeSidebar: false, showErrors: false)
         }
     }
 
@@ -612,11 +689,16 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleConnectionRestored() async {
-        if modelOptions.isEmpty { await refreshModels(showErrors: false) }
-        await refreshThreads(showErrors: false)
-        let targetThreadId = selectedThreadId ?? threads.first?.id
-        if let targetThreadId {
-            await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
+        if let selectedThreadId {
+            await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
+            if modelOptions.isEmpty { await refreshModels(showErrors: false) }
+            await refreshThreads(showErrors: false)
+        } else {
+            if modelOptions.isEmpty { await refreshModels(showErrors: false) }
+            await refreshThreads(showErrors: false)
+            if let targetThreadId = threads.first?.id {
+                await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
+            }
         }
     }
 

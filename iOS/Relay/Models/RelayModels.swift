@@ -180,7 +180,7 @@ struct ThreadTokenUsage: Equatable {
 }
 
 struct TurnMetadata: Equatable {
-    var status = "inProgress"
+    var status = "completed"
     var startedAt: Date?
     var completedAt: Date?
     var durationMs: Int?
@@ -189,7 +189,7 @@ struct TurnMetadata: Equatable {
     init() {}
 
     init(json: JSONValue) {
-        status = json["status"]?.stringValue ?? "inProgress"
+        status = json["status"]?.stringValue ?? "completed"
         if let value = json["startedAt"]?.doubleValue { startedAt = Date(timeIntervalSince1970: value) }
         if let value = json["completedAt"]?.doubleValue { completedAt = Date(timeIntervalSince1970: value) }
         durationMs = json["durationMs"]?.intValue

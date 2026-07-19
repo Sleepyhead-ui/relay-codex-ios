@@ -39,6 +39,7 @@ final class RelaySocket: ObservableObject {
     var onNonfatalError: ((String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
+    private var session: URLSession?
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
     private var endpoint: String?
     private var token: String?
@@ -47,6 +48,7 @@ final class RelaySocket: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var stableConnectionTask: Task<Void, Never>?
+    private var connectionTimeoutTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
 
     func connect(endpoint: String, token: String) throws {
@@ -62,10 +64,10 @@ final class RelaySocket: ObservableObject {
     }
 
     func reconnectIfNeeded() {
-        guard shouldReconnect, task == nil else { return }
+        guard shouldReconnect, state != .connected else { return }
         reconnectTask?.cancel()
         reconnectTask = nil
-        scheduleReconnect(immediate: true)
+        openConnection()
     }
 
     func disconnect() {
@@ -76,8 +78,12 @@ final class RelaySocket: ObservableObject {
         heartbeatTask = nil
         stableConnectionTask?.cancel()
         stableConnectionTask = nil
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        session?.invalidateAndCancel()
+        session = nil
         failPending(with: SocketError.disconnected)
         state = .disconnected
     }
@@ -197,26 +203,38 @@ final class RelaySocket: ObservableObject {
     private func openConnection() {
         guard let endpoint, let token, let url = URL(string: endpoint), shouldReconnect else { return }
 
+        let generation = UUID()
+        connectionGeneration = generation
         reconnectTask?.cancel()
         reconnectTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
         stableConnectionTask?.cancel()
         stableConnectionTask = nil
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
         task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
         failPending(with: SocketError.disconnected)
 
-        let generation = UUID()
-        connectionGeneration = generation
         state = reconnectAttempt == 0 ? .connecting : .reconnecting(reconnectAttempt)
 
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 12
+        configuration.timeoutIntervalForResource = 20
+        configuration.waitsForConnectivity = false
+        let socketSession = URLSession(configuration: configuration)
         var request = URLRequest(url: url)
-        request.timeoutInterval = 15
+        request.timeoutInterval = 12
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let socketTask = URLSession.shared.webSocketTask(with: request)
+        let socketTask = socketSession.webSocketTask(with: request)
+        session = socketSession
         task = socketTask
         socketTask.resume()
         receiveNext(generation: generation)
+        startConnectionTimeout(generation: generation)
     }
 
     private func send(_ object: [String: Any]) async throws {
@@ -259,6 +277,8 @@ final class RelaySocket: ObservableObject {
 
         switch type {
         case "bridgeStatus":
+            connectionTimeoutTask?.cancel()
+            connectionTimeoutTask = nil
             let status = raw["status"] as? String
             if let desktopSync = raw["desktopSync"] as? [String: Any], let mode = desktopSync["mode"] as? String {
                 desktopSyncMode = mode
@@ -332,14 +352,33 @@ final class RelaySocket: ObservableObject {
         }
     }
 
+    private func startConnectionTimeout(generation: UUID) {
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 12_000_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled,
+                  generation == self.connectionGeneration,
+                  self.state != .connected else { return }
+            self.handleConnectionFailure(SocketError.remote("Connection timed out."), generation: generation)
+        }
+    }
+
     private func handleConnectionFailure(_ error: Error, generation: UUID) {
         guard generation == connectionGeneration else { return }
         heartbeatTask?.cancel()
         heartbeatTask = nil
         stableConnectionTask?.cancel()
         stableConnectionTask = nil
+        connectionTimeoutTask?.cancel()
+        connectionTimeoutTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        session?.invalidateAndCancel()
+        session = nil
         failPending(with: error)
 
         if shouldReconnect {
@@ -353,7 +392,7 @@ final class RelaySocket: ObservableObject {
         guard shouldReconnect, reconnectTask == nil else { return }
         reconnectAttempt += 1
         let attempt = reconnectAttempt
-        let delay = immediate ? 0.0 : min(pow(2.0, Double(max(0, attempt - 1))), 20.0)
+        let delay = immediate ? 0.0 : min(pow(1.7, Double(max(0, attempt - 1))), 8.0)
         state = .reconnecting(attempt)
 
         reconnectTask = Task { [weak self] in

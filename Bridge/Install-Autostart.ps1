@@ -18,7 +18,7 @@ if ($DesktopSync) {
 try {
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -ErrorAction Stop
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME -ErrorAction Stop
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ErrorAction Stop
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ErrorAction Stop
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description "Starts Relay Bridge for remote Codex access." -Force -ErrorAction Stop
 
     Write-Host "Installed scheduled task: $TaskName"

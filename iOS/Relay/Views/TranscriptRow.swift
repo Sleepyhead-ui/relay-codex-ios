@@ -220,7 +220,8 @@ private struct RunActivityView: View {
     private var elapsedMilliseconds: Int {
         if let duration = metadata.durationMs { return duration }
         guard let startedAt = metadata.startedAt else { return 0 }
-        let end = metadata.completedAt ?? Date()
+        guard metadata.isRunning || metadata.completedAt != nil else { return 0 }
+        let end = metadata.isRunning ? Date() : (metadata.completedAt ?? startedAt)
         return max(0, Int(end.timeIntervalSince(startedAt) * 1000))
     }
 

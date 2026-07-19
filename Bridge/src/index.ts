@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
+import { RuntimeStateTracker } from "./runtimeState.js";
 
 interface PendingClientRequest {
   socket: WebSocket;
@@ -17,6 +18,15 @@ interface PendingClientRequest {
 const config = await loadConfig();
 const clients = new Set<WebSocket>();
 const clientLiveness = new WeakMap<WebSocket, boolean>();
+const socketDiagnostics = {
+  lastConnectedAt: null as string | null,
+  lastDisconnectedAt: null as string | null,
+  lastRejectedAt: null as string | null,
+  lastErrorAt: null as string | null,
+  lastRemoteAddress: null as string | null,
+  lastClose: null as string | null,
+  lastError: null as string | null,
+};
 const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
@@ -29,6 +39,7 @@ const desktopSync = new DesktopSync(
   (status) => broadcast({ type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: status }),
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
+const runtimeState = new RuntimeStateTracker();
 
 const codex = new CodexAppServer(config.codexBin, {
   onResponse: handleCodexResponse,
@@ -57,6 +68,8 @@ const httpServer = createServer((request, response) => {
       status: codexReady ? "ready" : "starting",
       clients: clients.size,
       uptimeSeconds: Math.floor(process.uptime()),
+      activeTurns: runtimeState.activeCount,
+      socket: socketDiagnostics,
       desktopSync: desktopSync.status,
     }));
     return;
@@ -67,12 +80,17 @@ const httpServer = createServer((request, response) => {
 const webSocketServer = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
 httpServer.on("upgrade", (request, socket, head) => {
+  socketDiagnostics.lastRemoteAddress = request.socket.remoteAddress ?? null;
   if (request.headers.origin) {
+    socketDiagnostics.lastRejectedAt = new Date().toISOString();
+    socketDiagnostics.lastError = "WebSocket origin header was rejected.";
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
   if (!isAuthorized(request.headers.authorization, config.token)) {
+    socketDiagnostics.lastRejectedAt = new Date().toISOString();
+    socketDiagnostics.lastError = "WebSocket authorization failed.";
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -85,6 +103,8 @@ httpServer.on("upgrade", (request, socket, head) => {
 webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
+  socketDiagnostics.lastConnectedAt = new Date().toISOString();
+  socketDiagnostics.lastError = null;
   console.log(`[socket] mobile client connected (${clients.size} total)`);
   send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: desktopSync.status });
   for (const request of pendingServerRequests.values()) {
@@ -105,12 +125,18 @@ webSocketServer.on("connection", (socket) => {
     }
   });
   socket.on("pong", () => clientLiveness.set(socket, true));
-  socket.on("close", () => {
+  socket.on("close", (code, reason) => {
     clients.delete(socket);
     clientLiveness.delete(socket);
+    socketDiagnostics.lastDisconnectedAt = new Date().toISOString();
+    socketDiagnostics.lastClose = `${code}${reason.length ? `: ${reason.toString("utf8")}` : ""}`;
     console.log(`[socket] mobile client disconnected (${clients.size} total)`);
   });
-  socket.on("error", (error) => console.error(`[socket] ${error.message}`));
+  socket.on("error", (error) => {
+    socketDiagnostics.lastErrorAt = new Date().toISOString();
+    socketDiagnostics.lastError = error.message;
+    console.error(`[socket] ${error.message}`);
+  });
 });
 
 const heartbeatInterval = setInterval(() => {
@@ -140,6 +166,10 @@ httpServer.listen(config.port, config.host, () => {
 async function handleClientMessage(socket: WebSocket, raw: string): Promise<void> {
   const message = parseClientMessage(raw);
   if (message.type === "rpc") {
+    if (message.method === "relay/thread/runtime") {
+      send(socket, { type: "rpcResult", id: message.id, result: runtimeState.snapshot(message.params.threadId) });
+      return;
+    }
     if (message.method.startsWith("relay/")) {
       try {
         const result = await fileTransfer.handle(message.method, message.params);
@@ -184,11 +214,14 @@ function handleCodexResponse(message: JsonObject): void {
   if ("error" in message) payload.error = message.error;
   send(pending.socket, payload);
   if (pending.method === "turn/start" && !("error" in message)) {
+    const result = isObject(message.result) ? message.result : {};
+    runtimeState.observeTurnStart(pending.params.threadId, result.turn);
     desktopSync.activateThread(pending.params.threadId, "turn-started");
   }
 }
 
 function handleCodexNotification(message: JsonObject): void {
+  runtimeState.observeNotification(message);
   broadcast({ type: "event", ...message });
   if (message.method === "turn/completed" && isObject(message.params)) {
     desktopSync.activateThread(message.params.threadId, "turn-completed");
