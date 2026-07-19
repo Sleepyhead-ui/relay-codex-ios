@@ -33,6 +33,11 @@ struct RootView: View {
             ConnectionView(canDismiss: !store.needsConnection)
         }
         .sheet(isPresented: $store.showingSettings) { SettingsView() }
+        .sheet(isPresented: $store.showingNewTask) {
+            NewTaskView()
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(item: $store.pendingApproval) { approval in ApprovalSheet(approval: approval) }
         .sheet(item: $store.sharedFile) { file in
             ShareSheet(items: [file.url])

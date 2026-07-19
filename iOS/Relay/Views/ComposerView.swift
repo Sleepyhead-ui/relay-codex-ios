@@ -138,7 +138,7 @@ struct ComposerView: View {
         .frame(maxWidth: RelayTheme.contentWidth)
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 8)
+        .padding(.bottom, 2)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.activePlan)
         .toolbar {

@@ -62,7 +62,7 @@ struct ConversationView: View {
             .accessibilityLabel("设置和工作区权限")
 
             Button {
-                Task { await store.newThread() }
+                store.showingNewTask = true
             } label: {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: 17, weight: .medium))
@@ -205,7 +205,7 @@ private struct EmptyConversationView: View {
                 Text("What should Codex work on?")
                     .font(.system(size: 22, weight: .semibold))
                     .multilineTextAlignment(.center)
-                Text(store.host.workingDirectory.isEmpty ? "Connected to \(store.host.name)" : store.host.workingDirectory)
+                Text(projectLabel)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -216,6 +216,11 @@ private struct EmptyConversationView: View {
         }
         .padding(.horizontal, 30)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var projectLabel: String {
+        let directory = store.currentWorkingDirectory
+        return directory.isEmpty ? "已连接到 \(store.host.name)" : directory.lastPathComponentForDisplay
     }
 }
 

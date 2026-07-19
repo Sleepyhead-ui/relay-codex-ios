@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FileTransferManager } from "../dist/fileTransfer.js";
@@ -46,4 +46,15 @@ test("rejects downloads outside allowed roots and invalid chunk order", async (t
   await assert.rejects(() => manager.handle("relay/file/upload/chunk", {
     uploadId: started.uploadId, index: 1, data: "YQ==",
   }), /Expected upload chunk 0/);
+});
+
+test("creates project folders only under the configured default directory", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-project-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const manager = new FileTransferManager(root, path.join(root, ".relay-files"));
+
+  const created = await manager.handle("relay/project/create", { name: "mobile-project" });
+  assert.equal(created.path, path.join(root, "mobile-project"));
+  assert.equal((await stat(created.path)).isDirectory(), true);
+  await assert.rejects(() => manager.handle("relay/project/create", { name: "..\\outside" }), /cannot contain/);
 });

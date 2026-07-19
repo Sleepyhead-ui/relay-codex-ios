@@ -53,7 +53,7 @@ struct TranscriptRow: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
-                    MarkdownContentView(source: item.text)
+                    MarkdownContentView(source: item.textWithoutDownloadLinks)
                     if !item.downloadablePaths.isEmpty {
                         DownloadFileLinks(paths: item.downloadablePaths)
                     }

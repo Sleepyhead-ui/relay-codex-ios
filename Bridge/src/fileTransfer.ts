@@ -41,8 +41,22 @@ export class FileTransferManager {
     case "relay/file/upload/finish": return this.finishUpload(params);
     case "relay/file/download/start": return this.startDownload(params);
     case "relay/file/download/chunk": return this.downloadChunk(params);
+    case "relay/project/create": return this.createProject(params);
     default: throw new Error(`Unsupported Relay method: ${method}`);
     }
+  }
+
+  private async createProject(params: JsonObject): Promise<JsonObject> {
+    if (!this.defaultCwd) throw new Error("Configure a default project directory on Relay Bridge first.");
+    const suppliedName = requiredString(params, "name").trim();
+    const name = safeName(suppliedName);
+    if (name !== suppliedName) throw new Error("Project folder names cannot contain Windows path separators or reserved characters.");
+    const projectPath = path.resolve(this.defaultCwd, name);
+    if (!isInside(this.defaultCwd, projectPath) || projectPath === this.defaultCwd) {
+      throw new Error("The project folder must be inside the default project directory.");
+    }
+    await mkdir(projectPath, { recursive: false });
+    return { path: projectPath, name };
   }
 
   private async startUpload(params: JsonObject): Promise<JsonObject> {

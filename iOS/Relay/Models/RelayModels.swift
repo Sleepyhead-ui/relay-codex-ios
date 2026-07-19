@@ -301,6 +301,17 @@ struct TranscriptItem: Identifiable, Equatable {
             return value
         }
     }
+    var textWithoutDownloadLinks: String {
+        guard role == .assistant, !downloadablePaths.isEmpty else { return text }
+        let pattern = #"\[[^\]]+\]\(<?[A-Za-z]:[\\/][^)>]+>?\)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return text }
+        return text.components(separatedBy: .newlines).compactMap { line in
+            let range = NSRange(line.startIndex..., in: line)
+            guard expression.firstMatch(in: line, range: range) != nil else { return line }
+            let stripped = expression.stringByReplacingMatches(in: line, range: range, withTemplate: "")
+            return stripped.trimmingCharacters(in: .whitespaces).isEmpty ? nil : stripped
+        }.joined(separator: "\n")
+    }
 
     static func from(json: JSONValue, turnId: String? = nil) -> TranscriptItem? {
         guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
@@ -531,5 +542,11 @@ extension String {
     var lastPathComponentForDisplay: String {
         let normalized = replacingOccurrences(of: "\\", with: "/")
         return normalized.split(separator: "/").last.map(String.init) ?? self
+    }
+    var normalizedWindowsPath: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "\\")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\\"))
+            .lowercased()
     }
 }

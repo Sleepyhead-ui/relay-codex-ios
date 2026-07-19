@@ -99,10 +99,7 @@ private struct InlineMarkdownText: View {
     }
 
     var body: some View {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .full)
-        ) {
+        if let attributed = styledMarkdown {
             Text(attributed)
                 .font(.system(size: size, weight: weight))
                 .lineSpacing(lineSpacing)
@@ -118,6 +115,21 @@ private struct InlineMarkdownText: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var styledMarkdown: AttributedString? {
+        guard var attributed = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .full)
+        ) else { return nil }
+
+        for run in attributed.runs {
+            guard run.inlinePresentationIntent?.contains(.code) == true else { continue }
+            attributed[run.range].font = .system(size: max(11, size - 1), design: .monospaced)
+            attributed[run.range].backgroundColor = RelayTheme.codeFill
+            attributed[run.range].foregroundColor = .primary
+        }
+        return attributed
     }
 }
 

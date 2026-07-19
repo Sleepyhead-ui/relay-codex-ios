@@ -18,9 +18,10 @@ struct SettingsView: View {
                 }
 
                 Section("Task defaults") {
-                    TextField("Working directory", text: $store.host.workingDirectory)
+                    TextField("默认项目目录", text: $store.host.workingDirectory)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .onChange(of: store.host.workingDirectory) { _ in store.saveHostConfiguration() }
                     LabeledContent("Model", value: store.selectedModel?.displayName ?? "Default")
                     LabeledContent("Reasoning", value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "Default")
 
@@ -58,7 +59,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.5.5")
+                    LabeledContent("Relay", value: "0.5.6")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }

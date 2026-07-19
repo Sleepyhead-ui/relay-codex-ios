@@ -12,6 +12,7 @@ final class RelayStore: ObservableObject {
     @Published var sidebarOpen = false
     @Published var showingConnection = false
     @Published var showingSettings = false
+    @Published var showingNewTask = false
     @Published var pendingApproval: ApprovalRequest?
     @Published var errorMessage: String?
     @Published var isLoadingThread = false
@@ -35,9 +36,23 @@ final class RelayStore: ObservableObject {
     private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
     private var threadSnapshots: [String: ThreadSnapshot] = [:]
+    private var workingDirectoryOverrides: [String: String] = [:]
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
+    var currentWorkingDirectory: String {
+        if let cwd = selectedThread?.cwd.nonEmpty { return cwd }
+        if let selectedThreadId, let cwd = workingDirectoryOverrides[selectedThreadId]?.nonEmpty { return cwd }
+        return host.workingDirectory
+    }
+    var recentProjectDirectories: [String] {
+        var seen = Set<String>()
+        return threads.compactMap { thread in
+            let path = thread.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty, seen.insert(path.normalizedWindowsPath).inserted else { return nil }
+            return path
+        }
+    }
     var selectedModel: CodexModelOption? {
         modelOptions.first { $0.id == selectedModelId || $0.model == selectedModelId }
     }
@@ -123,6 +138,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         threadSnapshots = [:]
+        workingDirectoryOverrides = [:]
         showingSettings = false
         showingConnection = true
     }
@@ -175,19 +191,22 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    func newThread() async {
+    @discardableResult
+    func newThread(workingDirectory: String? = nil) async -> Bool {
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
-            return
+            return false
         }
         do {
             activePlan = []
+            let projectDirectory = (workingDirectory ?? host.workingDirectory)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             var params: [String: JSONValue] = [
                 "approvalPolicy": .string("on-request"),
                 "sandbox": .string(workspaceAccess.threadSandbox),
                 "threadSource": .string("relay-ios")
             ]
-            if !host.workingDirectory.isEmpty { params["cwd"] = .string(host.workingDirectory) }
+            if !projectDirectory.isEmpty { params["cwd"] = .string(projectDirectory) }
             if let model = selectedModel?.model { params["model"] = .string(model) }
             let result = try await socket.rpc(method: "thread/start", params: params)
             guard let id = result["thread"]?["id"]?.stringValue else {
@@ -195,6 +214,7 @@ final class RelayStore: ObservableObject {
             }
             cacheCurrentThread()
             selectedThreadId = id
+            if !projectDirectory.isEmpty { workingDirectoryOverrides[id] = projectDirectory }
             messages = []
             turnMetadata = [:]
             isRunning = false
@@ -203,9 +223,28 @@ final class RelayStore: ObservableObject {
             if let model = result["model"]?.stringValue { selectedModelId = model }
             await applyThreadSettings(showErrors: false)
             await refreshThreads()
+            return true
         } catch {
             report(error)
+            return false
         }
+    }
+
+    func createProjectFolder(named name: String) async -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        do {
+            let result = try await socket.rpc(method: "relay/project/create", params: ["name": .string(trimmed)])
+            return result["path"]?.stringValue
+        } catch {
+            report(error)
+            return nil
+        }
+    }
+
+    func saveHostConfiguration() {
+        guard let data = try? JSONEncoder().encode(host) else { return }
+        UserDefaults.standard.set(data, forKey: hostDefaultsKey)
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
@@ -292,7 +331,7 @@ final class RelayStore: ObservableObject {
                 "clientUserMessageId": .string(clientMessageId),
                 "input": .array(input),
                 "summary": .string("detailed"),
-                "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: host.workingDirectory)
+                "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
             ]
             if let model = selectedModel?.model { params["model"] = .string(model) }
             if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
@@ -430,7 +469,7 @@ final class RelayStore: ObservableObject {
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
             "summary": .string("detailed"),
-            "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: host.workingDirectory)
+            "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         ]
         if let model = selectedModel?.model { params["model"] = .string(model) }
         if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
