@@ -1,7 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { WebSocket } from "ws";
 
 const THREAD_ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9-]{27,}$/i;
+const execFileAsync = promisify(execFile);
 
 export interface DesktopSyncStatus {
   enabled: boolean;
@@ -21,6 +23,7 @@ export class DesktopSync {
   private readonly lastActivation = new Map<string, number>();
   private statusValue: DesktopSyncStatus;
   private lastLaunchAttemptAt = 0;
+  private activeCdpPort: number | undefined;
 
   constructor(
     readonly enabled: boolean,
@@ -28,6 +31,7 @@ export class DesktopSync {
     private readonly desktopAppPath: string | undefined,
     private readonly log: (message: string) => void,
     private readonly onStatusChange: (status: DesktopSyncStatus) => void = () => {},
+    private readonly discoverCdpPorts: () => Promise<number[]> = discoverWindowsCdpPorts,
   ) {
     this.statusValue = { enabled, mode: enabled ? "pending" : "off" };
   }
@@ -53,12 +57,10 @@ export class DesktopSync {
     this.onStatusChange(this.status);
     await this.ensureDesktopDebugging();
     let enhanced = false;
-    if (reason === "turn-completed") {
-      try {
-        enhanced = await this.reloadDesktopRenderer();
-      } catch (error) {
-        this.log(`Enhanced refresh unavailable: ${error instanceof Error ? error.message : String(error)}`);
-      }
+    try {
+      enhanced = await this.reloadDesktopRenderer();
+    } catch (error) {
+      this.log(`Enhanced refresh unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     if (enhanced) await delay(550);
@@ -90,7 +92,9 @@ export class DesktopSync {
   }
 
   private async reloadDesktopRenderer(): Promise<boolean> {
-    const response = await fetch(`http://127.0.0.1:${this.cdpPort}/json/list`, { signal: AbortSignal.timeout(1_500) });
+    const port = await this.resolveCdpPort();
+    if (!port) return false;
+    const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1_500) });
     if (!response.ok) return false;
     const targets = await response.json() as CdpTarget[];
     const target = targets.find((item) =>
@@ -104,7 +108,7 @@ export class DesktopSync {
   }
 
   private async ensureDesktopDebugging(): Promise<void> {
-    if (await this.isCdpAvailable() || !this.desktopAppPath || Date.now() - this.lastLaunchAttemptAt < 30_000) return;
+    if (await this.resolveCdpPort() || !this.desktopAppPath || Date.now() - this.lastLaunchAttemptAt < 30_000) return;
     this.lastLaunchAttemptAt = Date.now();
     try {
       const child = spawn(this.desktopAppPath, [
@@ -117,19 +121,61 @@ export class DesktopSync {
       });
       child.unref();
       await delay(900);
+      await this.resolveCdpPort();
     } catch (error) {
       this.log(`Could not start Codex for enhanced sync: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  private async isCdpAvailable(): Promise<boolean> {
+  private async resolveCdpPort(): Promise<number | undefined> {
+    const knownPorts = [...new Set([this.activeCdpPort, this.cdpPort])]
+      .filter((value): value is number => value !== undefined);
+    for (const port of knownPorts) {
+      if (await this.isCdpAvailable(port)) {
+        this.activeCdpPort = port;
+        return port;
+      }
+    }
+
+    let discoveredPorts: number[] = [];
     try {
-      const response = await fetch(`http://127.0.0.1:${this.cdpPort}/json/version`, { signal: AbortSignal.timeout(600) });
+      discoveredPorts = await this.discoverCdpPorts();
+    } catch (error) {
+      this.log(`Could not discover the Codex debug port: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    for (const port of [...new Set(discoveredPorts)].filter((port) => !knownPorts.includes(port))) {
+      if (await this.isCdpAvailable(port)) {
+        this.activeCdpPort = port;
+        return port;
+      }
+    }
+    this.activeCdpPort = undefined;
+    return undefined;
+  }
+
+  private async isCdpAvailable(port: number): Promise<boolean> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(600) });
       return response.ok;
     } catch {
       return false;
     }
   }
+}
+
+async function discoverWindowsCdpPorts(): Promise<number[]> {
+  if (process.platform !== "win32") return [];
+  const script = "Get-CimInstance Win32_Process -Filter \"Name = 'ChatGPT.exe'\" | Select-Object -ExpandProperty CommandLine";
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    timeout: 2_500,
+    windowsHide: true,
+    maxBuffer: 512 * 1024,
+  });
+  const ports = [...stdout.matchAll(/--remote-debugging-port(?:=|\s+)(\d+)/g)]
+    .map((match) => Number.parseInt(match[1] ?? "", 10))
+    .filter((port) => Number.isInteger(port) && port >= 1 && port <= 65_535);
+  return [...new Set(ports)];
 }
 
 function sendCdpReload(endpoint: string): Promise<void> {
