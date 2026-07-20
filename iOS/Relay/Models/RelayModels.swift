@@ -426,11 +426,17 @@ struct TranscriptItem: Identifiable, Equatable {
         case "mcpToolCall":
             let name = json["tool"]?.stringValue ?? "MCP tool"
             let server = json["server"]?.stringValue ?? ""
+            if isCommandTool(name: name, namespace: server) {
+                return commandToolItem(id: id, turnId: turnId, json: json, name: name)
+            }
             let result = prettyJSON(json["result"]) ?? prettyJSON(json["error"]) ?? prettyJSON(json["arguments"])
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: friendlyToolTitle(name: name, namespace: server), text: friendlyToolSummary(name: name, namespace: server), detail: result, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue, errorMessage: readableError(json))
         case "dynamicToolCall":
             let name = json["tool"]?.stringValue ?? "Tool"
             let namespace = json["namespace"]?.stringValue ?? ""
+            if isCommandTool(name: name, namespace: namespace) {
+                return commandToolItem(id: id, turnId: turnId, json: json, name: name)
+            }
             let detail = prettyJSON(json["contentItems"]) ?? prettyJSON(json["result"]) ?? prettyJSON(json["arguments"])
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .other, title: friendlyToolTitle(name: name, namespace: namespace), text: friendlyToolSummary(name: name, namespace: namespace), detail: detail, status: json["status"]?.stringValue, durationMs: json["durationMs"]?.intValue, errorMessage: readableError(json))
         case "collabAgentToolCall":
@@ -470,6 +476,81 @@ struct TranscriptItem: Identifiable, Equatable {
         case "run": return "运行命令"
         default: return "运行命令"
         }
+    }
+
+    private static func isCommandTool(name: String, namespace: String) -> Bool {
+        let normalizedName = name.lowercased()
+        let combined = "\(namespace) \(name)".lowercased()
+        return normalizedName == "exec"
+            || normalizedName == "exec_command"
+            || normalizedName == "shell_command"
+            || combined.contains(" shell_command")
+            || combined.contains(" exec_command")
+    }
+
+    private static func commandToolItem(
+        id: String,
+        turnId: String?,
+        json: JSONValue,
+        name: String
+    ) -> TranscriptItem {
+        let arguments = json["arguments"] ?? json["input"]
+        let command = extractCommand(arguments)
+            ?? (name.lowercased() == "exec" ? "执行命令" : name)
+        let output = prettyJSON(json["contentItems"])
+            ?? prettyJSON(json["result"])
+            ?? prettyJSON(json["error"])
+        return TranscriptItem(
+            id: id,
+            turnId: turnId,
+            role: .tool,
+            kind: .command,
+            title: "运行命令",
+            text: command,
+            detail: output,
+            status: json["status"]?.stringValue,
+            durationMs: json["durationMs"]?.intValue,
+            exitCode: json["exitCode"]?.intValue,
+            cwd: json["cwd"]?.stringValue,
+            errorMessage: readableError(json)
+        )
+    }
+
+    private static func extractCommand(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if let object = value.objectValue {
+            for key in ["command", "cmd", "script"] {
+                if let command = object[key]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !command.isEmpty {
+                    return command
+                }
+            }
+        }
+        guard let raw = value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(JSONValue.self, from: data),
+           decoded != value,
+           let nested = extractCommand(decoded) {
+            return nested
+        }
+
+        let pattern = #"(?s)\bcommand\s*:\s*(\"(?:\\.|[^\"\\])*\")"#
+        if let expression = try? NSRegularExpression(pattern: pattern),
+           let match = expression.firstMatch(in: raw, range: NSRange(raw.startIndex..., in: raw)),
+           match.numberOfRanges > 1,
+           let quotedRange = Range(match.range(at: 1), in: raw) {
+            let quoted = String(raw[quotedRange])
+            if let data = quoted.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(String.self, from: data),
+               !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return decoded
+            }
+        }
+
+        return raw.contains("tools.shell_command") ? nil : raw
     }
 
     private static func cleanDesktopUserText(_ text: String) -> String {

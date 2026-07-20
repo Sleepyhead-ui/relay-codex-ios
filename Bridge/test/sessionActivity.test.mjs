@@ -28,6 +28,23 @@ test("infers an active desktop turn from the rollout file after bridge restart",
         type: "response_item",
         payload: { type: "message", id: "message.1", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Still working" }] },
       },
+      {
+        timestamp: "2026-07-19T16:16:32.000Z",
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          id: "tool.1",
+          call_id: "call.1",
+          name: "exec",
+          input: 'const result = await tools.shell_command({ command: "Get-ChildItem -Force" });',
+          status: "completed",
+        },
+      },
+      {
+        timestamp: "2026-07-19T16:16:33.000Z",
+        type: "response_item",
+        payload: { type: "custom_tool_call_output", call_id: "call.1", output: "Exit code: 0" },
+      },
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
 
     const sessions = new SessionActivityTracker();
@@ -40,8 +57,12 @@ test("infers an active desktop turn from the rollout file after bridge restart",
     assert.equal(active.activeTurnId, turnId);
     assert.equal(active.startedAt, 1784477786);
     const turn = await sessions.turnSnapshot(threadId);
-    assert.equal(turn.items.length, 2);
-    assert.deepEqual(turn.items.map((item) => item.type), ["reasoning", "agentMessage"]);
+    assert.equal(turn.items.length, 3);
+    assert.deepEqual(turn.items.map((item) => item.type), ["reasoning", "agentMessage", "dynamicToolCall"]);
+    assert.equal(turn.items[2].tool, "exec");
+    assert.match(turn.items[2].arguments, /Get-ChildItem -Force/);
+    assert.equal(turn.items[2].result, "Exit code: 0");
+    assert.equal(turn.items[2].status, "completed");
 
     await writeFile(sessionPath, `${JSON.stringify({
       timestamp: "2026-07-19T16:20:00.000Z",
