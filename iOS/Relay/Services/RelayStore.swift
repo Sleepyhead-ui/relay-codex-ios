@@ -1568,7 +1568,7 @@ final class RelayStore: ObservableObject {
                     break
                 }
             }
-            self?.liveSessionSyncTask = nil
+            self.liveSessionSyncTask = nil
         }
     }
 

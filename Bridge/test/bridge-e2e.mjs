@@ -9,6 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const token = "relay-integration-test-token-00000000";
 const endpoint = "ws://127.0.0.1:8876";
 const filesRoot = await mkdtemp(path.join(tmpdir(), "relay-e2e-"));
+const codexHome = await mkdtemp(path.join(tmpdir(), "relay-codex-home-"));
 const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
   cwd: root,
   windowsHide: true,
@@ -19,6 +20,7 @@ const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
     RELAY_ADVERTISE_URL: endpoint,
     RELAY_TOKEN: token,
     RELAY_FILES_ROOT: filesRoot,
+    CODEX_HOME: codexHome,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -48,8 +50,41 @@ try {
   console.error(output);
   throw error;
 } finally {
-  bridge.kill();
-  await rm(filesRoot, { recursive: true, force: true });
+  await stopBridge();
+  await Promise.all([
+    removeTree(filesRoot),
+    removeTree(codexHome),
+  ]);
+}
+
+async function stopBridge() {
+  if (bridge.exitCode !== null) return;
+  if (process.platform === "win32") {
+    await new Promise((resolve) => {
+      const killer = spawn("taskkill", ["/pid", String(bridge.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.once("exit", resolve);
+    });
+    return;
+  }
+  await new Promise((resolve) => {
+    bridge.once("exit", resolve);
+    bridge.kill("SIGTERM");
+  });
+}
+
+async function removeTree(directory) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 20 || !["EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 }
 
 async function waitForHealth() {
