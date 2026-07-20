@@ -17,6 +17,56 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Codex 实例") {
+                    if store.codexProfiles.isEmpty {
+                        HStack {
+                            ProgressView()
+                            Text("正在发现 Windows 实例")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(store.codexProfiles.sorted { left, right in
+                            if left.isActive != right.isActive { return left.isActive }
+                            if left.isRunning != right.isRunning { return left.isRunning }
+                            return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+                        }) { profile in
+                            Button {
+                                Task { await store.switchCodexProfile(profile.id) }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: profile.isRunning ? "circle.fill" : "circle")
+                                        .font(.system(size: 8))
+                                        .foregroundStyle(profile.isRunning ? Color.green : Color.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(profile.name)
+                                            .foregroundStyle(.primary)
+                                        Text(profile.isRunning ? "Windows 上正在运行" : "已保存的实例")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if profile.id == store.activeCodexProfileId {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(RelayTheme.accent)
+                                    }
+                                }
+                            }
+                            .disabled(store.isSwitchingCodexProfile || store.isRunning || store.pendingApproval != nil || profile.id == store.activeCodexProfileId)
+                        }
+                    }
+                    if store.isSwitchingCodexProfile {
+                        HStack {
+                            ProgressView()
+                            Text("正在切换并刷新对话")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if store.isRunning || store.pendingApproval != nil {
+                        Text("任务运行或等待审批时不能切换实例。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Task defaults") {
                     TextField("默认项目目录", text: $store.host.workingDirectory)
                         .textInputAutocapitalization(.never)
@@ -59,7 +109,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.6.15")
+                    LabeledContent("Relay", value: "0.6.16")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }

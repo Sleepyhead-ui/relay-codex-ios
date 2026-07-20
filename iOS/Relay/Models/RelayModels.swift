@@ -6,6 +6,26 @@ struct HostConfiguration: Codable, Equatable {
     var workingDirectory = ""
 }
 
+struct CodexProfile: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let codexHome: String
+    let source: String
+    let isActive: Bool
+    let isRunning: Bool
+
+    init?(json: JSONValue) {
+        guard let id = json["id"]?.stringValue,
+              let name = json["name"]?.stringValue else { return nil }
+        self.id = id
+        self.name = name
+        codexHome = json["codexHome"]?.stringValue ?? ""
+        source = json["source"]?.stringValue ?? "custom"
+        isActive = json["active"]?.boolValue ?? false
+        isRunning = json["running"]?.boolValue ?? false
+    }
+}
+
 enum WorkspaceAccessMode: String, Codable, CaseIterable, Identifiable {
     case readOnly
     case workspaceWrite
@@ -291,6 +311,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var cwd: String?
     var errorMessage: String?
     var deliveryState: MessageDeliveryState?
+    var imagePaths: [String]
 
     init(
         id: String,
@@ -306,7 +327,8 @@ struct TranscriptItem: Identifiable, Equatable {
         exitCode: Int? = nil,
         cwd: String? = nil,
         errorMessage: String? = nil,
-        deliveryState: MessageDeliveryState? = nil
+        deliveryState: MessageDeliveryState? = nil,
+        imagePaths: [String] = []
     ) {
         self.id = id
         self.turnId = turnId
@@ -322,6 +344,7 @@ struct TranscriptItem: Identifiable, Equatable {
         self.cwd = cwd
         self.errorMessage = errorMessage
         self.deliveryState = deliveryState
+        self.imagePaths = imagePaths
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
@@ -372,19 +395,27 @@ struct TranscriptItem: Identifiable, Equatable {
         let id = type == "userMessage" ? (json["clientId"]?.stringValue ?? serverId) : serverId
         switch type {
         case "userMessage":
+            var imagePaths: [String] = []
             let text = json["content"]?.arrayValue?
                 .compactMap { content -> String? in
-                    if let text = content["text"]?.stringValue { return cleanDesktopUserText(text) }
+                    if let text = content["text"]?.stringValue {
+                        let parsed = extractImageMarkup(text)
+                        for path in parsed.paths where !imagePaths.contains(path) { imagePaths.append(path) }
+                        return cleanDesktopUserText(parsed.text).nonEmpty
+                    }
                     if content["type"]?.stringValue == "mention" {
                         return "📎 \(content["name"]?.stringValue ?? content["path"]?.stringValue?.lastPathComponentForDisplay ?? "文件")"
                     }
-                    if content["type"]?.stringValue == "localImage" {
-                        return "📎 \(content["path"]?.stringValue?.lastPathComponentForDisplay ?? "图片")"
+                    if ["localImage", "image"].contains(content["type"]?.stringValue ?? "") {
+                        if let path = content["path"]?.stringValue, !imagePaths.contains(path) {
+                            imagePaths.append(path)
+                        }
+                        return nil
                     }
                     return nil
                 }
                 .joined(separator: "\n") ?? ""
-            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text)
+            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths)
         case "agentMessage":
             return TranscriptItem(
                 id: id,
@@ -560,6 +591,28 @@ struct TranscriptItem: Identifiable, Equatable {
               let markerRange = Range(match.range, in: text) else { return text }
         return String(text[markerRange.upperBound...])
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func extractImageMarkup(_ text: String) -> (text: String, paths: [String]) {
+        let pattern = #"<image\b[^>]*\bpath\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*>"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return (text, [])
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        let matches = expression.matches(in: text, range: range)
+        var paths: [String] = []
+        for match in matches {
+            for index in 1..<match.numberOfRanges where match.range(at: index).location != NSNotFound {
+                if let valueRange = Range(match.range(at: index), in: text) {
+                    let path = String(text[valueRange])
+                    if !path.isEmpty, !paths.contains(path) { paths.append(path) }
+                    break
+                }
+            }
+        }
+        let cleaned = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        let compacted = cleaned.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+        return (compacted.trimmingCharacters(in: .whitespacesAndNewlines), paths)
     }
 
     private static func commandFailureSummary(_ output: String?) -> String? {

@@ -28,6 +28,8 @@ final class RelayStore: ObservableObject {
     @Published var workspaceAccess: WorkspaceAccessMode = .workspaceWrite
     @Published var sharedFile: SharedFile?
     @Published var downloadingPath: String?
+    @Published private(set) var imagePreviewURLs: [String: URL] = [:]
+    @Published private(set) var loadingImagePaths = Set<String>()
     @Published var activePlan: [ExecutionPlanStep] = []
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
@@ -35,6 +37,9 @@ final class RelayStore: ObservableObject {
     @Published private(set) var upstreamRetryingByThread: [String: String] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
     @Published private(set) var isPreparingPrompt = false
+    @Published private(set) var codexProfiles: [CodexProfile] = []
+    @Published private(set) var activeCodexProfileId = ""
+    @Published private(set) var isSwitchingCodexProfile = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -56,6 +61,7 @@ final class RelayStore: ObservableObject {
     private var completedTurnIds = Set<String>()
     private var restorationTask: Task<Void, Never>?
     private var liveSessionSyncTask: Task<Void, Never>?
+    private var subscribedSessionThreadId: String?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -147,7 +153,11 @@ final class RelayStore: ObservableObject {
         socket.onConnected = { [weak self] in
             self?.scheduleRestoration()
         }
+        socket.onBridgeStatus = { [weak self] message in self?.handleBridgeStatus(message) }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
+        socket.onSessionSnapshot = { [weak self] threadId, snapshot in
+            self?.applySessionSnapshot(snapshot, threadId: threadId)
+        }
         socket.onServerRequest = { [weak self] message in self?.pendingApproval = ApprovalRequest(message: message) }
         socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
     }
@@ -234,6 +244,46 @@ final class RelayStore: ObservableObject {
             persistGenerationSettings()
         } catch {
             report(error, show: showErrors)
+        }
+    }
+
+    func refreshCodexProfiles(showErrors: Bool = false) async {
+        guard socket.state == .connected else { return }
+        do {
+            let result = try await socket.rpc(
+                method: "relay/codex/profiles/list",
+                params: [:],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            codexProfiles = result["profiles"]?.arrayValue?.compactMap(CodexProfile.init(json:)) ?? []
+            activeCodexProfileId = result["activeProfileId"]?.stringValue
+                ?? codexProfiles.first(where: \.isActive)?.id
+                ?? ""
+        } catch {
+            report(error, show: showErrors)
+        }
+    }
+
+    func switchCodexProfile(_ profileId: String) async {
+        guard profileId != activeCodexProfileId, !isSwitchingCodexProfile else { return }
+        guard !isRunning, pendingApproval == nil else {
+            errorMessage = "请先结束当前任务并处理审批，再切换 Codex 实例。"
+            return
+        }
+        isSwitchingCodexProfile = true
+        do {
+            let result = try await socket.rpc(
+                method: "relay/codex/profiles/switch",
+                params: ["profileId": .string(profileId)],
+                timeoutSeconds: 20,
+                reconnectOnTimeout: false
+            )
+            activeCodexProfileId = result["profile"]?["id"]?.stringValue ?? profileId
+            resetForCodexProfileSwitch()
+        } catch {
+            isSwitchingCodexProfile = false
+            report(error)
         }
     }
 
@@ -348,6 +398,17 @@ final class RelayStore: ObservableObject {
         if switchingThreads {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
+            if let subscribedSessionThreadId {
+                Task { [weak self] in
+                    _ = try? await self?.socket.rpc(
+                        method: "relay/thread/session/unsubscribe",
+                        params: ["threadId": .string(subscribedSessionThreadId)],
+                        timeoutSeconds: 4,
+                        reconnectOnTimeout: false
+                    )
+                }
+                self.subscribedSessionThreadId = nil
+            }
         }
         if switchingThreads { cacheCurrentThread() }
         setSelectedThread(id)
@@ -574,14 +635,16 @@ final class RelayStore: ObservableObject {
         sendingThreadIds.insert(threadId)
         isRunning = true
         setThreadStatus(threadId, status: "active")
-        let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
+        let attachmentSummary = readyAttachments.filter { !$0.isImage }.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let imagePaths = readyAttachments.filter(\.isImage).compactMap(\.remotePath)
         messages.append(TranscriptItem(
             id: clientMessageId,
             role: .user,
             kind: .message,
             text: displayText,
-            deliveryState: .sending
+            deliveryState: .sending,
+            imagePaths: imagePaths
         ))
         defer { sendingThreadIds.remove(threadId) }
         do {
@@ -671,8 +734,9 @@ final class RelayStore: ObservableObject {
             text: text,
             attachments: readyAttachments
         )
-        let attachmentSummary = readyAttachments.map { "📎 \($0.name)" }.joined(separator: "\n")
+        let attachmentSummary = readyAttachments.filter { !$0.isImage }.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let imagePaths = readyAttachments.filter(\.isImage).compactMap(\.remotePath)
         composerText = ""
         attachments = []
         sendingThreadIds.insert(threadId)
@@ -682,7 +746,8 @@ final class RelayStore: ObservableObject {
             role: .user,
             kind: .message,
             text: displayText,
-            deliveryState: .sending
+            deliveryState: .sending,
+            imagePaths: imagePaths
         ))
         defer { sendingThreadIds.remove(threadId) }
         do {
@@ -872,6 +937,26 @@ final class RelayStore: ObservableObject {
         } catch {
             report(error)
         }
+    }
+
+    func loadImagePreview(path: String) async {
+        guard imagePreviewURLs[path] == nil, !loadingImagePaths.contains(path) else { return }
+        loadingImagePaths.insert(path)
+        defer { loadingImagePaths.remove(path) }
+        do {
+            imagePreviewURLs[path] = try await socket.downloadImage(at: path)
+        } catch {
+            // A missing preview should not interrupt the conversation. Tapping the placeholder retries it.
+        }
+    }
+
+    func shareImagePreview(path: String) async {
+        if imagePreviewURLs[path] == nil { await loadImagePreview(path: path) }
+        guard let url = imagePreviewURLs[path] else {
+            errorMessage = "图片暂时无法从 Windows 读取。"
+            return
+        }
+        sharedFile = SharedFile(url: url)
     }
 
     func selectWorkspaceAccess(_ access: WorkspaceAccessMode) async {
@@ -1334,7 +1419,9 @@ final class RelayStore: ObservableObject {
             messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
         } else if let index = messages.firstIndex(where: { semanticallyMatches($0, item) }) {
             messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
-        } else if item.role != .user || !messages.contains(where: { $0.role == .user && $0.text == item.text }) {
+        } else if item.role != .user || !messages.contains(where: {
+            $0.role == .user && $0.text == item.text && $0.imagePaths == item.imagePaths
+        }) {
             messages.append(item)
         }
     }
@@ -1354,6 +1441,7 @@ final class RelayStore: ObservableObject {
         if merged.cwd == nil { merged.cwd = existing.cwd }
         if merged.errorMessage == nil { merged.errorMessage = existing.errorMessage }
         if merged.deliveryState == nil { merged.deliveryState = existing.deliveryState }
+        if merged.imagePaths.isEmpty { merged.imagePaths = existing.imagePaths }
         return merged
     }
 
@@ -1378,6 +1466,7 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleConnectionRestored() async {
+        await refreshCodexProfiles(showErrors: false)
         await refreshThreads(showErrors: false)
         if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         if let selectedThreadId {
@@ -1387,6 +1476,53 @@ final class RelayStore: ObservableObject {
                 await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
             }
         }
+    }
+
+    private func handleBridgeStatus(_ message: JSONValue) {
+        if let profileId = message["codexProfile"]?["id"]?.stringValue {
+            activeCodexProfileId = profileId
+        }
+        switch message["status"]?.stringValue {
+        case "switching":
+            isSwitchingCodexProfile = true
+            resetForCodexProfileSwitch()
+        case "ready" where isSwitchingCodexProfile:
+            Task { [weak self] in
+                guard let self else { return }
+                await self.handleConnectionRestored()
+                self.isSwitchingCodexProfile = false
+            }
+        default:
+            break
+        }
+    }
+
+    private func resetForCodexProfileSwitch() {
+        restorationTask?.cancel()
+        restorationTask = nil
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
+        subscribedSessionThreadId = nil
+        threadLoadGeneration = UUID()
+        threads = []
+        messages = []
+        turnMetadata = [:]
+        tokenUsageByThread = [:]
+        activeTurnIdsByThread = [:]
+        upstreamRetryingByThread = [:]
+        sendingThreadIds = []
+        queuedFollowUps = []
+        activePlan = []
+        threadSnapshots = [:]
+        olderTurnsCursorByThread = [:]
+        acceptedMessageIds = []
+        outboundDrafts = [:]
+        completedTurnIds = []
+        activeTurnId = nil
+        isRunning = false
+        isLoadingThread = false
+        setSelectedThread(nil)
+        UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
     }
 
     private func waitForRestoration() async {
@@ -1409,14 +1545,25 @@ final class RelayStore: ObservableObject {
               selectedThreadId != nil,
               socket.state == .connected else { return }
         liveSessionSyncTask = Task { [weak self] in
+            guard let self, let initialThreadId = self.selectedThreadId else { return }
+            if let initial = try? await self.socket.rpc(
+                method: "relay/thread/session/subscribe",
+                params: ["threadId": .string(initialThreadId)],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            ) {
+                self.subscribedSessionThreadId = initialThreadId
+                self.applySessionSnapshot(initial, threadId: initialThreadId)
+            }
             while !Task.isCancelled {
-                guard let self,
-                      let threadId = self.selectedThreadId,
+                guard let threadId = self.selectedThreadId,
                       self.isRunning,
                       self.socket.state == .connected else { break }
                 await self.syncSessionSnapshot(threadId: threadId)
                 do {
-                    try await Task.sleep(nanoseconds: 1_500_000_000)
+                    // File notifications provide the low-latency path. This
+                    // slower poll is only a reconciliation fallback.
+                    try await Task.sleep(nanoseconds: 8_000_000_000)
                 } catch {
                     break
                 }
@@ -1433,51 +1580,55 @@ final class RelayStore: ObservableObject {
                 timeoutSeconds: 12,
                 reconnectOnTimeout: false
             )
-            guard selectedThreadId == threadId,
-                  result["known"]?.boolValue == true,
-                  let turnId = result["turnId"]?.stringValue else { return }
-
-            let snapshotItems = result["items"]?.arrayValue?.compactMap {
-                TranscriptItem.from(json: $0, turnId: turnId)
-            } ?? []
-            if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
-
-            var metadata = turnMetadata[turnId] ?? TurnMetadata()
-            if let startedAt = result["startedAt"]?.doubleValue {
-                metadata.startedAt = Date(timeIntervalSince1970: startedAt)
-            }
-            if result["isRunning"]?.boolValue == true {
-                metadata.status = "inProgress"
-                metadata.completedAt = nil
-                metadata.durationMs = nil
-                turnMetadata[turnId] = metadata
-                isRunning = true
-                activeTurnId = turnId
-                activeTurnIdsByThread[threadId] = turnId
-                setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
-            } else {
-                metadata.status = "completed"
-                if let completedAt = result["completedAt"]?.doubleValue {
-                    metadata.completedAt = Date(timeIntervalSince1970: completedAt)
-                } else if metadata.completedAt == nil {
-                    metadata.completedAt = Date()
-                }
-                turnMetadata[turnId] = metadata
-                if activeTurnId == nil || activeTurnId == turnId {
-                    completedTurnIds.insert(turnId)
-                    isRunning = false
-                    activeTurnId = nil
-                    activeTurnIdsByThread.removeValue(forKey: threadId)
-                    setThreadStatus(threadId, status: "idle")
-                    activePlan = []
-                    liveSessionSyncTask?.cancel()
-                    liveSessionSyncTask = nil
-                }
-            }
-            cacheCurrentThread()
+            applySessionSnapshot(result, threadId: threadId)
         } catch {
             // Connection recovery owns transport errors; polling should not raise repeated alerts.
         }
+    }
+
+    private func applySessionSnapshot(_ result: JSONValue, threadId: String) {
+        guard selectedThreadId == threadId,
+              result["known"]?.boolValue == true,
+              let turnId = result["turnId"]?.stringValue else { return }
+
+        let snapshotItems = result["items"]?.arrayValue?.compactMap {
+            TranscriptItem.from(json: $0, turnId: turnId)
+        } ?? []
+        if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
+
+        var metadata = turnMetadata[turnId] ?? TurnMetadata()
+        if let startedAt = result["startedAt"]?.doubleValue {
+            metadata.startedAt = Date(timeIntervalSince1970: startedAt)
+        }
+        if result["isRunning"]?.boolValue == true {
+            metadata.status = "inProgress"
+            metadata.completedAt = nil
+            metadata.durationMs = nil
+            turnMetadata[turnId] = metadata
+            isRunning = true
+            activeTurnId = turnId
+            activeTurnIdsByThread[threadId] = turnId
+            setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
+        } else {
+            metadata.status = "completed"
+            if let completedAt = result["completedAt"]?.doubleValue {
+                metadata.completedAt = Date(timeIntervalSince1970: completedAt)
+            } else if metadata.completedAt == nil {
+                metadata.completedAt = Date()
+            }
+            turnMetadata[turnId] = metadata
+            if activeTurnId == nil || activeTurnId == turnId {
+                completedTurnIds.insert(turnId)
+                isRunning = false
+                activeTurnId = nil
+                activeTurnIdsByThread.removeValue(forKey: threadId)
+                setThreadStatus(threadId, status: "idle")
+                activePlan = []
+                liveSessionSyncTask?.cancel()
+                liveSessionSyncTask = nil
+            }
+        }
+        cacheCurrentThread()
     }
 
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {

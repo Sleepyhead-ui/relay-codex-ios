@@ -1,0 +1,68 @@
+{
+  "name": "relay-desktop",
+  "version": "0.6.16",
+  "private": true,
+  "author": "Relay Codex",
+  "description": "Realtime Windows desktop client for Relay Codex Bridge",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "prepare:bridge": "node scripts/prepare-bridge.cjs",
+    "dist": "npm run build && npm run prepare:bridge && electron-builder --win nsis portable"
+  },
+  "dependencies": {
+    "dompurify": "3.2.6",
+    "lucide-react": "0.468.0",
+    "marked": "15.0.12",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/react": "18.3.24",
+    "@types/react-dom": "18.3.7",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "4.5.2",
+    "concurrently": "9.2.0",
+    "esbuild": "0.25.5",
+    "electron": "37.2.3",
+    "electron-builder": "26.0.12",
+    "typescript": "5.8.3",
+    "vite": "6.3.5",
+    "vitest": "3.2.4",
+    "wait-on": "8.0.3"
+  },
+  "build": {
+    "appId": "com.relay.codex.desktop",
+    "productName": "Relay Desktop",
+    "asar": true,
+    "directories": { "output": "release" },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "bridge-runtime", "to": "bridge" }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "artifactName": "Relay-Desktop-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "portable": {
+      "artifactName": "Relay-Desktop-Portable-${version}-${arch}.${ext}"
+    }
+  }
+}

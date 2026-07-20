@@ -1,3 +1,4 @@
+import { watch, type FSWatcher } from "node:fs";
 import { stat, readFile } from "node:fs/promises";
 import type { JsonObject } from "./protocol.js";
 import { isObject } from "./protocol.js";
@@ -7,6 +8,13 @@ interface SessionState {
   updatedAt: number;
   signature?: string;
   cachedSnapshot?: SessionTurnSnapshot;
+}
+
+interface SessionWatch {
+  path: string;
+  watcher: FSWatcher;
+  listeners: Set<(snapshot: SessionTurnSnapshot) => void>;
+  debounce: NodeJS.Timeout | undefined;
 }
 
 export interface SessionActivitySnapshot {
@@ -34,6 +42,7 @@ export interface SessionTurnSnapshot extends JsonObject {
  */
 export class SessionActivityTracker {
   private readonly sessions = new Map<string, SessionState>();
+  private readonly watches = new Map<string, SessionWatch>();
 
   observeThreadList(result: unknown): void {
     const object = isObject(result) ? result : {};
@@ -164,6 +173,35 @@ export class SessionActivityTracker {
     }
   }
 
+  subscribe(threadId: unknown, listener: (snapshot: SessionTurnSnapshot) => void): () => void {
+    if (typeof threadId !== "string" || !threadId) throw new Error("A thread id is required.");
+    const session = this.sessions.get(threadId);
+    if (!session) throw new Error("The thread session file is not available yet.");
+    let state = this.watches.get(threadId);
+    if (!state || state.path !== session.path) {
+      if (state) {
+        if (state.debounce) clearTimeout(state.debounce);
+        state.watcher.close();
+      }
+      const listeners = state?.listeners ?? new Set<(snapshot: SessionTurnSnapshot) => void>();
+      const watcher = watch(session.path, { persistent: false }, () => this.scheduleSnapshot(threadId));
+      watcher.on("error", () => this.closeWatch(threadId));
+      state = { path: session.path, watcher, listeners, debounce: undefined };
+      this.watches.set(threadId, state);
+    }
+    state.listeners.add(listener);
+    return () => {
+      const current = this.watches.get(threadId);
+      if (!current) return;
+      current.listeners.delete(listener);
+      if (current.listeners.size === 0) this.closeWatch(threadId);
+    };
+  }
+
+  dispose(): void {
+    for (const threadId of [...this.watches.keys()]) this.closeWatch(threadId);
+  }
+
   private observeThread(value: unknown): void {
     if (!isObject(value)) return;
     const id = typeof value.id === "string" ? value.id : undefined;
@@ -175,6 +213,30 @@ export class SessionActivityTracker {
     } else {
       this.sessions.set(id, { path, updatedAt: Date.now() / 1000 });
     }
+  }
+
+  private scheduleSnapshot(threadId: string): void {
+    const state = this.watches.get(threadId);
+    if (!state) return;
+    if (state.debounce) clearTimeout(state.debounce);
+    state.debounce = setTimeout(() => {
+      const current = this.watches.get(threadId);
+      if (!current) return;
+      current.debounce = undefined;
+      void this.turnSnapshot(threadId).then((snapshot) => {
+        const latest = this.watches.get(threadId);
+        if (!latest) return;
+        for (const listener of latest.listeners) listener(snapshot);
+      }).catch(() => {});
+    }, 45);
+  }
+
+  private closeWatch(threadId: string): void {
+    const state = this.watches.get(threadId);
+    if (!state) return;
+    if (state.debounce) clearTimeout(state.debounce);
+    state.watcher.close();
+    this.watches.delete(threadId);
   }
 }
 

@@ -94,7 +94,20 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 
 该命令会创建当前用户的 Windows 计划任务。执行前可先检查脚本内容。
 
-## 2. 使用 GitHub Actions 构建 IPA
+## 2. Relay Desktop 实时模式
+
+Relay Desktop 与 iPhone 连接同一个 Bridge 和 Codex App Server。通过任意一端开始的任务都会把 token 增量、思考、进展、命令、计划、审批和终止状态同时广播给另一端，避免官方桌面 App 与 Bridge 使用两个独立进程时产生的同步延迟。
+
+发布页提供两个 Windows 构建：
+
+- `Relay-Desktop-Setup-<version>-x64.exe`：安装版，可创建桌面快捷方式。
+- `Relay-Desktop-Portable-<version>-x64.exe`：便携版，无需安装。
+
+首次启动会自动读取当前 Windows 用户的 `~\.relay\token`，并连接本机 Tailscale 地址。也可以在设置中手动修改 Bridge 地址、Token、默认工作目录和访问权限。
+
+官方 Codex 仍可继续使用。官方 App 发起的任务通过 rollout 文件变更通知同步，完整进展通常在写盘后几十到几百毫秒出现；由于 rollout 不保存 token delta，只有 Relay Desktop 或 iPhone 发起的同一 app-server 任务才能逐字流式同步。
+
+## 3. 使用 GitHub Actions 构建 IPA 与 Windows 客户端
 
 把 `Relay` 目录提交到 GitHub 仓库，然后打开 **Actions → Build Relay → Run workflow**。
 
@@ -107,9 +120,11 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 
 推送 `v0.1.0` 这类 Tag 时，Workflow 还会自动创建 GitHub Release 并附加 IPA。
 
+同一个 Workflow 还会在 Windows Runner 上测试并打包 Relay Desktop，生成 `Relay-Desktop-Windows` Artifact，并在 Tag Release 中附加安装版和便携版。
+
 公开仓库通常不消耗私有仓库的 macOS 免费额度；私有仓库的 macOS Runner 会按 GitHub 账户额度计费或扣减分钟数。
 
-## 3. 配对
+## 4. 配对
 
 1. 保持 Windows 上 `Start-Relay.ps1` 正在运行。
 2. 用 iPhone 系统相机扫描 PowerShell 中的二维码。
@@ -134,7 +149,7 @@ Bridge 使用稳定的 stdio 传输连接 Codex，避免直接把仍属实验性
 ## 当前限制
 
 - iOS 被系统挂起后 WebSocket 不会持续保活。Windows 任务仍继续，重新打开 Relay 后会恢复历史；第一版没有 APNs 推送。
-- 可以恢复本机保存的 Codex 线程，但不保证接管桌面 App 中正在输出的同一个活动 Turn。
+- Relay Desktop 与 iPhone 使用同一活动 Turn；官方 Codex App 发起的 Turn 只能按写盘后的完整事件段落同步，无法取得官方进程内部的 token delta。
 - Git diff 专用高亮视图、语音和多主机切换留到后续版本。
 - 单个上传或下载文件上限为 50 MB；下载仅允许当前工作区和 Relay 上传目录中的文件。
 - Codex App Server 会演进。升级 `@openai/codex` 前，应重新生成 schema 并运行兼容测试。
@@ -148,6 +163,17 @@ cd Bridge
 npm ci
 npm test
 npm start
+```
+
+Relay Desktop：
+
+```powershell
+cd Desktop
+npm ci
+npm test
+npm run dev
+# 生成安装版与便携版
+npm run dist
 ```
 
 iOS 工程由 XcodeGen 生成：

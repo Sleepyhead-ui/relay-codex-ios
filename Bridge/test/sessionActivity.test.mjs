@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RuntimeStateTracker } from "../dist/runtimeState.js";
@@ -103,6 +103,39 @@ test("treats an interrupted rollout turn as terminal", async () => {
     assert.equal(snapshot.isRunning, false);
     assert.equal(snapshot.turnId, turnId);
     assert.equal(snapshot.completedAt, Date.parse("2026-07-20T01:01:00.000Z") / 1000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("pushes an updated snapshot when the rollout file changes", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-watch-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  const threadId = "thread.watch";
+  try {
+    await writeFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-20T02:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn.watch" },
+    })}\n`, "utf8");
+    const sessions = new SessionActivityTracker();
+    sessions.observeThreadList({ data: [{ id: threadId, path: sessionPath }] });
+    const update = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("session update timed out")), 2_000);
+      const stop = sessions.subscribe(threadId, (snapshot) => {
+        if (!snapshot.items?.length) return;
+        clearTimeout(timeout);
+        stop();
+        resolve(snapshot);
+      });
+    });
+    await appendFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-20T02:00:01.000Z",
+      type: "response_item",
+      payload: { type: "message", id: "message.watch", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Immediate progress" }] },
+    })}\n`, "utf8");
+    const snapshot = await update;
+    assert.equal(snapshot.items[0].text, "Immediate progress");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

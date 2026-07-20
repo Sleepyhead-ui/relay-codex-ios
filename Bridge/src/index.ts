@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
+import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { FileTransferManager } from "./fileTransfer.js";
@@ -16,9 +17,12 @@ interface PendingClientRequest {
   params: JsonObject;
 }
 
-const config = await loadConfig();
+async function main(): Promise<void> {
+const codexProfiles = await CodexProfileRegistry.create();
+const config = await loadConfig(codexProfiles.activeCodexHome);
 const clients = new Set<WebSocket>();
 const clientLiveness = new WeakMap<WebSocket, boolean>();
+const sessionSubscriptions = new WeakMap<WebSocket, Map<string, () => void>>();
 const socketDiagnostics = {
   lastConnectedAt: null as string | null,
   lastDisconnectedAt: null as string | null,
@@ -41,34 +45,20 @@ const pendingClientRequests = new Map<string, PendingClientRequest>();
 const pendingServerRequests = new Map<string, JsonObject>();
 let nextRequestId = 1;
 let codexReady = false;
+let codexGeneration = 1;
+let activeCodexProfile = (await codexProfiles.list()).find((profile) => profile.active)!;
 const desktopSync = new DesktopSync(
   config.desktopSync,
   config.desktopCdpPort,
   config.desktopAppPath,
   (message) => console.log(`[desktop] ${message}`),
-  (status) => broadcast({ type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: status }),
+  (status) => broadcast(bridgeStatus(codexReady ? "ready" : "starting", status)),
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
-const runtimeState = new RuntimeStateTracker();
-const sessionActivity = new SessionActivityTracker();
+let runtimeState = new RuntimeStateTracker();
+let sessionActivity = new SessionActivityTracker();
 
-const codex = new CodexAppServer(config.codexBin, {
-  onResponse: handleCodexResponse,
-  onNotification: handleCodexNotification,
-  onRequest: handleCodexRequest,
-  onLog: (message) => {
-    if (message) console.log(`[codex] ${message}`);
-    if (message.includes("initialized")) {
-      codexReady = true;
-      broadcast({ type: "bridgeStatus", status: "ready", desktopSync: desktopSync.status });
-    }
-  },
-  onExit: (code, signal) => {
-    codexReady = false;
-    broadcast({ type: "bridgeStatus", status: "codexExited", code, signal });
-    console.error(`Codex App Server exited (code=${code}, signal=${signal}). Restart Relay Bridge.`);
-  },
-});
+let codex = createCodexAppServer(codexGeneration);
 
 await codex.start();
 
@@ -84,6 +74,7 @@ const httpServer = createServer((request, response) => {
       socket: socketDiagnostics,
       rpc: rpcDiagnostics,
       desktopSync: desktopSync.status,
+      codexProfile: activeCodexProfile,
     }));
     return;
   }
@@ -116,10 +107,11 @@ httpServer.on("upgrade", (request, socket, head) => {
 webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
+  sessionSubscriptions.set(socket, new Map());
   socketDiagnostics.lastConnectedAt = new Date().toISOString();
   socketDiagnostics.lastError = null;
   console.log(`[socket] mobile client connected (${clients.size} total)`);
-  send(socket, { type: "bridgeStatus", status: codexReady ? "ready" : "starting", desktopSync: desktopSync.status });
+  send(socket, bridgeStatus(codexReady ? "ready" : "starting"));
   for (const request of pendingServerRequests.values()) {
     send(socket, { type: "serverRequest", ...request });
   }
@@ -139,6 +131,8 @@ webSocketServer.on("connection", (socket) => {
   });
   socket.on("pong", () => clientLiveness.set(socket, true));
   socket.on("close", (code, reason) => {
+    for (const stop of sessionSubscriptions.get(socket)?.values() ?? []) stop();
+    sessionSubscriptions.delete(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
     socketDiagnostics.lastDisconnectedAt = new Date().toISOString();
@@ -190,11 +184,68 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
+    if (message.method === "relay/codex/profiles/list") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      const profiles = await codexProfiles.list();
+      activeCodexProfile = profiles.find((profile) => profile.active) ?? activeCodexProfile;
+      send(socket, { type: "rpcResult", id: message.id, result: { profiles, activeProfileId: activeCodexProfile.id } });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
+    if (message.method === "relay/codex/profiles/switch") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      try {
+        const profile = await switchCodexProfile(message.params.profileId);
+        send(socket, { type: "rpcResult", id: message.id, result: { profile } });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+      } catch (error) {
+        rpcDiagnostics.lastErrorAt = new Date().toISOString();
+        rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not switch Codex instances.";
+        send(socket, { type: "rpcResult", id: message.id, error: { message: rpcDiagnostics.lastError } });
+      }
+      return;
+    }
     if (message.method === "relay/thread/session/snapshot") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       const result = await sessionActivity.turnSnapshot(message.params.threadId);
       send(socket, { type: "rpcResult", id: message.id, result });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
+    if (message.method === "relay/thread/session/subscribe") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      try {
+        const threadId = String(message.params.threadId ?? "");
+        const subscriptions = sessionSubscriptions.get(socket);
+        subscriptions?.get(threadId)?.();
+        const stop = sessionActivity.subscribe(threadId, (snapshot) => {
+          send(socket, { type: "sessionSnapshot", threadId, snapshot });
+        });
+        subscriptions?.set(threadId, stop);
+        const result = await sessionActivity.turnSnapshot(threadId);
+        send(socket, { type: "rpcResult", id: message.id, result });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+      } catch (error) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: error instanceof Error ? error.message : "Could not watch the session." } });
+      }
+      return;
+    }
+    if (message.method === "relay/thread/session/unsubscribe") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      const threadId = String(message.params.threadId ?? "");
+      const subscriptions = sessionSubscriptions.get(socket);
+      subscriptions?.get(threadId)?.();
+      subscriptions?.delete(threadId);
+      send(socket, { type: "rpcResult", id: message.id, result: {} });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
@@ -323,12 +374,80 @@ function sendError(socket: WebSocket, message: string): void {
   send(socket, { type: "bridgeError", message });
 }
 
+function bridgeStatus(status: string, sync = desktopSync.status): JsonObject {
+  return { type: "bridgeStatus", status, desktopSync: sync, codexProfile: activeCodexProfile };
+}
+
+function createCodexAppServer(generation: number): CodexAppServer {
+  return new CodexAppServer(config.codexBin, {
+    onResponse: (message) => {
+      if (generation === codexGeneration) handleCodexResponse(message);
+    },
+    onNotification: (message) => {
+      if (generation === codexGeneration) handleCodexNotification(message);
+    },
+    onRequest: (message) => {
+      if (generation === codexGeneration) handleCodexRequest(message);
+    },
+    onLog: (message) => {
+      if (generation !== codexGeneration) return;
+      if (message) console.log(`[codex] ${message}`);
+      if (message.includes("initialized")) {
+        codexReady = true;
+        broadcast(bridgeStatus("ready"));
+      }
+    },
+    onExit: (code, signal) => {
+      if (generation !== codexGeneration) return;
+      codexReady = false;
+      broadcast({ ...bridgeStatus("codexExited"), code, signal });
+      console.error(`Codex App Server exited (code=${code}, signal=${signal}). Restart Relay Bridge.`);
+    },
+  }, { CODEX_HOME: codexProfiles.activeCodexHome });
+}
+
+async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
+  if (runtimeState.activeCount > 0) throw new Error("任务运行期间不能切换 Codex 实例，请先等待完成或停止任务。");
+  if (pendingClientRequests.size > 0) throw new Error("仍有请求正在处理，请稍后再切换 Codex 实例。");
+  if (pendingServerRequests.size > 0) throw new Error("请先处理当前审批，再切换 Codex 实例。");
+
+  const available = await codexProfiles.list();
+  const requested = available.find((profile) => profile.id === profileId);
+  if (!requested) throw new Error("找不到所选 Codex 实例，请刷新后重试。");
+  if (requested.active) return requested;
+
+  activeCodexProfile = await codexProfiles.select(profileId);
+  codexReady = false;
+  broadcast(bridgeStatus("switching"));
+  for (const client of clients) {
+    for (const stop of sessionSubscriptions.get(client)?.values() ?? []) stop();
+    sessionSubscriptions.set(client, new Map());
+  }
+  sessionActivity.dispose();
+  sessionActivity = new SessionActivityTracker();
+  runtimeState = new RuntimeStateTracker();
+
+  const previous = codex;
+  codexGeneration += 1;
+  await previous.stop();
+  codex = createCodexAppServer(codexGeneration);
+  await codex.start();
+  return activeCodexProfile;
+}
+
 function shutdown(): void {
   clearInterval(heartbeatInterval);
   for (const client of clients) client.close(1001, "Bridge shutting down");
-  codex.stop();
+  sessionActivity.dispose();
+  void codex.stop();
   httpServer.close(() => process.exit(0));
 }
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+}
+
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : error);
+  process.exit(1);
+});

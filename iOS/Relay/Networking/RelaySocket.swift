@@ -34,7 +34,9 @@ final class RelaySocket: ObservableObject {
     @Published private(set) var state: State = .disconnected
     @Published private(set) var desktopSyncMode = "unknown"
     var onConnected: (() -> Void)?
+    var onBridgeStatus: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
+    var onSessionSnapshot: ((String, JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
     var onNonfatalError: ((String) -> Void)?
 
@@ -200,7 +202,20 @@ final class RelaySocket: ObservableObject {
     }
 
     func downloadFile(at remotePath: String, progress: @escaping (Double) -> Void) async throws -> URL {
-        let started = try await rpc(method: "relay/file/download/start", params: ["path": .string(remotePath)])
+        try await download(at: remotePath, startMethod: "relay/file/download/start", directoryName: "Relay Downloads", progress: progress)
+    }
+
+    func downloadImage(at remotePath: String) async throws -> URL {
+        try await download(at: remotePath, startMethod: "relay/image/download/start", directoryName: "Relay Image Cache") { _ in }
+    }
+
+    private func download(
+        at remotePath: String,
+        startMethod: String,
+        directoryName: String,
+        progress: @escaping (Double) -> Void
+    ) async throws -> URL {
+        let started = try await rpc(method: startMethod, params: ["path": .string(remotePath)])
         guard let downloadId = started["downloadId"]?.stringValue else {
             throw SocketError.remote("Windows 未能开始发送文件。")
         }
@@ -223,11 +238,18 @@ final class RelaySocket: ObservableObject {
             index += 1
             progress(totalSize == 0 ? 1 : min(1, Double(output.count) / Double(totalSize)))
         }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Relay Downloads", isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let destination = uniqueFileURL(in: directory, name: name)
+        let destination = startMethod == "relay/image/download/start"
+            ? directory.appendingPathComponent(cacheFileName(for: remotePath, originalName: name))
+            : uniqueFileURL(in: directory, name: name)
         try output.write(to: destination, options: .atomic)
         return destination
+    }
+
+    private func cacheFileName(for remotePath: String, originalName: String) -> String {
+        let hash = remotePath.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
+        return "\(String(hash, radix: 16))-\(originalName)"
     }
 
     private func uniqueFileURL(in directory: URL, name: String) -> URL {
@@ -336,6 +358,7 @@ final class RelaySocket: ObservableObject {
             connectionTimeoutTask?.cancel()
             connectionTimeoutTask = nil
             let status = raw["status"] as? String
+            onBridgeStatus?(message)
             if let desktopSync = raw["desktopSync"] as? [String: Any], let mode = desktopSync["mode"] as? String {
                 desktopSyncMode = mode
             } else if let enabled = raw["desktopSync"] as? Bool {
@@ -368,6 +391,10 @@ final class RelaySocket: ObservableObject {
             }
         case "event":
             if let method = raw["method"] as? String { onEvent?(method, message["params"] ?? .object([:])) }
+        case "sessionSnapshot":
+            if let threadId = raw["threadId"] as? String {
+                onSessionSnapshot?(threadId, message["snapshot"] ?? .object([:]))
+            }
         case "serverRequest":
             onServerRequest?(message)
         case "bridgeError":

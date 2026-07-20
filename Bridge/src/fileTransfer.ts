@@ -5,6 +5,8 @@ import path from "node:path";
 import type { JsonObject } from "./protocol.js";
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif"]);
 export const FILE_CHUNK_BYTES = 512 * 1024;
 
 interface UploadSession {
@@ -40,6 +42,7 @@ export class FileTransferManager {
     case "relay/file/upload/chunk": return this.uploadChunk(params);
     case "relay/file/upload/finish": return this.finishUpload(params);
     case "relay/file/download/start": return this.startDownload(params);
+    case "relay/image/download/start": return this.startImageDownload(params);
     case "relay/file/download/chunk": return this.downloadChunk(params);
     case "relay/project/create": return this.createProject(params);
     default: throw new Error(`Unsupported Relay method: ${method}`);
@@ -104,9 +107,21 @@ export class FileTransferManager {
     if (!this.allowedRoots.some((root) => isInside(root, requestedPath))) {
       throw new Error("That file is outside the configured workspace.");
     }
+    return this.createDownload(requestedPath, MAX_FILE_BYTES);
+  }
+
+  private async startImageDownload(params: JsonObject): Promise<JsonObject> {
+    const requestedPath = path.resolve(requiredString(params, "path"));
+    if (!path.isAbsolute(requiredString(params, "path")) || !IMAGE_EXTENSIONS.has(path.extname(requestedPath).toLowerCase())) {
+      throw new Error("Only supported image files can be previewed.");
+    }
+    return this.createDownload(requestedPath, MAX_IMAGE_BYTES);
+  }
+
+  private async createDownload(requestedPath: string, maximumBytes: number): Promise<JsonObject> {
     const info = await stat(requestedPath);
     if (!info.isFile()) throw new Error("The requested path is not a file.");
-    if (info.size > MAX_FILE_BYTES) throw new Error("File must be 50 MB or smaller.");
+    if (info.size > maximumBytes) throw new Error(`File must be ${Math.floor(maximumBytes / 1024 / 1024)} MB or smaller.`);
     const downloadId = randomUUID();
     const name = path.basename(requestedPath);
     this.downloads.set(downloadId, { path: requestedPath, name, size: info.size });

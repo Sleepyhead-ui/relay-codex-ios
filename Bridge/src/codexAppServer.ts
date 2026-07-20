@@ -18,6 +18,7 @@ export class CodexAppServer {
   constructor(
     private readonly executable: string,
     private readonly handlers: CodexMessageHandlers,
+    private readonly environment: NodeJS.ProcessEnv = process.env,
   ) {}
 
   async start(): Promise<void> {
@@ -31,7 +32,7 @@ export class CodexAppServer {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: process.env,
+      env: { ...process.env, ...this.environment },
     });
     this.process = child;
 
@@ -49,7 +50,7 @@ export class CodexAppServer {
       method: "initialize",
       id: "relay.initialize",
       params: {
-        clientInfo: { name: "relay_ios", title: "Relay", version: "0.6.15" },
+        clientInfo: { name: "relay_ios", title: "Relay", version: "0.6.16" },
         capabilities: { experimentalApi: true },
       },
     });
@@ -60,8 +61,22 @@ export class CodexAppServer {
     this.process.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  stop(): void {
-    this.process?.kill();
+  async stop(): Promise<void> {
+    const child = this.process;
+    if (!child) return;
+    await new Promise<void>((resolve) => {
+      let completed = false;
+      const finish = () => {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(finish, 3_000);
+      timeout.unref();
+      child.once("exit", finish);
+      if (!child.kill()) finish();
+    });
   }
 
   private handleLine(line: string): void {

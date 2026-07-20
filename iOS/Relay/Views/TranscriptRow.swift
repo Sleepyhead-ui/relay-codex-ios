@@ -108,11 +108,16 @@ struct TranscriptRow: View {
                             .foregroundStyle(.tertiary)
                             .padding(.trailing, 3)
                     }
-                    MarkdownContentView(source: item.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .background(RelayTheme.softFill)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    if !item.imagePaths.isEmpty {
+                        InlineImageGrid(paths: item.imagePaths)
+                    }
+                    if !item.text.isEmpty {
+                        MarkdownContentView(source: item.text)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 11)
+                            .background(RelayTheme.softFill)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
                     if let deliveryState = item.deliveryState {
                         deliveryStatus(deliveryState)
                     }
@@ -179,6 +184,61 @@ struct TranscriptRow: View {
         case .uncertain(_): return .orange
         case .sending, .accepted: return .secondary
         }
+    }
+}
+
+private struct InlineImageGrid: View {
+    let paths: [String]
+
+    private var columns: [GridItem] {
+        paths.count == 1
+            ? [GridItem(.flexible(), spacing: 5)]
+            : [GridItem(.flexible(), spacing: 5), GridItem(.flexible(), spacing: 5)]
+    }
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .trailing, spacing: 5) {
+            ForEach(paths, id: \.self) { path in
+                InlineMessageImage(path: path)
+            }
+        }
+        .frame(width: paths.count == 1 ? 190 : 250)
+    }
+}
+
+private struct InlineMessageImage: View {
+    let path: String
+    @EnvironmentObject private var store: RelayStore
+
+    var body: some View {
+        Button {
+            Task { await store.shareImagePreview(path: path) }
+        } label: {
+            ZStack {
+                RelayTheme.softFill
+                if let url = store.imagePreviewURLs[path], let image = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else if store.loadingImagePaths.contains(path) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(4 / 3, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .task(id: path) { await store.loadImagePreview(path: path) }
     }
 }
 

@@ -1,0 +1,91 @@
+export type ConnectionState = "disconnected" | "connecting" | "handshaking" | "reconnecting" | "connected" | "error" | "failed";
+
+export interface ConnectionConfig { endpoint: string; token: string }
+export type ServiceState = "stopped" | "starting" | "running" | "failed";
+export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig }
+export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus }
+
+export interface CodexProfile {
+  id: string;
+  name: string;
+  codexHome: string;
+  source: "default" | "cockpit" | "custom";
+  active: boolean;
+  running: boolean;
+}
+
+export interface ThreadSummary {
+  id: string;
+  title: string;
+  preview: string;
+  cwd: string;
+  updatedAt: number;
+  status: string;
+}
+
+export type ItemKind = "user" | "assistant" | "reasoning" | "command" | "file" | "tool" | "plan" | "compaction" | "other";
+
+export interface TranscriptItem {
+  id: string;
+  turnId?: string;
+  kind: ItemKind;
+  text: string;
+  detail?: string;
+  title?: string;
+  phase?: string;
+  status?: string;
+  cwd?: string;
+  exitCode?: number;
+  imagePaths?: string[];
+}
+
+export interface TurnMetadata {
+  id: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface ModelOption {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  defaultEffort: string;
+  efforts: string[];
+  isDefault: boolean;
+}
+
+export interface PlanStep { id: string; text: string; status: string }
+export interface Attachment { path: string; name: string; isImage: boolean }
+export type WorkspaceAccess = "readOnly" | "workspaceWrite" | "fullAccess";
+
+export interface ApprovalRequest {
+  id: string | number;
+  method: string;
+  params: Record<string, any>;
+  title: string;
+  summary: string;
+  detail?: string;
+}
+
+declare global {
+  interface Window {
+    relayDesktop: {
+      bootstrap(): Promise<Bootstrap>;
+      serviceStatus(): Promise<ServiceStatus>;
+      startService(): Promise<ServiceStatus>;
+      connect(config: ConnectionConfig): Promise<boolean>;
+      disconnect(): Promise<void>;
+      send(message: unknown): Promise<boolean>;
+      pickFiles(): Promise<string[]>;
+      showFile(path: string): Promise<boolean>;
+      readImage(path: string): Promise<string | undefined>;
+      onMessage(listener: (message: any) => void): () => void;
+      onState(listener: (state: any) => void): () => void;
+      onService(listener: (state: ServiceStatus) => void): () => void;
+    };
+  }
+}

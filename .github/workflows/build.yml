@@ -72,3 +72,39 @@ jobs:
         with:
           files: iOS/Relay.ipa
           generate_release_notes: true
+
+  desktop:
+    name: Build Relay Desktop for Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: Desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            Desktop/package-lock.json
+            Bridge/package-lock.json
+      - run: npm ci
+      - run: npm ci
+        working-directory: Bridge
+      - run: npm test
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Relay-Desktop-Windows
+          path: |
+            Desktop/release/*.exe
+            Desktop/release/*.blockmap
+          if-no-files-found: error
+      - name: Attach Windows builds to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Desktop/release/*.exe
+            Desktop/release/*.blockmap
+          generate_release_notes: true

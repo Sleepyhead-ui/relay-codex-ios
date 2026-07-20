@@ -1,5 +1,11 @@
 Bridge/node_modules/
 Bridge/dist/
+Desktop/node_modules/
+Desktop/dist/
+Desktop/release*/
+Desktop/.playwright-cli/
+Desktop/output/
+Desktop/bridge-runtime/
 iOS/Relay.xcodeproj/
 iOS/build/
 iOS/Payload/
@@ -7,4 +13,3 @@ iOS/Relay.ipa
 iOS/Relay/Assets.xcassets/AppIcon.appiconset/*.png
 .DS_Store
 *.log
-
