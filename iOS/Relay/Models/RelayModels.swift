@@ -277,7 +277,7 @@ enum TranscriptKind: Equatable {
 }
 
 struct TranscriptItem: Identifiable, Equatable {
-    let id: String
+    var id: String
     var turnId: String?
     var role: TranscriptRole
     var kind: TranscriptKind

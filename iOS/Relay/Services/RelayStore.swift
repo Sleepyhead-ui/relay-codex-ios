@@ -1332,6 +1332,8 @@ final class RelayStore: ObservableObject {
     private func upsert(_ item: TranscriptItem) {
         if let index = messages.firstIndex(where: { $0.id == item.id }) {
             messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
+        } else if let index = messages.firstIndex(where: { semanticallyMatches($0, item) }) {
+            messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
         } else if item.role != .user || !messages.contains(where: { $0.role == .user && $0.text == item.text }) {
             messages.append(item)
         }
@@ -1482,15 +1484,58 @@ final class RelayStore: ObservableObject {
         let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
         let existing = messages.filter { $0.turnId == turnId }
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
-        let snapshotIds = Set(snapshotItems.map(\.id))
+        var consumedExistingIds = Set<String>()
         var merged = snapshotItems.map { item in
-            guard let previous = existingById[item.id] else { return item }
-            return mergeTranscriptItem(existing: previous, incoming: item)
+            if let previous = existingById[item.id] {
+                consumedExistingIds.insert(previous.id)
+                return mergeTranscriptItem(existing: previous, incoming: item)
+            }
+            if let previous = existing.first(where: {
+                !consumedExistingIds.contains($0.id) && semanticallyMatches($0, item)
+            }) {
+                consumedExistingIds.insert(previous.id)
+                var combined = mergeTranscriptItem(existing: previous, incoming: item)
+                // Keep the live/app-server identity so later deltas continue
+                // updating this row instead of recreating a second copy.
+                combined.id = previous.id
+                return combined
+            }
+            return item
         }
-        merged.append(contentsOf: existing.filter { !snapshotIds.contains($0.id) })
+        merged.append(contentsOf: existing.filter { !consumedExistingIds.contains($0.id) })
         guard merged != existing else { return }
         messages.removeAll { $0.turnId == turnId }
         messages.insert(contentsOf: merged, at: min(firstIndex, messages.endIndex))
+    }
+
+    private func semanticallyMatches(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
+        guard lhs.turnId == rhs.turnId, lhs.role == rhs.role, lhs.kind == rhs.kind else { return false }
+        switch lhs.kind {
+        case .message:
+            guard lhs.role == .assistant, lhs.phase == rhs.phase else { return false }
+            let lhsText = normalizedTranscriptText(lhs.text)
+            let rhsText = normalizedTranscriptText(rhs.text)
+            return !lhsText.isEmpty && lhsText == rhsText
+        case .command, .fileChange, .webSearch, .plan, .contextCompaction, .image:
+            let lhsText = normalizedTranscriptText(lhs.text)
+            let rhsText = normalizedTranscriptText(rhs.text)
+            return !lhsText.isEmpty && lhsText == rhsText
+        case .reasoning:
+            let lhsText = normalizedTranscriptText(lhs.text.nonEmpty ?? lhs.detail ?? "")
+            let rhsText = normalizedTranscriptText(rhs.text.nonEmpty ?? rhs.detail ?? "")
+            return !lhsText.isEmpty && lhsText == rhsText
+        case .subagent, .other:
+            return false
+        }
+    }
+
+    private func normalizedTranscriptText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func cacheCurrentThread() {
