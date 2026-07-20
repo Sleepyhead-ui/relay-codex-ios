@@ -40,7 +40,7 @@ export class RuntimeStateTracker {
       return;
     }
 
-    if (message.method === "turn/completed") {
+    if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(message.method)) {
       const turn = isObject(params.turn) ? params.turn : {};
       const turnId = typeof turn.id === "string"
         ? turn.id
@@ -64,7 +64,19 @@ export class RuntimeStateTracker {
   async snapshotWithExternal(threadId: unknown, external: SessionActivityTracker): Promise<ThreadRuntimeSnapshot> {
     const current = this.snapshot(threadId);
     const observed = await external.snapshot(threadId);
-    if (!observed?.active) return current;
+    if (!observed) return current;
+    if (!observed.active) {
+      const completed: StoredThreadRuntime = {
+        isRunning: false,
+        updatedAt: Math.max(current.updatedAt, observed.updatedAt),
+      };
+      this.set(String(threadId), completed);
+      return {
+        known: true,
+        isRunning: false,
+        updatedAt: completed.updatedAt,
+      };
+    }
     return {
       known: true,
       isRunning: true,

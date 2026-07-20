@@ -875,15 +875,51 @@ final class RelayStore: ObservableObject {
     }
 
     func stopTurn() async {
-        guard let threadId = selectedThreadId, let activeTurnId else { return }
+        guard let threadId = selectedThreadId else { return }
+        var turnId = activeTurnId ?? activeTurnIdsByThread[threadId]
+        if turnId == nil, socket.state == .connected,
+           let runtime = try? await socket.rpc(method: "relay/thread/runtime", params: ["threadId": .string(threadId)]) {
+            reconcileRuntimeState(runtime)
+            turnId = activeTurnId ?? activeTurnIdsByThread[threadId]
+        }
+        guard let turnId else {
+            markSelectedThreadStopped(threadId: threadId)
+            return
+        }
         do {
             _ = try await socket.rpc(method: "turn/interrupt", params: [
                 "threadId": .string(threadId),
-                "turnId": .string(activeTurnId)
+                "turnId": .string(turnId)
             ])
+            markSelectedThreadStopped(threadId: threadId)
         } catch {
-            report(error)
+            // The turn may have ended between the runtime check and interrupt.
+            // Reconcile once before showing an error or leaving a stale spinner.
+            if let runtime = try? await socket.rpc(method: "relay/thread/runtime", params: ["threadId": .string(threadId)]),
+               runtime["isRunning"]?.boolValue != true {
+                reconcileRuntimeState(runtime)
+                markSelectedThreadStopped(threadId: threadId)
+            } else {
+                report(error)
+            }
         }
+    }
+
+    private func markSelectedThreadStopped(threadId: String) {
+        if let turnId = activeTurnId, var metadata = turnMetadata[turnId] {
+            metadata.status = "interrupted"
+            metadata.completedAt = metadata.completedAt ?? Date()
+            metadata.durationMs = metadata.durationMs ?? Int(max(0, Date().timeIntervalSince(metadata.startedAt ?? Date()) * 1000))
+            turnMetadata[turnId] = metadata
+        }
+        isRunning = false
+        activeTurnId = nil
+        activeTurnIdsByThread.removeValue(forKey: threadId)
+        activePlan = []
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
+        setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
+        cacheCurrentThread()
     }
 
     func selectModel(_ model: CodexModelOption) async {
@@ -914,7 +950,14 @@ final class RelayStore: ObservableObject {
         guard let approval = pendingApproval else { return }
         do {
             let result: [String: JSONValue]
-            if approval.method.contains("permissions") {
+            if approval.method == "mcpServer/elicitation/request" {
+                // MCP elicitation uses its own response envelope. A generic
+                // `decision` field is rejected by Codex as unsupported.
+                result = [
+                    "action": .string(decision == "accept" ? "accept" : "decline"),
+                    "content": decision == "accept" ? .object([:]) : .null
+                ]
+            } else if approval.method.contains("permissions") {
                 result = [
                     "permissions": decision == "accept" ? (approval.requestedPermissions ?? .object([:])) : .object([:]),
                     "scope": .string("turn")
@@ -1012,12 +1055,17 @@ final class RelayStore: ObservableObject {
             let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))
             if let turnId = params["turn"]?["id"]?.stringValue { completedTurnIds.remove(turnId) }
             markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
-        case "turn/completed":
+        case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
             if let turnId {
                 completedTurnIds.insert(turnId)
                 var metadata = TurnMetadata(json: turn)
+                if method == "turn/aborted" || method == "turn/interrupted" {
+                    metadata.status = "interrupted"
+                } else if method == "turn/failed" {
+                    metadata.status = "failed"
+                }
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 turnMetadata[turnId] = metadata
                 for itemJSON in turn["items"]?.arrayValue ?? [] {
@@ -1039,22 +1087,28 @@ final class RelayStore: ObservableObject {
             Task { await refreshThreads(showErrors: false) }
             scheduleCompletionReconciliation(threadId: selectedThreadId)
         case "item/started", "item/completed":
+            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
         case "item/agentMessage/delta":
+            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .assistant, kind: .message)
         case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta":
+            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .tool, kind: .reasoning, title: "思考")
         case "item/reasoning/textDelta":
+            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .reasoning)
         case "item/commandExecution/outputDelta":
+            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .command)
         case "turn/plan/updated":
             guard let turnId = eventTurnId else { break }
+            guard !completedTurnIds.contains(turnId) else { break }
             markTurnActive(turnId)
             let steps = params["plan"]?.arrayValue ?? []
             activePlan = steps.enumerated().compactMap { index, step in
@@ -1095,7 +1149,7 @@ final class RelayStore: ObservableObject {
             if let turnId { activeTurnIdsByThread[threadId] = turnId }
             if !wasRunning { setThreadStatus(threadId, status: "active") }
             updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: turnId)
-        case "turn/completed":
+        case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
             if let turnId { completedTurnIds.insert(turnId) }
             let completesKnownTurn = activeTurnIdsByThread[threadId] == nil
                 || turnId == nil

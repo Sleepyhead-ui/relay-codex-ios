@@ -49,8 +49,39 @@ test("infers an active desktop turn from the rollout file after bridge restart",
       payload: { type: "task_complete", turn_id: turnId, completed_at: 1784478000 },
     })}\n`, { encoding: "utf8", flag: "a" });
     const completed = await runtime.snapshotWithExternal(threadId, sessions);
-    assert.equal(completed.known, false);
+    assert.equal(completed.known, true);
     assert.equal(completed.isRunning, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("treats an interrupted rollout turn as terminal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-interrupted-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  const threadId = "thread.interrupted";
+  const turnId = "turn.interrupted";
+  try {
+    await writeFile(sessionPath, [
+      {
+        timestamp: "2026-07-20T01:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turnId },
+      },
+      {
+        timestamp: "2026-07-20T01:01:00.000Z",
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: turnId, reason: "interrupted" },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+
+    const sessions = new SessionActivityTracker();
+    sessions.observeThreadList({ data: [{ id: threadId, path: sessionPath }] });
+    const snapshot = await sessions.turnSnapshot(threadId);
+    assert.equal(snapshot.known, true);
+    assert.equal(snapshot.isRunning, false);
+    assert.equal(snapshot.turnId, turnId);
+    assert.equal(snapshot.completedAt, Date.parse("2026-07-20T01:01:00.000Z") / 1000);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

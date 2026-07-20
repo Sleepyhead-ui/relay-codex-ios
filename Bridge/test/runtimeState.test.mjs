@@ -37,3 +37,29 @@ test("returns unknown when the bridge has not observed a thread", () => {
   assert.equal(snapshot.known, false);
   assert.equal(snapshot.isRunning, false);
 });
+
+test("external terminal state clears stale runtime state", async () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-stale", { id: "turn-stale", startedAt: 100 });
+  const external = {
+    snapshot: async () => ({
+      active: false,
+      turnId: "turn-stale",
+      updatedAt: 200,
+    }),
+  };
+  const snapshot = await tracker.snapshotWithExternal("thread-stale", external);
+  assert.equal(snapshot.known, true);
+  assert.equal(snapshot.isRunning, false);
+  assert.equal(tracker.activeCount, 0);
+});
+
+test("marks aborted notifications terminal", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-aborted", { id: "turn-aborted" });
+  tracker.observeNotification({
+    method: "turn/aborted",
+    params: { threadId: "thread-aborted", turnId: "turn-aborted" },
+  });
+  assert.equal(tracker.snapshot("thread-aborted").isRunning, false);
+});

@@ -581,6 +581,12 @@ struct ApprovalRequest: Identifiable, Equatable {
             title = "Grant additional access?"
             summary = params["reason"]?.stringValue ?? "Codex needs permissions outside the current sandbox."
             detail = params["cwd"]?.stringValue ?? ""
+        } else if method == "mcpServer/elicitation/request" {
+            title = "Action needs approval"
+            summary = params["message"]?.stringValue ?? "An MCP server is requesting your input."
+            detail = params["url"]?.stringValue
+                ?? params["requestedSchema"]?.stringValue
+                ?? method
         } else {
             title = "Action needs approval"
             summary = params["reason"]?.stringValue ?? "Review this action before continuing."

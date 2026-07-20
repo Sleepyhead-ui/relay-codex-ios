@@ -110,7 +110,7 @@ export class SessionActivityTracker {
           turnId = typeof payload.turn_id === "string" ? payload.turn_id : turnId;
           startedAt = typeof payload.started_at === "number" ? payload.started_at : timestamp;
           startTimestamp = timestamp;
-        } else if (type === "task_complete") {
+        } else if (["task_complete", "turn_aborted", "turn_interrupted", "turn_failed", "turn_completed", "task_aborted"].includes(type)) {
           const completedTurnId = typeof payload.turn_id === "string" ? payload.turn_id : undefined;
           if (!turnId || !completedTurnId || completedTurnId === turnId) {
             completedAt = typeof payload.completed_at === "number" ? payload.completed_at : timestamp;
