@@ -63,3 +63,45 @@ test("marks aborted notifications terminal", () => {
   });
   assert.equal(tracker.snapshot("thread-aborted").isRunning, false);
 });
+
+test("tracks a retryable upstream error without stopping the turn", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-retry", { id: "turn-retry" });
+  tracker.observeNotification({
+    method: "error",
+    params: {
+      threadId: "thread-retry",
+      turnId: "turn-retry",
+      willRetry: true,
+      error: { message: "stream disconnected" },
+    },
+  });
+  assert.equal(tracker.snapshot("thread-retry").isRunning, true);
+  assert.equal(tracker.snapshot("thread-retry").upstreamRetrying, true);
+  assert.equal(tracker.snapshot("thread-retry").upstreamError, "stream disconnected");
+
+  tracker.observeNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-retry", turnId: "turn-retry", delta: "resumed" },
+  });
+  assert.equal(tracker.snapshot("thread-retry").upstreamRetrying, undefined);
+});
+
+test("marks a non-retryable upstream error terminal", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread-failed", { id: "turn-failed" });
+  tracker.observeNotification({
+    method: "error",
+    params: {
+      threadId: "thread-failed",
+      turnId: "turn-failed",
+      willRetry: false,
+      error: { message: "too many failed attempts" },
+    },
+  });
+  const snapshot = tracker.snapshot("thread-failed");
+  assert.equal(snapshot.isRunning, false);
+  assert.equal(snapshot.upstreamRetrying, undefined);
+  assert.equal(snapshot.upstreamError, "too many failed attempts");
+  assert.equal(tracker.activeCount, 0);
+});

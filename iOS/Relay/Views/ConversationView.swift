@@ -183,6 +183,7 @@ struct ConversationView: View {
     }
 
     private var connectionColor: Color {
+        if store.socket.state == .connected, store.isSelectedThreadUpstreamRetrying { return .orange }
         switch store.socket.state {
         case .connected: return RelayTheme.accent
         case .connecting, .reconnecting: return .orange
@@ -192,7 +193,8 @@ struct ConversationView: View {
 
     private var connectionLabel: String {
         switch store.socket.state {
-        case .connected: return store.host.name
+        case .connected:
+            return store.isSelectedThreadUpstreamRetrying ? "Codex 上游重连中" : store.host.name
         case .connecting: return "Connecting"
         case .reconnecting(let attempt): return "Reconnecting · \(attempt)"
         case .disconnected: return "Offline"

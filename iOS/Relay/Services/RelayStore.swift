@@ -32,6 +32,7 @@ final class RelayStore: ObservableObject {
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published private(set) var activeTurnIdsByThread: [String: String] = [:]
+    @Published private(set) var upstreamRetryingByThread: [String: String] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
     @Published private(set) var isPreparingPrompt = false
 
@@ -62,6 +63,10 @@ final class RelayStore: ObservableObject {
         if isPreparingPrompt { return true }
         guard let selectedThreadId else { return false }
         return sendingThreadIds.contains(selectedThreadId)
+    }
+    var isSelectedThreadUpstreamRetrying: Bool {
+        guard let selectedThreadId else { return false }
+        return upstreamRetryingByThread[selectedThreadId] != nil
     }
     var currentQueuedFollowUps: [QueuedFollowUp] {
         guard let selectedThreadId else { return [] }
@@ -185,6 +190,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         activeTurnIdsByThread = [:]
+        upstreamRetryingByThread = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         acceptedMessageIds = []
@@ -915,6 +921,7 @@ final class RelayStore: ObservableObject {
         isRunning = false
         activeTurnId = nil
         activeTurnIdsByThread.removeValue(forKey: threadId)
+        upstreamRetryingByThread.removeValue(forKey: threadId)
         activePlan = []
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
@@ -1049,6 +1056,9 @@ final class RelayStore: ObservableObject {
 
     private func applyEvent(method: String, params: JSONValue) {
         let eventTurnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
+        if let threadId = params["threadId"]?.stringValue, isTurnProgressNotification(method) {
+            upstreamRetryingByThread.removeValue(forKey: threadId)
+        }
         switch method {
         case "turn/started":
             activePlan = []
@@ -1076,6 +1086,7 @@ final class RelayStore: ObservableObject {
             if completedActiveTurn {
                 if let selectedThreadId {
                     activeTurnIdsByThread.removeValue(forKey: selectedThreadId)
+                    upstreamRetryingByThread.removeValue(forKey: selectedThreadId)
                     setThreadStatus(selectedThreadId, status: "idle")
                 }
                 isRunning = false
@@ -1132,7 +1143,19 @@ final class RelayStore: ObservableObject {
             if let effort = params["threadSettings"]?["effort"]?.stringValue { selectedEffort = effort }
             persistGenerationSettings()
         case "error":
-            errorMessage = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue ?? "Codex reported an error."
+            let message = params["error"]?["message"]?.stringValue
+                ?? params["message"]?.stringValue
+                ?? "Codex reported an error."
+            let threadId = params["threadId"]?.stringValue ?? selectedThreadId
+            if params["willRetry"]?.boolValue == true, let threadId {
+                upstreamRetryingByThread[threadId] = message
+            } else {
+                if let threadId { upstreamRetryingByThread.removeValue(forKey: threadId) }
+                errorMessage = message
+                if params["willRetry"]?.boolValue == false, let threadId {
+                    markSelectedThreadFailed(threadId: threadId, turnId: eventTurnId, message: message)
+                }
+            }
         default:
             break
         }
@@ -1140,6 +1163,9 @@ final class RelayStore: ObservableObject {
 
     private func applyBackgroundEvent(method: String, params: JSONValue, threadId: String) {
         let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
+        if isTurnProgressNotification(method) {
+            upstreamRetryingByThread.removeValue(forKey: threadId)
+        }
         switch method {
         case "turn/started", "item/started", "item/completed", "item/agentMessage/delta",
              "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
@@ -1156,10 +1182,24 @@ final class RelayStore: ObservableObject {
                 || activeTurnIdsByThread[threadId] == turnId
             if completesKnownTurn {
                 activeTurnIdsByThread.removeValue(forKey: threadId)
+                upstreamRetryingByThread.removeValue(forKey: threadId)
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
             }
             Task { await refreshThreads(showErrors: false) }
+        case "error":
+            let message = params["error"]?["message"]?.stringValue
+                ?? params["message"]?.stringValue
+                ?? "Codex reported an error."
+            if params["willRetry"]?.boolValue == true {
+                upstreamRetryingByThread[threadId] = message
+            } else if params["willRetry"]?.boolValue == false {
+                upstreamRetryingByThread.removeValue(forKey: threadId)
+                if let turnId { completedTurnIds.insert(turnId) }
+                activeTurnIdsByThread.removeValue(forKey: threadId)
+                setThreadStatus(threadId, status: "idle")
+                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
+            }
         case "thread/tokenUsage/updated":
             if let usage = params["tokenUsage"] {
                 tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
@@ -1189,12 +1229,21 @@ final class RelayStore: ObservableObject {
 
     private func reconcileRuntimeState(_ runtime: JSONValue) {
         guard runtime["known"]?.boolValue == true else { return }
+        let runtimeError = runtime["upstreamError"]?.stringValue
+        if let selectedThreadId {
+            if runtime["upstreamRetrying"]?.boolValue == true {
+                upstreamRetryingByThread[selectedThreadId] = runtimeError ?? "Codex is reconnecting to the upstream service."
+            } else {
+                upstreamRetryingByThread.removeValue(forKey: selectedThreadId)
+            }
+        }
         if runtime["isRunning"]?.boolValue == true {
             let startedAt = runtime["startedAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
             markTurnActive(runtime["activeTurnId"]?.stringValue, startedAt: startedAt)
         } else {
             if let staleTurnId = activeTurnId, var metadata = turnMetadata[staleTurnId], metadata.isRunning {
-                metadata.status = "completed"
+                metadata.status = runtimeError == nil ? "completed" : "failed"
+                metadata.errorMessage = runtimeError
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 turnMetadata[staleTurnId] = metadata
             }
@@ -1206,6 +1255,39 @@ final class RelayStore: ObservableObject {
             activeTurnId = nil
             activePlan = []
         }
+    }
+
+    private func markSelectedThreadFailed(threadId: String, turnId: String?, message: String) {
+        guard selectedThreadId == threadId else { return }
+        let failedTurnId = turnId ?? activeTurnId ?? activeTurnIdsByThread[threadId]
+        if let failedTurnId {
+            completedTurnIds.insert(failedTurnId)
+            var metadata = turnMetadata[failedTurnId] ?? TurnMetadata()
+            metadata.status = "failed"
+            metadata.errorMessage = message
+            metadata.completedAt = metadata.completedAt ?? Date()
+            if metadata.durationMs == nil, let startedAt = metadata.startedAt {
+                metadata.durationMs = Int(max(0, Date().timeIntervalSince(startedAt) * 1000))
+            }
+            turnMetadata[failedTurnId] = metadata
+        }
+        isRunning = false
+        activeTurnId = nil
+        activeTurnIdsByThread.removeValue(forKey: threadId)
+        upstreamRetryingByThread.removeValue(forKey: threadId)
+        activePlan = []
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
+        setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
+        cacheCurrentThread()
+    }
+
+    private func isTurnProgressNotification(_ method: String) -> Bool {
+        method == "turn/started"
+            || method == "item/started"
+            || method == "item/completed"
+            || (method.hasPrefix("item/") && method.hasSuffix("/delta"))
+            || method == "turn/plan/updated"
     }
 
     private func finishThreadReconciliation(_ threadId: String) {

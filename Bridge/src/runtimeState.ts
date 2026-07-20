@@ -6,6 +6,8 @@ export interface ThreadRuntimeSnapshot extends JsonObject {
   isRunning: boolean;
   activeTurnId?: string;
   startedAt?: number;
+  upstreamRetrying?: boolean;
+  upstreamError?: string;
   updatedAt: number;
 }
 
@@ -13,6 +15,8 @@ interface StoredThreadRuntime {
   isRunning: boolean;
   activeTurnId?: string;
   startedAt?: number;
+  upstreamRetrying?: boolean;
+  upstreamError?: string;
   updatedAt: number;
 }
 
@@ -40,6 +44,30 @@ export class RuntimeStateTracker {
       return;
     }
 
+    if (message.method === "error") {
+      const turnId = typeof params.turnId === "string" ? params.turnId : undefined;
+      const existing = this.threads.get(threadId);
+      if (!existing || (turnId && existing.activeTurnId && existing.activeTurnId !== turnId)) return;
+      const upstreamError = errorMessage(params.error) ?? errorMessage(params);
+      if (params.willRetry === true) {
+        this.set(threadId, {
+          ...existing,
+          isRunning: true,
+          ...(turnId && !existing.activeTurnId ? { activeTurnId: turnId } : {}),
+          upstreamRetrying: true,
+          ...(upstreamError ? { upstreamError } : {}),
+          updatedAt: Date.now() / 1000,
+        });
+      } else if (params.willRetry === false) {
+        this.set(threadId, {
+          isRunning: false,
+          ...(upstreamError ? { upstreamError } : {}),
+          updatedAt: Date.now() / 1000,
+        });
+      }
+      return;
+    }
+
     if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(message.method)) {
       const turn = isObject(params.turn) ? params.turn : {};
       const turnId = typeof turn.id === "string"
@@ -48,6 +76,15 @@ export class RuntimeStateTracker {
       const existing = this.threads.get(threadId);
       if (!existing || !turnId || !existing.activeTurnId || existing.activeTurnId === turnId) {
         this.set(threadId, { isRunning: false, updatedAt: Date.now() / 1000 });
+      }
+      return;
+    }
+
+    if (isProgressNotification(message.method)) {
+      const existing = this.threads.get(threadId);
+      if (existing?.isRunning && existing.upstreamRetrying) {
+        const { upstreamRetrying: _retrying, upstreamError: _error, ...active } = existing;
+        this.set(threadId, { ...active, updatedAt: Date.now() / 1000 });
       }
     }
   }
@@ -82,6 +119,8 @@ export class RuntimeStateTracker {
       isRunning: true,
       ...(observed.turnId ? { activeTurnId: observed.turnId } : current.activeTurnId ? { activeTurnId: current.activeTurnId } : {}),
       ...(observed.startedAt ? { startedAt: observed.startedAt } : {}),
+      ...(current.upstreamRetrying ? { upstreamRetrying: true } : {}),
+      ...(current.upstreamError ? { upstreamError: current.upstreamError } : {}),
       updatedAt: Math.max(current.updatedAt, observed.updatedAt),
     };
   }
@@ -105,4 +144,16 @@ export class RuntimeStateTracker {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function errorMessage(value: unknown): string | undefined {
+  if (!isObject(value)) return undefined;
+  return typeof value.message === "string" && value.message ? value.message : undefined;
+}
+
+function isProgressNotification(method: string): boolean {
+  return method === "item/started"
+    || method === "item/completed"
+    || method.startsWith("item/") && method.endsWith("/delta")
+    || method === "turn/plan/updated";
 }
