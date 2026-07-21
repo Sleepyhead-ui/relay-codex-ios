@@ -193,6 +193,14 @@ export function filterThreads(threads: ThreadSummary[], query: string) {
     .some((value) => value.toLocaleLowerCase().includes(normalized)));
 }
 
+export function diffLineKind(line: string) {
+  if (/^(\+\+\+|---|diff |index )/.test(line)) return "header";
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "added";
+  if (line.startsWith("-")) return "removed";
+  return "context";
+}
+
 export function isRunningStatus(status?: string) {
   return /active|running|progress|started|processing|pending|queued/i.test(status || "");
 }

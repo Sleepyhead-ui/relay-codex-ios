@@ -42,6 +42,10 @@ final class RelayStore: ObservableObject {
     @Published var showingDiagnostics = false
     @Published private(set) var diagnosticsReport: DiagnosticsReport?
     @Published private(set) var notificationsEnabled = false
+    @Published private(set) var savedHosts: [RelayHostEntry] = []
+    @Published private(set) var hostAvailability: [String: Bool] = [:]
+    @Published private(set) var currentHostId = ""
+    @Published private(set) var isCheckingHosts = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -54,6 +58,8 @@ final class RelayStore: ObservableObject {
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
     private let notificationsDefaultsKey = "relay.notifications.enabled"
+    private let hostRegistryDefaultsKey = "relay.host.registry"
+    private let currentHostDefaultsKey = "relay.host.currentId"
     private let notificationCoordinator = NotificationCoordinator()
     private var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
@@ -168,7 +174,22 @@ final class RelayStore: ObservableObject {
            let stored = try? JSONDecoder().decode(HostConfiguration.self, from: data) {
             host = stored
         }
-        token = KeychainStore.loadToken() ?? ""
+        if let data = UserDefaults.standard.data(forKey: hostRegistryDefaultsKey),
+           let storedHosts = try? JSONDecoder().decode([RelayHostEntry].self, from: data) {
+            savedHosts = storedHosts
+        }
+        currentHostId = UserDefaults.standard.string(forKey: currentHostDefaultsKey) ?? ""
+        if currentHostId.isEmpty, !host.endpoint.isEmpty {
+            let migrated = RelayHostEntry(configuration: host)
+            savedHosts = [migrated]
+            currentHostId = migrated.id
+            if let legacyToken = KeychainStore.loadToken() {
+                try? KeychainStore.saveToken(legacyToken, account: tokenAccount(for: migrated.id))
+            }
+            persistHostRegistry()
+        }
+        if let selected = savedHosts.first(where: { $0.id == currentHostId }) { host = selected.configuration }
+        token = KeychainStore.loadToken(account: tokenAccount(for: currentHostId)) ?? KeychainStore.loadToken() ?? ""
         if let data = UserDefaults.standard.data(forKey: threadCacheDefaultsKey),
            let cachedThreads = try? JSONDecoder().decode([ThreadSummary].self, from: data) {
             threads = cachedThreads
@@ -224,6 +245,47 @@ final class RelayStore: ObservableObject {
 
     func disconnect() { socket.disconnect() }
 
+    func refreshSavedHostStatus() async {
+        guard !savedHosts.isEmpty else { return }
+        isCheckingHosts = true
+        defer { isCheckingHosts = false }
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for entry in savedHosts {
+                group.addTask {
+                    guard var components = URLComponents(string: entry.endpoint) else { return (entry.id, false) }
+                    components.scheme = components.scheme == "wss" ? "https" : "http"
+                    components.path = "/health"
+                    guard let url = components.url else { return (entry.id, false) }
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = 2.5
+                    do {
+                        let (_, response) = try await URLSession.shared.data(for: request)
+                        return (entry.id, (response as? HTTPURLResponse)?.statusCode == 200)
+                    } catch {
+                        return (entry.id, false)
+                    }
+                }
+            }
+            for await (id, available) in group { hostAvailability[id] = available }
+        }
+    }
+
+    func switchHost(_ id: String) {
+        guard id != currentHostId, let entry = savedHosts.first(where: { $0.id == id }) else { return }
+        disconnect()
+        resetForHostSwitch()
+        currentHostId = id
+        host = entry.configuration
+        token = KeychainStore.loadToken(account: tokenAccount(for: id)) ?? ""
+        UserDefaults.standard.set(id, forKey: currentHostDefaultsKey)
+        if token.isEmpty {
+            showingSettings = false
+            showingConnection = true
+        } else {
+            connect()
+        }
+    }
+
     func applicationBecameActive() {
         applicationIsActive = true
         if socket.state == .connected {
@@ -273,10 +335,21 @@ final class RelayStore: ObservableObject {
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         disconnect()
-        KeychainStore.deleteToken()
-        UserDefaults.standard.removeObject(forKey: hostDefaultsKey)
+        if !currentHostId.isEmpty { KeychainStore.deleteToken(account: tokenAccount(for: currentHostId)) }
+        savedHosts.removeAll { $0.id == currentHostId }
+        persistHostRegistry()
         token = ""
-        host = HostConfiguration()
+        if let next = savedHosts.first {
+            currentHostId = next.id
+            host = next.configuration
+            token = KeychainStore.loadToken(account: tokenAccount(for: next.id)) ?? ""
+            UserDefaults.standard.set(next.id, forKey: currentHostDefaultsKey)
+        } else {
+            currentHostId = ""
+            host = HostConfiguration()
+            UserDefaults.standard.removeObject(forKey: hostDefaultsKey)
+            UserDefaults.standard.removeObject(forKey: currentHostDefaultsKey)
+        }
         threads = []
         UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
         setSelectedThread(nil)
@@ -306,7 +379,13 @@ final class RelayStore: ObservableObject {
             if let value = item.value { values[item.name] = value }
         }
         if let endpoint = values["url"] { host.endpoint = endpoint }
+        if let name = values["name"] { host.name = name }
         if let pairingToken = values["token"] { token = pairingToken }
+        if let existing = savedHosts.first(where: { $0.endpoint.caseInsensitiveCompare(host.endpoint) == .orderedSame }) {
+            currentHostId = existing.id
+        } else {
+            currentHostId = UUID().uuidString
+        }
         showingConnection = true
     }
 
@@ -1340,7 +1419,41 @@ final class RelayStore: ObservableObject {
         }
         let data = try JSONEncoder().encode(host)
         UserDefaults.standard.set(data, forKey: hostDefaultsKey)
-        try KeychainStore.saveToken(token)
+        if currentHostId.isEmpty { currentHostId = UUID().uuidString }
+        let entry = RelayHostEntry(id: currentHostId, configuration: host)
+        if let index = savedHosts.firstIndex(where: { $0.id == currentHostId }) { savedHosts[index] = entry }
+        else { savedHosts.append(entry) }
+        persistHostRegistry()
+        try KeychainStore.saveToken(token, account: tokenAccount(for: currentHostId))
+    }
+
+    private func persistHostRegistry() {
+        if let data = try? JSONEncoder().encode(savedHosts) {
+            UserDefaults.standard.set(data, forKey: hostRegistryDefaultsKey)
+        }
+        if !currentHostId.isEmpty { UserDefaults.standard.set(currentHostId, forKey: currentHostDefaultsKey) }
+    }
+
+    private func tokenAccount(for hostId: String) -> String {
+        hostId.isEmpty ? "bridge-token" : "bridge-token.\(hostId)"
+    }
+
+    private func resetForHostSwitch() {
+        restorationTask?.cancel()
+        liveSessionSyncTask?.cancel()
+        restorationTask = nil
+        liveSessionSyncTask = nil
+        subscribedSessionThreadId = nil
+        threads = []
+        messages = []
+        turnMetadata = [:]
+        tokenUsageByThread = [:]
+        taskRunStates = [:]
+        queuedFollowUps = []
+        pendingApprovals = []
+        threadSnapshots.removeAll()
+        olderTurnsCursorByThread = [:]
+        setSelectedThread(nil)
     }
 
     private func persistGenerationSettings() {

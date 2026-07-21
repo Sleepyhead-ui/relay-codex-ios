@@ -24,7 +24,7 @@ struct DiagnosticEvent: Identifiable, Equatable {
     let message: String
 
     init?(json: JSONValue) {
-        guard let id = json["id"]?.stringValue,
+        guard let id = json["id"]?.stringValue ?? json["id"]?.intValue.map(String.init),
               let message = json["message"]?.stringValue else { return nil }
         self.id = id
         level = json["level"]?.stringValue ?? "info"

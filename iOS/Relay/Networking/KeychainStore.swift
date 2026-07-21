@@ -3,9 +3,9 @@ import Security
 
 enum KeychainStore {
     private static let service = "dev.relay.mobile"
-    private static let account = "bridge-token"
+    private static let defaultAccount = "bridge-token"
 
-    static func saveToken(_ token: String) throws {
+    static func saveToken(_ token: String, account: String = defaultAccount) throws {
         let data = Data(token.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -20,7 +20,7 @@ enum KeychainStore {
         guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 
-    static func loadToken() -> String? {
+    static func loadToken(account: String = defaultAccount) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -34,7 +34,7 @@ enum KeychainStore {
         return String(data: data, encoding: .utf8)
     }
 
-    static func deleteToken() {
+    static func deleteToken(account: String = defaultAccount) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -49,4 +49,3 @@ enum KeychainStore {
         private var code: OSStatus { if case .status(let value) = self { return value }; return -1 }
     }
 }
-

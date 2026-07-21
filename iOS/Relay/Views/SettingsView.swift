@@ -15,6 +15,30 @@ struct SettingsView: View {
                         dismiss()
                         store.showingConnection = true
                     }
+                    if store.savedHosts.count > 1 {
+                        ForEach(store.savedHosts) { entry in
+                            Button {
+                                store.switchHost(entry.id)
+                                dismiss()
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Circle()
+                                        .fill(store.hostAvailability[entry.id] == true ? Color.green : Color.secondary.opacity(0.5))
+                                        .frame(width: 7, height: 7)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.name).foregroundStyle(.primary)
+                                        Text(entry.endpoint).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer()
+                                    if entry.id == store.currentHostId { Image(systemName: "checkmark").foregroundStyle(RelayTheme.accent) }
+                                }
+                            }
+                            .disabled(entry.id == store.currentHostId)
+                        }
+                    }
+                    if store.isCheckingHosts {
+                        HStack { ProgressView(); Text("正在检查已配对电脑").foregroundStyle(.secondary) }
+                    }
                 }
 
                 Section("Codex 实例") {
@@ -133,6 +157,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
+            .task { await store.refreshSavedHostStatus() }
         }
     }
 

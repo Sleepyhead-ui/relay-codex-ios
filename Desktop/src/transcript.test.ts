@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("uses timestamps when an active turn carries a zero history duration", () => {
@@ -160,5 +160,10 @@ describe("desktop transcript", () => {
     expect(filterThreads(threads, "实时").map((thread) => thread.id)).toEqual(["1"]);
     expect(filterThreads(threads, "docs").map((thread) => thread.id)).toEqual(["2"]);
     expect(filterThreads(threads, "同步").map((thread) => thread.id)).toEqual(["1"]);
+  });
+
+  it("classifies diff headers before additions and removals", () => {
+    expect(["--- a/file", "+++ b/file", "@@ -1 +1 @@", "-old", "+new", " same"].map(diffLineKind))
+      .toEqual(["header", "header", "hunk", "removed", "added", "context"]);
   });
 });

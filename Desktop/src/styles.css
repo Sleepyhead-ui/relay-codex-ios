@@ -153,6 +153,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .tool-row em { color: var(--danger); font-size: 10px; font-style: normal; }
 .tool-row > button > svg:last-child { flex: 0 0 auto; color: var(--accent); }
 .tool-row pre, .approval-detail { margin: 4px 0 8px 22px; max-height: 330px; padding: 11px 13px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #181917; color: #aaaDA6; font: 11px/1.5 "Cascadia Code", Consolas, monospace; white-space: pre-wrap; }
+.diff-view { max-height: 360px; margin: 4px 0 8px 22px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #181917; }
+.diff-line { min-width: max-content; min-height: 19px; display: grid; grid-template-columns: 22px minmax(0,1fr); align-items: center; color: #aeb1aa; }
+.diff-line > span { height: 100%; display: grid; place-items: center; color: #696d66; font: 10px/19px "Cascadia Code", Consolas, monospace; user-select: none; }
+.diff-line code { padding: 0 12px 0 4px; font: 11px/19px "Cascadia Code", Consolas, monospace; white-space: pre; }
+.diff-line.added { color: #90cf9d; background: rgba(65,160,87,.09); }
+.diff-line.removed { color: #e49a94; background: rgba(202,75,65,.09); }
+.diff-line.hunk { color: #88acd7; background: rgba(80,125,180,.08); }
+.diff-line.header { color: #888c85; }
 .rotated { transform: rotate(180deg); }
 .spinner { width: 13px; height: 13px; display: inline-block; border: 2px solid rgba(255,255,255,.17); border-top-color: #aeb1aa; border-radius: 50%; animation: spin .75s linear infinite; }
 .spinner.small { width: 11px; height: 11px; border-width: 1.5px; }

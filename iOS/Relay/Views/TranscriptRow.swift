@@ -755,7 +755,9 @@ private struct ToolEventRow: View {
 
     @ViewBuilder
     private func detailView(_ detail: String) -> some View {
-        if item.kind == .reasoning {
+        if item.kind == .fileChange {
+            DiffContentView(source: detail)
+        } else if item.kind == .reasoning {
             MarkdownContentView(source: detail)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)

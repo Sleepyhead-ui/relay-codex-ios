@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyUserMessagePlacements, bindUserPrompt, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
@@ -979,7 +979,14 @@ function ExecutionGroup({ items }: { items: TranscriptItem[] }) {
 function ToolRow({ item }: { item: TranscriptItem }) {
   const [expanded, setExpanded] = useState(false);
   const icon = item.kind === "file" ? <FileCode2 size={14}/> : item.kind === "compaction" ? <Sparkles size={14}/> : <Terminal size={14}/>;
-  return <div className={`tool-row ${item.exitCode ? "failed" : ""}`}><button onClick={() => item.detail && setExpanded((value) => !value)}>{icon}<span className="tool-title">{item.kind === "command" ? firstLine(item.text) : item.title || item.text}</span>{item.cwd && <small>{item.cwd}</small>}{item.exitCode != null && item.exitCode !== 0 && <em>exit {item.exitCode}</em>}{isRunningStatus(item.status) ? <span className="spinner small"/> : <Check size={12}/>} {item.detail && <ChevronDown size={12} className={expanded ? "rotated" : ""}/>}</button>{expanded && item.detail && <pre>{item.detail}</pre>}</div>;
+  return <div className={`tool-row ${item.exitCode ? "failed" : ""}`}><button onClick={() => item.detail && setExpanded((value) => !value)}>{icon}<span className="tool-title">{item.kind === "command" ? firstLine(item.text) : item.title || item.text}</span>{item.cwd && <small>{item.cwd}</small>}{item.exitCode != null && item.exitCode !== 0 && <em>exit {item.exitCode}</em>}{isRunningStatus(item.status) ? <span className="spinner small"/> : <Check size={12}/>} {item.detail && <ChevronDown size={12} className={expanded ? "rotated" : ""}/>}</button>{expanded && item.detail && (item.kind === "file" ? <DiffView source={item.detail}/> : <pre>{item.detail}</pre>)}</div>;
+}
+
+function DiffView({ source }: { source: string }) {
+  return <div className="diff-view" aria-label="文件差异">{source.split(/\r?\n/).map((line, index) => {
+    const kind = diffLineKind(line);
+    return <div className={`diff-line ${kind}`} key={`${index}.${line}`}><span>{kind === "added" ? "+" : kind === "removed" ? "-" : kind === "hunk" ? "@" : ""}</span><code>{line || " "}</code></div>;
+  })}</div>;
 }
 
 function PlanPanel({ steps }: { steps: PlanStep[] }) { return <div className="plan-panel"><div className="plan-title"><Sparkles size={14}/><span>执行计划</span></div>{steps.map((step) => <div className="plan-step" key={step.id}>{/complete/i.test(step.status) ? <Check size={13}/> : /progress|running|active/i.test(step.status) ? <span className="spinner small"/> : <span className="plan-dot"/>}<span>{step.text}</span></div>)}</div>; }

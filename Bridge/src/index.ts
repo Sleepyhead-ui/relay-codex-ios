@@ -202,6 +202,7 @@ httpServer.listen(config.port, config.host, () => {
   const pairingUrl = new URL("relay://connect");
   pairingUrl.searchParams.set("url", config.advertiseUrl);
   pairingUrl.searchParams.set("token", config.token);
+  pairingUrl.searchParams.set("name", process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? "Windows PC");
 
   console.log(`Relay Bridge listening on ${config.host}:${config.port}`);
   console.log(`Advertised mobile URL: ${config.advertiseUrl}`);
