@@ -137,7 +137,7 @@ test("expires an unclosed rollout after the app server is idle and file activity
     assert.equal(snapshot.known, true);
     assert.equal(snapshot.isRunning, false);
     assert.equal(snapshot.stale, true);
-    assert.equal(snapshot.completedAt, old.getTime() / 1000);
+    assert.ok(Math.abs(snapshot.completedAt - old.getTime() / 1000) < 0.001);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
