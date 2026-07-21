@@ -208,7 +208,9 @@ export function parseApproval(message: any): ApprovalRequest {
 }
 
 export function formatElapsed(startedAt?: number, completedAt?: number, durationMs?: number) {
-  const milliseconds = durationMs ?? (startedAt ? Math.max(0, (completedAt ?? Date.now() / 1000) - startedAt) * 1000 : 0);
+  const milliseconds = durationMs != null && durationMs > 0
+    ? durationMs
+    : startedAt ? Math.max(0, (completedAt ?? Date.now() / 1000) - startedAt) * 1000 : durationMs ?? 0;
   const seconds = Math.floor(milliseconds / 1000);
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;

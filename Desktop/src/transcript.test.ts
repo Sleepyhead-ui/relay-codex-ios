@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, mergeSnapshot, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, formatElapsed, mergeSnapshot, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
+  it("uses timestamps when an active turn carries a zero history duration", () => {
+    expect(formatElapsed(Date.now() / 1000 - 65, undefined, 0)).toBe("1 分 5 秒");
+  });
+
   it("extracts the actual shell command from an exec wrapper", () => {
     const item = parseItem({
       id: "tool.1",

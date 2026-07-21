@@ -257,7 +257,8 @@ export default function App() {
 
   function handleSessionSnapshot(threadId: string, snapshot: any) {
     if (selectedRef.current !== threadId || !snapshot?.known || !snapshot.turnId) return;
-    if (snapshot.isRunning) bindPendingStartMessage(snapshot.turnId);
+    const live = snapshot.isRunning === true && snapshot.stale !== true;
+    if (live) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
     if (snapshotItems.length) setMessages((current) => applyUserMessagePlacements(
       mergeSnapshot(current, snapshotItems, snapshot.turnId),
@@ -269,13 +270,20 @@ export default function App() {
       ...current,
       [snapshot.turnId]: {
         ...(current[snapshot.turnId] || { id: snapshot.turnId }), id: snapshot.turnId,
-        status: snapshot.isRunning ? "inProgress" : "completed",
+        status: live ? "inProgress" : snapshot.stale ? "interrupted" : "completed",
         startedAt: snapshot.startedAt || current[snapshot.turnId]?.startedAt,
-        completedAt: snapshot.completedAt || current[snapshot.turnId]?.completedAt,
+        completedAt: live ? undefined : snapshot.completedAt || current[snapshot.turnId]?.completedAt,
+        durationMs: live || snapshot.stale ? undefined : current[snapshot.turnId]?.durationMs,
       },
     }));
-    if (snapshot.isRunning) setActiveTurnId(snapshot.turnId);
-    else if (activeTurnRef.current === snapshot.turnId) { setActiveTurnId(undefined); setPlan([]); }
+    if (live) setActiveTurnId(snapshot.turnId);
+    else {
+      setActiveTurnId((current) => current === snapshot.turnId ? undefined : current);
+      setPlan([]);
+      if (snapshot.stale) {
+        setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, status: "idle" } : thread));
+      }
+    }
   }
 
   function handleEvent(method: string, params: any) {

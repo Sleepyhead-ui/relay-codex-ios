@@ -1619,7 +1619,8 @@ final class RelayStore: ObservableObject {
               result["known"]?.boolValue == true,
               let turnId = result["turnId"]?.stringValue else { return }
 
-        if result["isRunning"]?.boolValue == true {
+        let snapshotIsStale = result["stale"]?.boolValue == true
+        if result["isRunning"]?.boolValue == true, !snapshotIsStale {
             bindPendingUserPrompt(to: turnId, threadId: threadId)
         }
 
@@ -1642,7 +1643,8 @@ final class RelayStore: ObservableObject {
             activeTurnIdsByThread[threadId] = turnId
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
         } else {
-            metadata.status = "completed"
+            metadata.status = snapshotIsStale ? "interrupted" : "completed"
+            if snapshotIsStale { metadata.durationMs = nil }
             if let completedAt = result["completedAt"]?.doubleValue {
                 metadata.completedAt = Date(timeIntervalSince1970: completedAt)
             } else if metadata.completedAt == nil {

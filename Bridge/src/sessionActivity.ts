@@ -6,6 +6,7 @@ import { isObject } from "./protocol.js";
 interface SessionState {
   path: string;
   updatedAt: number;
+  appServerActive?: boolean;
   signature?: string;
   cachedSnapshot?: SessionTurnSnapshot;
 }
@@ -15,6 +16,7 @@ interface SessionWatch {
   watcher: FSWatcher;
   listeners: Set<(snapshot: SessionTurnSnapshot) => void>;
   debounce: NodeJS.Timeout | undefined;
+  staleTimeout: NodeJS.Timeout | undefined;
 }
 
 export interface SessionActivitySnapshot {
@@ -31,8 +33,11 @@ export interface SessionTurnSnapshot extends JsonObject {
   turnId?: string;
   startedAt?: number;
   completedAt?: number;
+  stale?: boolean;
   items?: JsonObject[];
 }
+
+const staleExternalSessionSeconds = 5 * 60;
 
 /**
  * The desktop Codex app and Relay's app-server are separate processes. When
@@ -82,7 +87,7 @@ export class SessionActivityTracker {
 
     const signature = `${fileStat.size}:${fileStat.mtimeMs}`;
     if (session.signature === signature && session.cachedSnapshot) {
-      return { ...session.cachedSnapshot, updatedAt: Math.max(fileStat.mtimeMs / 1000, session.updatedAt) };
+      return this.normalizeSnapshot(session, session.cachedSnapshot, fileStat.mtimeMs / 1000);
     }
 
     try {
@@ -169,7 +174,7 @@ export class SessionActivityTracker {
       };
       session.signature = signature;
       session.cachedSnapshot = snapshot;
-      return snapshot;
+      return this.normalizeSnapshot(session, snapshot, fileStat.mtimeMs / 1000);
     } catch {
       return { known: false, isRunning: false, updatedAt: Date.now() / 1000 };
     }
@@ -188,10 +193,11 @@ export class SessionActivityTracker {
       const listeners = state?.listeners ?? new Set<(snapshot: SessionTurnSnapshot) => void>();
       const watcher = watch(session.path, { persistent: false }, () => this.scheduleSnapshot(threadId));
       watcher.on("error", () => this.closeWatch(threadId));
-      state = { path: session.path, watcher, listeners, debounce: undefined };
+      state = { path: session.path, watcher, listeners, debounce: undefined, staleTimeout: undefined };
       this.watches.set(threadId, state);
     }
     state.listeners.add(listener);
+    this.scheduleStaleCheck(threadId);
     return () => {
       const current = this.watches.get(threadId);
       if (!current) return;
@@ -209,12 +215,20 @@ export class SessionActivityTracker {
     const id = typeof value.id === "string" ? value.id : undefined;
     const path = typeof value.path === "string" ? value.path : undefined;
     if (!id || !path) return;
+    const status = typeof value.status === "string"
+      ? value.status
+      : isObject(value.status) && typeof value.status.type === "string" ? value.status.type : undefined;
+    const appServerActive = status ? isActiveStatus(status) : undefined;
     const previous = this.sessions.get(id);
     if (previous?.path === path) {
       previous.updatedAt = Date.now() / 1000;
+      if (appServerActive !== undefined) previous.appServerActive = appServerActive;
     } else {
-      this.sessions.set(id, { path, updatedAt: Date.now() / 1000 });
+      const state: SessionState = { path, updatedAt: Date.now() / 1000 };
+      if (appServerActive !== undefined) state.appServerActive = appServerActive;
+      this.sessions.set(id, state);
     }
+    this.scheduleStaleCheck(id);
   }
 
   private scheduleSnapshot(threadId: string): void {
@@ -229,6 +243,7 @@ export class SessionActivityTracker {
         const latest = this.watches.get(threadId);
         if (!latest) return;
         for (const listener of latest.listeners) listener(snapshot);
+        this.scheduleStaleCheck(threadId);
       }).catch(() => {});
     }, 45);
   }
@@ -237,9 +252,53 @@ export class SessionActivityTracker {
     const state = this.watches.get(threadId);
     if (!state) return;
     if (state.debounce) clearTimeout(state.debounce);
+    if (state.staleTimeout) clearTimeout(state.staleTimeout);
     state.watcher.close();
     this.watches.delete(threadId);
   }
+
+  private normalizeSnapshot(session: SessionState, snapshot: SessionTurnSnapshot, fileUpdatedAt: number): SessionTurnSnapshot {
+    const stale = snapshot.isRunning
+      && session.appServerActive === false
+      && Date.now() / 1000 - fileUpdatedAt >= staleExternalSessionSeconds;
+    return {
+      ...snapshot,
+      isRunning: stale ? false : snapshot.isRunning,
+      ...(stale ? { stale: true, completedAt: snapshot.completedAt ?? fileUpdatedAt } : {}),
+      updatedAt: Math.max(fileUpdatedAt, session.updatedAt),
+    };
+  }
+
+  private scheduleStaleCheck(threadId: string): void {
+    const session = this.sessions.get(threadId);
+    const state = this.watches.get(threadId);
+    if (!session || !state) return;
+    if (state.staleTimeout) {
+      clearTimeout(state.staleTimeout);
+      state.staleTimeout = undefined;
+    }
+    if (session.appServerActive !== false) return;
+    void stat(session.path).then((fileStat) => {
+      const current = this.watches.get(threadId);
+      if (!current || this.sessions.get(threadId)?.appServerActive !== false) return;
+      const staleAt = fileStat.mtimeMs + staleExternalSessionSeconds * 1000;
+      current.staleTimeout = setTimeout(() => {
+        const latest = this.watches.get(threadId);
+        if (!latest) return;
+        latest.staleTimeout = undefined;
+        void this.turnSnapshot(threadId).then((snapshot) => {
+          const subscribed = this.watches.get(threadId);
+          if (!subscribed) return;
+          for (const listener of subscribed.listeners) listener(snapshot);
+          if (snapshot.isRunning) this.scheduleStaleCheck(threadId);
+        }).catch(() => {});
+      }, Math.max(50, staleAt - Date.now() + 50));
+    }).catch(() => {});
+  }
+}
+
+function isActiveStatus(status: string): boolean {
+  return /active|running|progress|started|processing|pending|queued/i.test(status);
 }
 
 function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | null {

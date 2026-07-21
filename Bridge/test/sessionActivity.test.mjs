@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { RuntimeStateTracker } from "../dist/runtimeState.js";
@@ -115,6 +115,50 @@ test("treats an interrupted rollout turn as terminal", async () => {
     assert.equal(snapshot.isRunning, false);
     assert.equal(snapshot.turnId, turnId);
     assert.equal(snapshot.completedAt, Date.parse("2026-07-20T01:01:00.000Z") / 1000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("expires an unclosed rollout after the app server is idle and file activity is stale", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-stale-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  try {
+    await writeFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-21T01:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn.stale", started_at: 1784595600 },
+    })}\n`, "utf8");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(sessionPath, old, old);
+    const sessions = new SessionActivityTracker();
+    sessions.observeThreadList({ data: [{ id: "thread.stale", path: sessionPath, status: { type: "idle" } }] });
+    const snapshot = await sessions.turnSnapshot("thread.stale");
+    assert.equal(snapshot.known, true);
+    assert.equal(snapshot.isRunning, false);
+    assert.equal(snapshot.stale, true);
+    assert.equal(snapshot.completedAt, old.getTime() / 1000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps a stale-looking rollout active while the app server still reports activity", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-active-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  try {
+    await writeFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-21T01:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn.active", started_at: 1784595600 },
+    })}\n`, "utf8");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    await utimes(sessionPath, old, old);
+    const sessions = new SessionActivityTracker();
+    sessions.observeThreadList({ data: [{ id: "thread.active", path: sessionPath, status: { type: "active" } }] });
+    const snapshot = await sessions.turnSnapshot("thread.active");
+    assert.equal(snapshot.isRunning, true);
+    assert.equal(snapshot.stale, undefined);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
