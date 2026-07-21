@@ -41,6 +41,18 @@ jobs:
         run: |
           swift Tools/GenerateAppIcons.swift
           xcodegen generate
+      - name: Run iOS state tests
+        working-directory: iOS
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for runtime in data["devices"].values() for device in runtime if device["name"].startswith("iPhone")))')
+          xcodebuild \
+            -project Relay.xcodeproj \
+            -scheme Relay \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
       - name: Build iPhone app
         working-directory: iOS
         run: |
