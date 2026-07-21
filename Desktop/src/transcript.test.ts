@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSnapshot, parseItem } from "./transcript";
+import { bindUserPrompt, mergeSnapshot, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("extracts the actual shell command from an exec wrapper", () => {
@@ -69,5 +69,16 @@ describe("desktop transcript", () => {
       { id: "file.2", turnId: "turn.1", kind: "command" as const, text: "npm test" },
     ];
     expect(mergeSnapshot(existing, snapshot, "turn.1")).toHaveLength(2);
+  });
+
+  it("moves an optimistic user prompt before activity as soon as the turn id is known", () => {
+    const messages = [
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查" },
+      { id: "user.1", kind: "user" as const, text: "帮我安装桌面端" },
+      { id: "command.1", turnId: "turn.1", kind: "command" as const, text: "Get-Item setup.exe" },
+    ];
+    const bound = bindUserPrompt(messages, "user.1", "turn.1");
+    expect(bound.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
+    expect(bound[0].turnId).toBe("turn.1");
   });
 });

@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  bindUserPrompt, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type {
@@ -53,6 +53,7 @@ export default function App() {
   const selectedRef = useRef<string>();
   const activeTurnRef = useRef<string>();
   const profileSwitchingRef = useRef(false);
+  const pendingStartMessageRef = useRef<string>();
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -234,6 +235,7 @@ export default function App() {
 
   function handleSessionSnapshot(threadId: string, snapshot: any) {
     if (selectedRef.current !== threadId || !snapshot?.known || !snapshot.turnId) return;
+    if (snapshot.isRunning) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
     if (snapshotItems.length) setMessages((current) => mergeSnapshot(current, snapshotItems, snapshot.turnId));
     setTurns((current) => ({
@@ -259,6 +261,9 @@ export default function App() {
         : thread));
     }
     if (threadId !== selectedRef.current) return;
+    if (turnId && (method === "turn/started" || method.startsWith("item/") || method === "turn/plan/updated")) {
+      bindPendingStartMessage(turnId);
+    }
     if (method !== "error" && (method.startsWith("item/") || method === "turn/plan/updated")) setUpstreamRetrying(false);
     if (method === "turn/started") {
       const metadata: TurnMetadata = parseTurn(params.turn) || { id: String(turnId || ""), status: "inProgress" };
@@ -358,6 +363,7 @@ export default function App() {
       const imagePaths = selectedAttachments.filter((item) => item.isImage).map((item) => item.path);
       const display = [text, ...selectedAttachments.filter((item) => !item.isImage).map((item) => `附件 ${item.name}`)].filter(Boolean).join("\n\n");
       setMessages((current) => [...current, { id: clientId, kind: "user", text: display, imagePaths }]);
+      if (!activeTurnRef.current) pendingStartMessageRef.current = clientId;
       const input = [
         ...(text ? [{ type: "text", text }] : []),
         ...selectedAttachments.map((item) => item.isImage
@@ -378,11 +384,21 @@ export default function App() {
         const confirmed = result.turn?.id;
         if (confirmed) {
           setActiveTurnId(confirmed);
-          setMessages((current) => current.map((item) => item.id === clientId ? { ...item, turnId: confirmed } : item));
+          bindPendingStartMessage(confirmed);
         }
       }
-    } catch (reason) { setComposer(text); setAttachments(selectedAttachments); setError(errorText(reason)); }
+    } catch (reason) {
+      if (pendingStartMessageRef.current) pendingStartMessageRef.current = undefined;
+      setComposer(text); setAttachments(selectedAttachments); setError(errorText(reason));
+    }
     finally { setSending(false); }
+  }
+
+  function bindPendingStartMessage(turnId: string) {
+    const messageId = pendingStartMessageRef.current;
+    if (!messageId) return;
+    pendingStartMessageRef.current = undefined;
+    setMessages((current) => bindUserPrompt(current, messageId, turnId));
   }
 
   async function stopTurn() {

@@ -110,6 +110,16 @@ export function upsert(items: TranscriptItem[], incoming: TranscriptItem) {
   return next;
 }
 
+export function bindUserPrompt(items: TranscriptItem[], messageId: string, turnId: string) {
+  const index = items.findIndex((item) => item.id === messageId && item.kind === "user");
+  if (index < 0) return items;
+  const prompt = { ...items[index], turnId };
+  const remaining = items.filter((_, itemIndex) => itemIndex !== index);
+  const firstTurnItem = remaining.findIndex((item) => item.turnId === turnId);
+  const insertion = firstTurnItem >= 0 ? firstTurnItem : Math.min(index, remaining.length);
+  return [...remaining.slice(0, insertion), prompt, ...remaining.slice(insertion)];
+}
+
 export function mergeSnapshot(existing: TranscriptItem[], snapshot: TranscriptItem[], turnId: string) {
   const outside = existing.filter((item) => item.turnId !== turnId);
   const current = existing.filter((item) => item.turnId === turnId);

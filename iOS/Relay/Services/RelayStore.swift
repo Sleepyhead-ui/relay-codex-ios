@@ -676,16 +676,8 @@ final class RelayStore: ObservableObject {
                     if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
                 }
                 if selectedThreadId == threadId,
-                   let index = messages.firstIndex(where: { $0.id == clientMessageId }) {
-                    messages[index].turnId = confirmedTurnId
-                    messages[index].deliveryState = nil
-                    // A fast Codex event can arrive before turn/start returns.
-                    // Once the turn id is known, keep the user prompt at the
-                    // start of that turn instead of letting it jump below the
-                    // already-streamed assistant activity.
-                    let prompt = messages.remove(at: index)
-                    let insertion = messages.firstIndex(where: { $0.turnId == confirmedTurnId }) ?? messages.endIndex
-                    messages.insert(prompt, at: insertion)
+                   messages.contains(where: { $0.id == clientMessageId }) {
+                    bindPendingUserPrompt(to: confirmedTurnId, threadId: threadId)
                 }
                 if selectedThreadId == threadId, !alreadyCompleted {
                     turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
@@ -1303,6 +1295,9 @@ final class RelayStore: ObservableObject {
         }
         guard let turnId else { return }
         activeTurnId = turnId
+        if let selectedThreadId {
+            bindPendingUserPrompt(to: turnId, threadId: selectedThreadId)
+        }
         var metadata = turnMetadata[turnId] ?? TurnMetadata()
         metadata.status = "inProgress"
         metadata.completedAt = nil
@@ -1591,6 +1586,10 @@ final class RelayStore: ObservableObject {
               result["known"]?.boolValue == true,
               let turnId = result["turnId"]?.stringValue else { return }
 
+        if result["isRunning"]?.boolValue == true {
+            bindPendingUserPrompt(to: turnId, threadId: threadId)
+        }
+
         let snapshotItems = result["items"]?.arrayValue?.compactMap {
             TranscriptItem.from(json: $0, turnId: turnId)
         } ?? []
@@ -1629,6 +1628,20 @@ final class RelayStore: ObservableObject {
             }
         }
         cacheCurrentThread()
+    }
+
+    private func bindPendingUserPrompt(to turnId: String, threadId: String) {
+        guard selectedThreadId == threadId,
+              let index = messages.lastIndex(where: { item in
+                  item.role == .user
+                      && item.turnId == nil
+                      && outboundDrafts[item.id]?.threadId == threadId
+              }) else { return }
+        var prompt = messages.remove(at: index)
+        prompt.turnId = turnId
+        let insertion = messages.firstIndex(where: { $0.turnId == turnId })
+            ?? min(index, messages.endIndex)
+        messages.insert(prompt, at: insertion)
     }
 
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
