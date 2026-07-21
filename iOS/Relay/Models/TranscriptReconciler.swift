@@ -81,6 +81,16 @@ enum TranscriptReconciler {
         return result
     }
 
+    static func removeCompactionSummary(turnId: String, from messages: [TranscriptItem]) -> [TranscriptItem] {
+        var result = messages
+        if let index = result.lastIndex(where: {
+            $0.turnId == turnId && $0.role == .assistant && $0.phase == "final_answer"
+        }) {
+            result.remove(at: index)
+        }
+        return result
+    }
+
     static func merge(existing: TranscriptItem, incoming: TranscriptItem) -> TranscriptItem {
         var merged = incoming
         if merged.turnId == nil { merged.turnId = existing.turnId }

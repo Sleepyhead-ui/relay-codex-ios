@@ -11,7 +11,7 @@ function event(payload, type = "event_msg") {
 
 function parseItem(payload, fallbackId) {
   if (payload.type !== "message") return null;
-  return { id: payload.id || fallbackId, type: "agentMessage", text: payload.text || "" };
+  return { id: payload.id || fallbackId, type: "agentMessage", text: payload.text || "", phase: payload.phase };
 }
 
 test("starts near the latest turn instead of reading a large rollout from the beginning", async () => {
@@ -53,6 +53,26 @@ test("reads only appended bytes and resets when a new turn starts", async () => 
     const second = await reader.read((await stat(file)).size);
     assert.equal(second.turnId, "turn.2");
     assert.deepEqual(second.items.map((item) => item.text), ["second"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("replaces the internal compaction summary with a context marker", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-tail-compaction-"));
+  const file = path.join(directory, "rollout.jsonl");
+  try {
+    const summary = "## Current State\n\nInternal continuation details";
+    const contents = event({ type: "task_started", turn_id: "turn.compaction" })
+      + event({ type: "message", id: "summary.1", text: summary, phase: "final_answer" }, "response_item")
+      + event({ message: `Internal preamble\n${summary}` }, "compacted");
+    await writeFile(file, contents, "utf8");
+
+    const reader = new RolloutTailReader(file, parseItem);
+    const snapshot = await reader.read((await stat(file)).size);
+
+    assert.deepEqual(snapshot.items.map((item) => item.type), ["contextCompaction"]);
+    assert.equal(snapshot.items.some((item) => item.text?.includes("Current State")), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

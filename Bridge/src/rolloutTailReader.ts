@@ -95,6 +95,11 @@ export class RolloutTailReader {
       if (typeof payload.client_id === "string") this.items[this.lastUserIndex]!.clientId = payload.client_id;
     }
 
+    if (event.type === "compacted") {
+      this.consumeCompaction(payload);
+      return;
+    }
+
     if (event.type !== "response_item") return;
     this.responseIndex += 1;
     const item = this.parseItem(payload, `rollout.${this.turnId}.${this.responseIndex}`);
@@ -119,6 +124,29 @@ export class RolloutTailReader {
         this.items[toolIndex]!.result = payload.output ?? payload.result ?? null;
       }
     }
+  }
+
+  private consumeCompaction(payload: JsonObject): void {
+    const compactedMessage = typeof payload.message === "string" ? payload.message.trimEnd() : "";
+    for (let index = this.items.length - 1; index >= 0; index -= 1) {
+      const item = this.items[index]!;
+      const text = typeof item.text === "string" ? item.text.trim() : "";
+      if (item.type !== "agentMessage" || item.phase !== "final_answer" || !text) continue;
+      if (!compactedMessage.endsWith(text)) break;
+      this.items.splice(index, 1);
+      this.rebuildIndexes();
+      break;
+    }
+
+    const id = `rollout.${this.turnId}.compaction.${this.responseIndex}`;
+    this.itemIndexes.set(id, this.items.length);
+    this.items.push({ id, type: "contextCompaction" });
+  }
+
+  private rebuildIndexes(): void {
+    this.itemIndexes = new Map(this.items.map((item, index) => [String(item.id), index]));
+    this.toolIndexes = new Map(this.items.flatMap((item, index) =>
+      typeof item.callId === "string" ? [[item.callId, index] as const] : []));
   }
 
   private current(): ParsedRolloutTurn {

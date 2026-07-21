@@ -1700,6 +1700,7 @@ final class RelayStore: ObservableObject {
             }
         case "thread/compacted":
             if let turnId = eventTurnId {
+                messages = TranscriptReconciler.removeCompactionSummary(turnId: turnId, from: messages)
                 upsert(TranscriptItem(id: "compaction.\(turnId)", turnId: turnId, role: .tool, kind: .contextCompaction, title: "已压缩上下文", text: "Codex 已整理较早的对话内容，为后续工作释放上下文空间。", status: "completed"))
             }
         case "thread/settings/updated":

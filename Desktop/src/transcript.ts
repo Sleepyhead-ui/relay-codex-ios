@@ -173,6 +173,30 @@ export function mergeSnapshot(existing: TranscriptItem[], snapshot: TranscriptIt
   return [...outside.slice(0, first), ...merged, ...outside.slice(first)];
 }
 
+export function applyContextCompaction(items: TranscriptItem[], turnId: string) {
+  const next = [...items];
+  let summaryIndex = -1;
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const item = next[index]!;
+    if (item.turnId === turnId && item.kind === "assistant" && item.phase === "final_answer") {
+      summaryIndex = index;
+      break;
+    }
+  }
+  if (summaryIndex >= 0) next.splice(summaryIndex, 1);
+  if (!next.some((item) => item.turnId === turnId && item.kind === "compaction")) {
+    next.push({
+      id: `compaction.${turnId}`,
+      turnId,
+      kind: "compaction",
+      title: "已压缩上下文",
+      text: "Codex 已整理较早的对话内容",
+      status: "completed",
+    });
+  }
+  return next;
+}
+
 export function groupProjects(threads: ThreadSummary[]) {
   const groups = new Map<string, ThreadSummary[]>();
   for (const thread of threads) {

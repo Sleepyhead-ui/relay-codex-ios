@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("uses timestamps when an active turn carries a zero history duration", () => {
@@ -65,6 +65,16 @@ describe("desktop transcript", () => {
     const merged = mergeSnapshot(existing, snapshot, "turn.1");
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe("live.1");
+  });
+
+  it("replaces an internal compaction answer with a compact status item", () => {
+    const messages = [
+      { id: "user.1", turnId: "turn.1", kind: "user" as const, text: "Continue" },
+      { id: "summary.1", turnId: "turn.1", kind: "assistant" as const, phase: "final_answer", text: "## Current State\nInternal details" },
+    ];
+    const compacted = applyContextCompaction(messages, "turn.1");
+    expect(compacted.map((item) => item.kind)).toEqual(["user", "compaction"]);
+    expect(compacted.some((item) => item.text.includes("Current State"))).toBe(false);
   });
 
   it("preserves two commands when the same command genuinely ran twice", () => {

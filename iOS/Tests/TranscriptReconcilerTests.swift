@@ -2,6 +2,17 @@ import XCTest
 @testable import Relay
 
 final class TranscriptReconcilerTests: XCTestCase {
+    func testRemovesInternalCompactionSummary() {
+        let messages = [
+            item(id: "user.1", turnId: "turn.1", role: .user, text: "Continue"),
+            TranscriptItem(id: "summary.1", turnId: "turn.1", role: .assistant, kind: .message, text: "## Current State\nInternal details", phase: "final_answer")
+        ]
+
+        let result = TranscriptReconciler.removeCompactionSummary(turnId: "turn.1", from: messages)
+
+        XCTAssertEqual(result.map(\.id), ["user.1"])
+    }
+
     func testSnapshotReplacesEquivalentLiveItemWithoutChangingItsIdentity() {
         let live = item(id: "live.1", turnId: "turn.1", role: .assistant, text: "正在检查  项目", phase: "commentary")
         let snapshot = item(id: "rollout.9", turnId: "turn.1", role: .assistant, text: "正在检查 项目", phase: "commentary")

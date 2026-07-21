@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
@@ -562,6 +562,10 @@ export default function App() {
       if (turnId) {
         setTurns((current) => ({ ...current, [turnId]: { ...metadata, status: "inProgress", startedAt: metadata.startedAt || Date.now() / 1000 } }));
       }
+      return;
+    }
+    if (method === "thread/compacted" && turnId) {
+      setMessages((current) => applyContextCompaction(current, turnId));
       return;
     }
     if (terminal) {

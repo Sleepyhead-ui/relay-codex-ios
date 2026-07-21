@@ -1,6 +1,6 @@
 {
   "name": "relay-desktop",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "private": true,
   "author": "Relay Codex",
   "description": "Realtime Windows desktop client for Relay Codex Bridge",
