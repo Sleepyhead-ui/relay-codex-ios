@@ -13,8 +13,39 @@ struct ConversationView: View {
             Divider().opacity(0.55)
             transcript
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { ComposerView() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.showingArchivedThreads {
+                archivedBar
+            } else {
+                ComposerView()
+            }
+        }
         .background(RelayTheme.canvas)
+    }
+
+    private var archivedBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "archivebox")
+                .font(.system(size: 13, weight: .medium))
+            Text("此任务已归档，仅供查看")
+                .font(.system(size: 12, weight: .medium))
+            Spacer()
+            if let threadId = store.selectedThreadId {
+                Button {
+                    Task { await store.unarchiveThread(threadId) }
+                } label: {
+                    Label("恢复", systemImage: "arrow.uturn.backward")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .frame(height: 54)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) { Divider().opacity(0.55) }
     }
 
     private var topBar: some View {

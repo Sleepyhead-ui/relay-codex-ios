@@ -62,18 +62,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .project-heading span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project-heading small { color: #5f635d; font-weight: 600; }
 .thread-list { display: flex; flex-direction: column; gap: 1px; }
-.thread-row { width: 100%; min-height: 39px; display: grid; grid-template-columns: 8px minmax(0,1fr); gap: 7px; align-items: center; padding: 5px 8px; border-radius: 8px; background: transparent; text-align: left; }
+.thread-row-shell { position: relative; border-radius: 8px; }
+.thread-row { width: 100%; min-height: 39px; display: grid; grid-template-columns: 8px minmax(0,1fr); gap: 7px; align-items: center; padding: 5px 29px 5px 8px; border-radius: 8px; background: transparent; text-align: left; }
 .thread-row:hover { background: rgba(255,255,255,.035); }
-.thread-row.selected { background: #282926; }
+.thread-row-shell.selected { background: #282926; }
+.thread-menu-trigger { position: absolute; right: 4px; top: 6px; width: 27px; height: 27px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: #777b74; opacity: 0; }
+.thread-row-shell:hover .thread-menu-trigger, .thread-menu-trigger:focus-visible { opacity: 1; }
+.thread-menu-trigger:hover { background: rgba(255,255,255,.07); color: #d5d7d1; }
+.thread-menu { position: absolute; z-index: 20; right: 3px; top: 33px; width: 136px; padding: 4px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #252623; box-shadow: 0 12px 34px rgba(0,0,0,.34); }
+.thread-menu button { width: 100%; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 6px; background: transparent; color: #bdc0b9; font-size: 11px; text-align: left; }
+.thread-menu button:hover { background: rgba(255,255,255,.065); color: #f0f1ed; }
+.thread-menu button.danger { color: #e39b96; }
 .thread-running { width: 5px; height: 5px; border-radius: 50%; background: #4d504b; }
 .thread-running.active { background: var(--accent); box-shadow: 0 0 0 3px rgba(41,185,144,.1); }
 .thread-copy { min-width: 0; display: flex; align-items: baseline; gap: 5px; }
+.thread-copy > svg { flex: 0 0 auto; color: #777c74; }
 .thread-copy strong { flex: 1; min-width: 0; color: #bbbeb7; font-size: 12px; font-weight: 520; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.thread-row.selected strong { color: #f0f1ed; }
+.thread-row-shell.selected strong { color: #f0f1ed; }
 .thread-copy small { color: #60645e; font-size: 9px; white-space: nowrap; }
 .sidebar-footer { height: 38px; flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 0 14px; border-top: 1px solid var(--line); color: #72766f; font-size: 10px; }
 .sidebar-footer > svg { color: #6f746d; }
 .version { margin-left: auto; }
+.archive-mode { height: 34px; flex: 0 0 auto; display: flex; align-items: center; gap: 7px; margin: 0 8px 7px; padding: 0 7px; border-radius: 7px; background: transparent; color: #787c75; font-size: 10px; text-align: left; }
+.archive-mode:hover, .archive-mode.active { background: rgba(255,255,255,.04); color: #b7bab3; }
+.archive-mode svg:last-child { margin-left: auto; }
 .empty-sidebar { padding: 30px 12px; text-align: center; color: var(--faint); font-size: 12px; }
 
 .main-pane { min-width: 0; min-height: 0; height: 100%; overflow: hidden; position: relative; display: grid; grid-template-rows: 58px minmax(0,1fr) auto; background: var(--canvas); }
@@ -184,6 +196,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .goal-panel strong { flex: 0 0 auto; color: #e1e3de; font-size: 12px; letter-spacing: 0; }
 .goal-panel span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jump-bottom { position: absolute; right: 26px; bottom: 133px; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: rgba(40,41,38,.92); color: #c6c8c2; box-shadow: 0 8px 24px rgba(0,0,0,.22); z-index: 5; }
+.archived-bar { width: min(860px, calc(100% - 26px)); min-height: 48px; margin: 0 auto 12px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-top: 1px solid var(--line); color: #858981; font-size: 11px; }
+.archived-bar button { margin-left: auto; height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 7px; background: rgba(255,255,255,.055); color: #c5c8c1; font-size: 10px; }
 
 .empty-state, .center-state { min-height: 56vh; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #777b74; }
 .empty-state h1 { margin: 17px 0 6px; color: #e3e5df; font-size: 21px; font-weight: 630; }

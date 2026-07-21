@@ -37,6 +37,8 @@ final class RelayStore: ObservableObject {
     @Published private(set) var codexProfiles: [CodexProfile] = []
     @Published private(set) var activeCodexProfileId = ""
     @Published private(set) var isSwitchingCodexProfile = false
+    @Published private(set) var pinnedThreadIds = Set<String>()
+    @Published private(set) var showingArchivedThreads = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -47,6 +49,7 @@ final class RelayStore: ObservableObject {
     private let lastThreadDefaultsKey = "relay.lastThreadId"
     private let threadCacheDefaultsKey = "relay.cachedThreads"
     private let followUpDefaultsKey = "relay.followUpBehavior"
+    private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
     private var threadLoadGeneration = UUID()
     private var reconcilingThreadId: String?
     private var queuedEvents: [(method: String, params: JSONValue)] = []
@@ -332,7 +335,8 @@ final class RelayStore: ObservableObject {
                 "limit": .number(200),
                 "sortKey": .string("updated_at"),
                 "sortDirection": .string("desc"),
-                "useStateDbOnly": .bool(true)
+                "useStateDbOnly": .bool(true),
+                "archived": .bool(showingArchivedThreads)
             ])
             var fetched = result["data"]?.arrayValue?.compactMap(ThreadSummary.init(json:)) ?? []
             if fetched.isEmpty, !threads.isEmpty {
@@ -341,10 +345,83 @@ final class RelayStore: ObservableObject {
             for index in fetched.indices where taskRunStates[fetched[index].id]?.isRunning == true {
                 fetched[index].status = "active"
             }
-            threads = fetched
-            persistThreadCache()
+            threads = fetched.sorted { left, right in
+                let leftPinned = pinnedThreadIds.contains(left.id)
+                let rightPinned = pinnedThreadIds.contains(right.id)
+                return leftPinned == rightPinned ? left.updatedAt > right.updatedAt : leftPinned
+            }
+            if !showingArchivedThreads { persistThreadCache() }
         } catch {
             report(error, show: showErrors)
+        }
+    }
+
+    func setShowingArchivedThreads(_ showing: Bool) async {
+        guard showingArchivedThreads != showing else { return }
+        cacheCurrentThread()
+        showingArchivedThreads = showing
+        setSelectedThread(nil)
+        threads = []
+        messages = []
+        turnMetadata = [:]
+        await refreshThreads()
+        if let first = threads.first?.id { await selectThread(first, closeSidebar: false) }
+    }
+
+    func isThreadPinned(_ threadId: String) -> Bool {
+        pinnedThreadIds.contains(threadId)
+    }
+
+    func toggleThreadPin(_ threadId: String) {
+        if pinnedThreadIds.contains(threadId) {
+            pinnedThreadIds.remove(threadId)
+        } else {
+            pinnedThreadIds.insert(threadId)
+        }
+        persistPinnedThreads()
+        threads.sort { left, right in
+            let leftPinned = pinnedThreadIds.contains(left.id)
+            let rightPinned = pinnedThreadIds.contains(right.id)
+            return leftPinned == rightPinned ? left.updatedAt > right.updatedAt : leftPinned
+        }
+    }
+
+    func renameThread(_ threadId: String, to name: String) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            _ = try await socket.rpc(
+                method: "thread/name/set",
+                params: ["threadId": .string(threadId), "name": .string(trimmed)]
+            )
+            if let index = threads.firstIndex(where: { $0.id == threadId }) {
+                threads[index].title = trimmed
+                if !showingArchivedThreads { persistThreadCache() }
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    func archiveThread(_ threadId: String) async {
+        guard !isThreadRunning(threadId) else {
+            errorMessage = "请先停止正在运行的任务。"
+            return
+        }
+        do {
+            _ = try await socket.rpc(method: "thread/archive", params: ["threadId": .string(threadId)])
+            removeThreadFromCurrentList(threadId)
+        } catch {
+            report(error)
+        }
+    }
+
+    func unarchiveThread(_ threadId: String) async {
+        do {
+            _ = try await socket.rpc(method: "thread/unarchive", params: ["threadId": .string(threadId)])
+            removeThreadFromCurrentList(threadId)
+        } catch {
+            report(error)
         }
     }
 
@@ -355,6 +432,7 @@ final class RelayStore: ObservableObject {
             return false
         }
         do {
+            showingArchivedThreads = false
             let projectDirectory = (workingDirectory ?? host.workingDirectory)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let projectAccess = storedAccess(for: projectDirectory)
@@ -484,20 +562,46 @@ final class RelayStore: ObservableObject {
         }
 
         do {
-            let result = try await socket.rpc(
-                method: "thread/resume",
-                params: [
-                    "threadId": .string(id),
-                    "excludeTurns": .bool(true),
-                    "initialTurnsPage": .object([
+            let result: JSONValue
+            if showingArchivedThreads {
+                async let summary = socket.rpc(
+                    method: "thread/read",
+                    params: ["threadId": .string(id), "includeTurns": .bool(false)],
+                    timeoutSeconds: 25,
+                    reconnectOnTimeout: false
+                )
+                async let page = socket.rpc(
+                    method: "thread/turns/list",
+                    params: [
+                        "threadId": .string(id),
                         "limit": .number(8),
                         "sortDirection": .string("desc"),
                         "itemsView": .string("full")
-                    ])
-                ],
-                timeoutSeconds: 25,
-                reconnectOnTimeout: false
-            )
+                    ],
+                    timeoutSeconds: 60,
+                    reconnectOnTimeout: false
+                )
+                let (summaryResult, pageResult) = try await (summary, page)
+                result = .object([
+                    "thread": summaryResult["thread"] ?? .object([:]),
+                    "initialTurnsPage": pageResult
+                ])
+            } else {
+                result = try await socket.rpc(
+                    method: "thread/resume",
+                    params: [
+                        "threadId": .string(id),
+                        "excludeTurns": .bool(true),
+                        "initialTurnsPage": .object([
+                            "limit": .number(8),
+                            "sortDirection": .string("desc"),
+                            "itemsView": .string("full")
+                        ])
+                    ],
+                    timeoutSeconds: 25,
+                    reconnectOnTimeout: false
+                )
+            }
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             let pageTurns = result["initialTurnsPage"]?["data"]?.arrayValue ?? []
             let turns = pageTurns.isEmpty
@@ -1184,6 +1288,33 @@ final class RelayStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: threadCacheDefaultsKey)
     }
 
+    private var pinnedThreadsDefaultsKey: String {
+        "\(pinnedThreadsDefaultsPrefix).\(activeCodexProfileId.nonEmpty ?? "default")"
+    }
+
+    private func loadPinnedThreads() {
+        pinnedThreadIds = Set(UserDefaults.standard.stringArray(forKey: pinnedThreadsDefaultsKey) ?? [])
+    }
+
+    private func persistPinnedThreads() {
+        UserDefaults.standard.set(Array(pinnedThreadIds).sorted(), forKey: pinnedThreadsDefaultsKey)
+    }
+
+    private func removeThreadFromCurrentList(_ threadId: String) {
+        threads.removeAll { $0.id == threadId }
+        pinnedThreadIds.remove(threadId)
+        persistPinnedThreads()
+        if selectedThreadId == threadId {
+            setSelectedThread(nil)
+            messages = []
+            turnMetadata = [:]
+            if let next = threads.first?.id {
+                Task { await selectThread(next, closeSidebar: false) }
+            }
+        }
+        if !showingArchivedThreads { persistThreadCache() }
+    }
+
     private func setThreadStatus(_ threadId: String, status: String, touchUpdatedAt: Bool = true) {
         guard let index = threads.firstIndex(where: { $0.id == threadId }) else { return }
         let changed = threads[index].status != status
@@ -1590,7 +1721,9 @@ final class RelayStore: ObservableObject {
 
     private func handleBridgeStatus(_ message: JSONValue) {
         if let profileId = message["codexProfile"]?["id"]?.stringValue {
+            let profileChanged = activeCodexProfileId != profileId
             activeCodexProfileId = profileId
+            if profileChanged { loadPinnedThreads() }
         }
         switch message["status"]?.stringValue {
         case "switching":
@@ -1630,6 +1763,7 @@ final class RelayStore: ObservableObject {
         nextUserMessageSequence = 0
         completedTurnIds = []
         isLoadingThread = false
+        showingArchivedThreads = false
         setSelectedThread(nil)
         UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
     }

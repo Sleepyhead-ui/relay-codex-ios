@@ -4,6 +4,8 @@ struct SidebarView: View {
     @EnvironmentObject private var store: RelayStore
     @State private var search = ""
     @State private var collapsedProjects = Set<String>()
+    @State private var renamingThread: ThreadSummary?
+    @State private var renameDraft = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,9 +88,36 @@ struct SidebarView: View {
                                     thread: thread,
                                     selected: thread.id == store.selectedThreadId,
                                     running: store.isThreadRunning(thread.id),
-                                    needsApproval: store.hasPendingApproval(threadId: thread.id)
+                                    needsApproval: store.hasPendingApproval(threadId: thread.id),
+                                    pinned: store.isThreadPinned(thread.id)
                                 ) {
                                     Task { await store.selectThread(thread.id) }
+                                }
+                                .contextMenu {
+                                    if !store.showingArchivedThreads {
+                                        Button {
+                                            store.toggleThreadPin(thread.id)
+                                        } label: {
+                                            Label(store.isThreadPinned(thread.id) ? "取消置顶" : "置顶", systemImage: store.isThreadPinned(thread.id) ? "pin.slash" : "pin")
+                                        }
+                                        Button {
+                                            renameDraft = thread.title
+                                            renamingThread = thread
+                                        } label: {
+                                            Label("重命名", systemImage: "pencil")
+                                        }
+                                        Button(role: .destructive) {
+                                            Task { await store.archiveThread(thread.id) }
+                                        } label: {
+                                            Label("归档", systemImage: "archivebox")
+                                        }
+                                    } else {
+                                        Button {
+                                            Task { await store.unarchiveThread(thread.id) }
+                                        } label: {
+                                            Label("恢复任务", systemImage: "arrow.uturn.backward")
+                                        }
+                                    }
                                 }
                                 .padding(.leading, 15)
                             }
@@ -109,6 +138,23 @@ struct SidebarView: View {
             .refreshable { await store.refreshThreads() }
 
             Divider().opacity(0.55)
+            Button {
+                Task { await store.setShowingArchivedThreads(!store.showingArchivedThreads) }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: store.showingArchivedThreads ? "tray.full" : "archivebox")
+                        .frame(width: 22)
+                    Text(store.showingArchivedThreads ? "返回当前任务" : "已归档任务")
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 13)
+                .frame(height: 38)
+            }
+            .buttonStyle(.plain)
             Button {
                 store.showingSettings = true
                 store.sidebarOpen = false
@@ -137,6 +183,19 @@ struct SidebarView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RelayTheme.sidebar.ignoresSafeArea())
+        .alert("重命名任务", isPresented: Binding(
+            get: { renamingThread != nil },
+            set: { if !$0 { renamingThread = nil } }
+        )) {
+            TextField("任务名称", text: $renameDraft)
+            Button("取消", role: .cancel) { renamingThread = nil }
+            Button("保存") {
+                guard let thread = renamingThread else { return }
+                let name = renameDraft
+                renamingThread = nil
+                Task { await store.renameThread(thread.id, to: name) }
+            }
+        }
     }
 
     private var projectGroups: [ProjectGroup] {
@@ -152,7 +211,11 @@ struct SidebarView: View {
             ProjectGroup(
                 id: id,
                 path: threads.first?.cwd ?? "",
-                threads: threads.sorted { $0.updatedAt > $1.updatedAt }
+                threads: threads.sorted { left, right in
+                    let leftPinned = store.isThreadPinned(left.id)
+                    let rightPinned = store.isThreadPinned(right.id)
+                    return leftPinned == rightPinned ? left.updatedAt > right.updatedAt : leftPinned
+                }
             )
         }
         .sorted { $0.updatedAt > $1.updatedAt }
@@ -214,6 +277,7 @@ private struct ThreadRow: View {
     let selected: Bool
     let running: Bool
     let needsApproval: Bool
+    let pinned: Bool
     let action: () -> Void
 
     var body: some View {
@@ -231,6 +295,12 @@ private struct ThreadRow: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.orange)
                         .frame(width: 13, height: 13)
+                }
+                if pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 11, height: 13)
                 }
                 Text(thread.title)
                     .font(.system(size: 14, weight: selected ? .semibold : .regular))

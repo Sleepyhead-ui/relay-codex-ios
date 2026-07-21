@@ -5,6 +5,7 @@ import { CodexAppServer } from "./codexAppServer.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
+import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
@@ -52,9 +53,12 @@ const rpcDiagnostics = {
   lastErrorAt: null as string | null,
   lastError: null as string | null,
 };
+const diagnostics = new DiagnosticsLog();
+diagnostics.record("info", "bridge", "Relay Bridge started.");
 const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridgeId, request) => {
   rpcDiagnostics.lastErrorAt = new Date().toISOString();
   rpcDiagnostics.lastError = `Codex request timed out: ${request.method}`;
+  diagnostics.record("error", "rpc", `Request timed out: ${request.method}`, { bridgeId });
   send(request.socket, {
     type: "rpcResult",
     id: request.clientId,
@@ -119,6 +123,7 @@ httpServer.on("upgrade", (request, socket, head) => {
   if (request.headers.origin) {
     socketDiagnostics.lastRejectedAt = new Date().toISOString();
     socketDiagnostics.lastError = "WebSocket origin header was rejected.";
+    diagnostics.record("warning", "socket", "Rejected a WebSocket origin header.", { remoteAddress: request.socket.remoteAddress });
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -126,6 +131,7 @@ httpServer.on("upgrade", (request, socket, head) => {
   if (!isAuthorized(request.headers.authorization, config.token)) {
     socketDiagnostics.lastRejectedAt = new Date().toISOString();
     socketDiagnostics.lastError = "WebSocket authorization failed.";
+    diagnostics.record("warning", "socket", "Rejected an unauthorized WebSocket connection.", { remoteAddress: request.socket.remoteAddress });
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -141,6 +147,7 @@ webSocketServer.on("connection", (socket) => {
   sessionSubscriptions.set(socket, new Map());
   socketDiagnostics.lastConnectedAt = new Date().toISOString();
   socketDiagnostics.lastError = null;
+  diagnostics.record("info", "socket", "Remote client connected.", { clients: clients.size });
   console.log(`[socket] mobile client connected (${clients.size} total)`);
   send(socket, bridgeStatus(codexReady ? "ready" : "starting"));
   for (const pending of pendingServerRequests.values()) {
@@ -169,11 +176,13 @@ webSocketServer.on("connection", (socket) => {
     for (const [bridgeId] of pendingClientRequests.removeSocket(socket)) cancelForwardedRequest(bridgeId);
     socketDiagnostics.lastDisconnectedAt = new Date().toISOString();
     socketDiagnostics.lastClose = `${code}${reason.length ? `: ${reason.toString("utf8")}` : ""}`;
+    diagnostics.record(code === 1000 ? "info" : "warning", "socket", "Remote client disconnected.", { code, clients: clients.size });
     console.log(`[socket] mobile client disconnected (${clients.size} total)`);
   });
   socket.on("error", (error) => {
     socketDiagnostics.lastErrorAt = new Date().toISOString();
     socketDiagnostics.lastError = error.message;
+    diagnostics.record("error", "socket", error.message);
     console.error(`[socket] ${error.message}`);
   });
 });
@@ -206,12 +215,23 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
   const message = parseClientMessage(raw);
   if (message.type === "rpcCancel") {
     const cancelled = pendingClientRequests.cancelClient(socket, message.id);
-    if (cancelled) cancelForwardedRequest(cancelled[0]);
+    if (cancelled) {
+      diagnostics.record("info", "rpc", `Client cancelled ${cancelled[1].method}.`);
+      cancelForwardedRequest(cancelled[0]);
+    }
     return;
   }
   if (message.type === "rpc") {
     rpcDiagnostics.lastReceivedAt = new Date().toISOString();
     rpcDiagnostics.lastMethod = message.method;
+    if (message.method === "relay/diagnostics/report") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      send(socket, { type: "rpcResult", id: message.id, result: diagnosticsReport() });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
     if (message.method === "relay/thread/runtime") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -372,6 +392,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
   if (!pendingServer) return;
   clearTimeout(pendingServer.timeout);
   pendingServerRequests.delete(serverId);
+  diagnostics.record("info", "approval", message.error ? "Approval was declined." : "Approval was resolved.", { id: serverId });
   const response: JsonObject = { id: message.id };
   if (message.error) response.error = message.error;
   else response.result = message.result ?? {};
@@ -402,6 +423,7 @@ function handleCodexResponse(message: JsonObject): void {
     rpcDiagnostics.lastError = isObject(message.error) && typeof message.error.message === "string"
       ? message.error.message
       : "Codex RPC failed.";
+    diagnostics.record("error", "rpc", rpcDiagnostics.lastError, { method: pending.method });
   } else {
     rpcDiagnostics.lastError = null;
   }
@@ -447,6 +469,7 @@ function handleCodexRequest(message: JsonObject): void {
     const pending = pendingServerRequests.get(id);
     if (!pending) return;
     pendingServerRequests.delete(id);
+    diagnostics.record("warning", "approval", "Approval expired before a response was received.", { id });
     try {
       codex.send({ id: message.id, error: { code: -32000, message: "Relay approval timed out." } });
     } catch {}
@@ -454,6 +477,10 @@ function handleCodexRequest(message: JsonObject): void {
   }, approvalTimeoutMs);
   timeout.unref();
   pendingServerRequests.set(id, { request: message, timeout });
+  diagnostics.record("warning", "approval", "Codex is waiting for approval.", {
+    method: message.method,
+    threadId: isObject(message.params) ? message.params.threadId : undefined,
+  });
   broadcast({ type: "serverRequest", ...message });
 }
 
@@ -494,6 +521,23 @@ function bridgeStatus(status: string, sync = desktopSync.status): JsonObject {
   return { type: "bridgeStatus", status, desktopSync: sync, codexProfile: activeCodexProfile };
 }
 
+function diagnosticsReport(): JsonObject {
+  return diagnostics.report({
+    codexReady,
+    clients: clients.size,
+    activeTurns: runtimeState.activeCount,
+    pendingRpcCount: pendingClientRequests.size,
+    pendingApprovalCount: pendingServerRequests.size,
+    queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
+    codexRestartAttempt,
+    uptimeSeconds: Math.floor(process.uptime()),
+    desktopSync: { ...desktopSync.status },
+    socket: { ...socketDiagnostics },
+    rpc: { ...rpcDiagnostics },
+    codexProfile: { ...activeCodexProfile },
+  });
+}
+
 function createCodexAppServer(generation: number): CodexAppServer {
   return new CodexAppServer(config.codexBin, {
     onResponse: (message) => {
@@ -513,6 +557,7 @@ function createCodexAppServer(generation: number): CodexAppServer {
         codexRestartAttempt = 0;
         if (codexStartupTimer) clearTimeout(codexStartupTimer);
         codexStartupTimer = undefined;
+        diagnostics.record("info", "codex", "Codex App Server is ready.", { profileId: activeCodexProfile.id });
         broadcast(bridgeStatus("ready"));
         void dispatchAllQueuedPrompts();
       }
@@ -532,6 +577,7 @@ function handleCodexExit(generation: number, code: number | null, signal: NodeJS
   failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
   clearPendingApprovals("codex-exited");
   runtimeState.stopAll("Codex App Server exited.");
+  diagnostics.record("error", "codex", "Codex App Server exited.", { code, signal });
   broadcast({ ...bridgeStatus("restarting"), code, signal });
   console.error(`Codex App Server exited (code=${code}, signal=${signal}). Scheduling restart.`);
   scheduleCodexRestart(generation);
@@ -541,6 +587,7 @@ function scheduleCodexRestart(generation: number): void {
   if (shuttingDown || generation !== codexGeneration || codexRestartTimer) return;
   codexRestartAttempt += 1;
   const delay = Math.min(1_000 * Math.pow(1.8, codexRestartAttempt - 1), 30_000);
+  diagnostics.record("warning", "codex", "Scheduled Codex App Server restart.", { attempt: codexRestartAttempt, retryInMs: delay });
   broadcast({ ...bridgeStatus("restarting"), restartAttempt: codexRestartAttempt, retryInMs: delay });
   codexRestartTimer = setTimeout(() => {
     codexRestartTimer = undefined;

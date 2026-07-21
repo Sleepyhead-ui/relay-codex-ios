@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
-  AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop,
-  FileCode2, Folder, FolderOpen, Menu, MessageSquare, Paperclip, Plus, Search, Target,
-  Power, Server, Settings, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
+  AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop,
+  FileCode2, Folder, FolderOpen, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Target,
+  Power, RotateCcw, Server, Settings, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
@@ -50,6 +50,10 @@ export default function App() {
   const [loadingOlderTurns, setLoadingOlderTurns] = useState(false);
   const [olderTurnsCursor, setOlderTurnsCursor] = useState<string>();
   const [threadSearch, setThreadSearch] = useState("");
+  const [archivedView, setArchivedView] = useState(false);
+  const [pinnedThreadIds, setPinnedThreadIds] = useState<Set<string>>(() => storedPinnedThreads("default"));
+  const [renamingThread, setRenamingThread] = useState<ThreadSummary>();
+  const [renameDraft, setRenameDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -83,7 +87,7 @@ export default function App() {
   const approvalQueue = selectedApprovals.length ? selectedApprovals : approvals;
   const approval = approvalQueue[0];
   const approvalThreadIds = useMemo(() => new Set(approvals.flatMap((item) => item.threadId ? [item.threadId] : [])), [approvals]);
-  const projects = useMemo(() => groupProjects(filterThreads(threads, threadSearch)), [threads, threadSearch]);
+  const projects = useMemo(() => groupProjects(sortPinnedThreads(filterThreads(threads, threadSearch), pinnedThreadIds)), [threads, threadSearch, pinnedThreadIds]);
   const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
   const currentGoal = [...messages].reverse().find((item) => item.goal)?.goal;
   messagesRef.current = messages;
@@ -167,7 +171,10 @@ export default function App() {
       setThreads(nextThreads);
       setModels(nextModels);
       setCodexProfiles(profileResult.profiles || []);
-      setActiveProfileId(profileResult.activeProfileId || "");
+      const nextProfileId = profileResult.activeProfileId || "default";
+      setActiveProfileId(nextProfileId);
+      setPinnedThreadIds(storedPinnedThreads(nextProfileId));
+      setArchivedView(false);
       setQueuedPrompts((queueResult.items || []).sort((left: QueuedPrompt, right: QueuedPrompt) => left.createdAt - right.createdAt));
       const preferred = nextModels.find((model) => model.isDefault) || nextModels[0];
       if (!selectedModel && preferred) {
@@ -183,6 +190,7 @@ export default function App() {
   function handleBridgeStatus(message: any) {
     if (message.codexProfile?.id) {
       setActiveProfileId(message.codexProfile.id);
+      setPinnedThreadIds(storedPinnedThreads(message.codexProfile.id));
       setCodexProfiles((current) => current.map((profile) => ({ ...profile, active: profile.id === message.codexProfile.id })));
     }
     if (message.status === "switching") {
@@ -199,6 +207,7 @@ export default function App() {
       setTurns({});
       setModels([]);
       setTaskStates({});
+      setArchivedView(false);
     } else if (message.status === "ready" && profileSwitchingRef.current) {
       profileSwitchingRef.current = false;
       setProfileSwitching(false);
@@ -235,14 +244,87 @@ export default function App() {
     }
   }
 
-  async function refreshThreads() {
+  async function refreshThreads(showArchived = archivedView) {
     try {
-      const result = await rpc.rpc("thread/list", { limit: 200, sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true });
+      const result = await rpc.rpc("thread/list", { limit: 200, sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true, archived: showArchived });
       setThreads((result.data || []).map(parseThread).filter(Boolean));
     } catch {}
   }
 
-  async function selectThread(id: string) {
+  async function setArchivedMode(showArchived: boolean) {
+    if (archivedView === showArchived) return;
+    setArchivedView(showArchived);
+    setSelectedThreadId(undefined);
+    selectedRef.current = undefined;
+    setMessages([]);
+    messagesRef.current = [];
+    setTurns({});
+    setThreads([]);
+    try {
+      const result = await rpc.rpc("thread/list", { limit: 200, sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true, archived: showArchived });
+      const nextThreads = (result.data || []).map(parseThread).filter(Boolean) as ThreadSummary[];
+      setThreads(nextThreads);
+      if (nextThreads[0]) await selectThread(nextThreads[0].id, showArchived);
+    } catch (reason) { setError(errorText(reason)); }
+  }
+
+  function toggleThreadPin(threadId: string) {
+    setPinnedThreadIds((current) => {
+      const next = new Set(current);
+      if (next.has(threadId)) next.delete(threadId); else next.add(threadId);
+      localStorage.setItem(pinnedThreadsKey(activeProfileId), JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  async function renameThread() {
+    if (!renamingThread) return;
+    const name = renameDraft.trim();
+    if (!name) return;
+    try {
+      await rpc.rpc("thread/name/set", { threadId: renamingThread.id, name });
+      setThreads((current) => current.map((thread) => thread.id === renamingThread.id ? { ...thread, title: name } : thread));
+      setRenamingThread(undefined);
+    } catch (reason) { setError(errorText(reason)); }
+  }
+
+  async function archiveThread(threadId: string) {
+    if (isTaskRunning(taskStates[threadId])) { setError("请先停止正在运行的任务。"); return; }
+    try {
+      await rpc.rpc("thread/archive", { threadId });
+      removeThreadFromCurrentList(threadId);
+    } catch (reason) { setError(errorText(reason)); }
+  }
+
+  async function unarchiveThread(threadId: string) {
+    try {
+      await rpc.rpc("thread/unarchive", { threadId });
+      removeThreadFromCurrentList(threadId);
+    } catch (reason) { setError(errorText(reason)); }
+  }
+
+  function removeThreadFromCurrentList(threadId: string) {
+    setThreads((current) => {
+      const next = current.filter((thread) => thread.id !== threadId);
+      if (selectedRef.current === threadId) {
+        selectedRef.current = undefined;
+        setSelectedThreadId(undefined);
+        setMessages([]);
+        messagesRef.current = [];
+        setTurns({});
+        if (next[0]) void selectThread(next[0].id);
+      }
+      return next;
+    });
+    setPinnedThreadIds((current) => {
+      if (!current.has(threadId)) return current;
+      const next = new Set(current); next.delete(threadId);
+      localStorage.setItem(pinnedThreadsKey(activeProfileId), JSON.stringify([...next]));
+      return next;
+    });
+  }
+
+  async function selectThread(id: string, readingArchived = archivedView) {
     const previous = selectedRef.current;
     if (previous && previous !== id) threadMessageCacheRef.current.set(previous, messagesRef.current);
     selectedRef.current = id;
@@ -257,11 +339,16 @@ export default function App() {
     updateTaskState(id, { type: "reset" });
     try {
       if (previous && previous !== id) void rpc.rpc("relay/thread/session/unsubscribe", { threadId: previous }, 5_000).catch(() => {});
-      const result = await rpc.rpc("thread/resume", {
-        threadId: id,
-        excludeTurns: true,
-        initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
-      }, 30_000);
+      const result = readingArchived
+        ? await Promise.all([
+            rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
+            rpc.rpc("thread/turns/list", { threadId: id, limit: 12, sortDirection: "desc", itemsView: "full" }, 120_000),
+          ]).then(([summary, page]) => ({ ...summary, initialTurnsPage: page }))
+        : await rpc.rpc("thread/resume", {
+            threadId: id,
+            excludeTurns: true,
+            initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
+          }, 30_000);
       if (selectedRef.current !== id) return;
       const page = result.initialTurnsPage?.data || [];
       setOlderTurnsCursor(result.initialTurnsPage?.nextCursor || undefined);
@@ -300,7 +387,7 @@ export default function App() {
       });
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
-      try {
+      if (!readingArchived) try {
         const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id }, 12_000);
         if (selectedRef.current === id) handleSessionSnapshot(id, snapshot);
       } catch {}
@@ -394,6 +481,13 @@ export default function App() {
     const threadId = params.threadId;
     const turnId = params.turnId || params.turn?.id;
     const terminal = ["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(method);
+    if (method === "thread/name/updated" && threadId) {
+      setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, title: params.name || thread.title } : thread));
+    }
+    if ((method === "thread/archived" && !archivedView) || (method === "thread/unarchived" && archivedView) || method === "thread/deleted") {
+      if (threadId) removeThreadFromCurrentList(threadId);
+      return;
+    }
     if (threadId) {
       setThreads((current) => current.map((thread) => thread.id === threadId
         ? { ...thread, status: terminal ? "idle" : method.startsWith("turn/") || method.startsWith("item/") ? "active" : thread.status, updatedAt: Date.now() / 1000 }
@@ -480,6 +574,7 @@ export default function App() {
   }
 
   async function createThread(cwd = workspace) {
+    if (archivedView) setArchivedView(false);
     const threadAccess = accessForWorkspace(cwd, defaultAccess, projectAccesses);
     const result = await rpc.rpc("thread/start", {
       cwd: cwd || undefined,
@@ -646,16 +741,33 @@ export default function App() {
           </div>
           <div className="sidebar-search"><Search size={13}/><input aria-label="搜索对话" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="搜索对话"/>{threadSearch && <button className="icon-button" title="清除搜索" onClick={() => setThreadSearch("")}><X size={12}/></button>}</div>
           <div className="project-list">
-            {projects.map((project) => <ProjectGroup key={project.path} project={project} selectedId={selectedThreadId} approvalThreadIds={approvalThreadIds} onSelect={selectThread}/>) }
+            {projects.map((project) => <ProjectGroup
+              key={project.path}
+              project={project}
+              selectedId={selectedThreadId}
+              approvalThreadIds={approvalThreadIds}
+              pinnedThreadIds={pinnedThreadIds}
+              archived={archivedView}
+              onSelect={selectThread}
+              onTogglePin={toggleThreadPin}
+              onRename={(thread) => { setRenamingThread(thread); setRenameDraft(thread.title); }}
+              onArchive={archiveThread}
+              onUnarchive={unarchiveThread}
+            />) }
             {!projects.length && <div className="empty-sidebar">{threadSearch ? "没有匹配的对话" : "暂无对话"}</div>}
           </div>
+          <button className={`archive-mode ${archivedView ? "active" : ""}`} onClick={() => void setArchivedMode(!archivedView)}>
+            {archivedView ? <RotateCcw size={13}/> : <Archive size={13}/>}
+            <span>{archivedView ? "返回当前任务" : "已归档任务"}</span>
+            <ChevronRight size={12}/>
+          </button>
           <div className="sidebar-footer"><Server size={12}/><span>{activeCodexProfile?.name || "Codex"}</span><span className="version">v{version}</span></div>
         </aside>
 
         <main className="main-pane">
           <header className="thread-header">
             <button className="icon-button sidebar-toggle" onClick={() => setSidebarOpen((value) => !value)}><Menu size={18}/></button>
-            <div className="thread-identity"><strong>{selectedThread?.title || "新任务"}</strong><span>{selectedThread?.cwd || workspace || "未指定工作目录"}</span></div>
+            <div className="thread-identity"><strong>{selectedThread?.title || (archivedView ? "已归档任务" : "新任务")}</strong><span>{archivedView ? "只读历史" : selectedThread?.cwd || workspace || "未指定工作目录"}</span></div>
             <div className={`live-badge ${serviceAvailable && upstreamRetrying ? "retrying" : serviceAvailable && connection === "connected" ? "connected" : "offline"}`}>
               {serviceAvailable && connection === "connected" ? <Wifi size={12}/> : <WifiOff size={12}/>}<span>{connectionLabel}</span>
             </div>
@@ -682,7 +794,7 @@ export default function App() {
           </div>
           {!atBottom && <button className="jump-bottom" onClick={() => { setAtBottom(true); transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" }); }}><ArrowDown size={16}/></button>}
 
-          <div className="composer-zone">
+          {archivedView ? <div className="archived-bar"><Archive size={14}/><span>此任务已归档，仅供查看</span>{selectedThreadId && <button onClick={() => void unarchiveThread(selectedThreadId)}><RotateCcw size={13}/>恢复任务</button>}</div> : <div className="composer-zone">
             {plan.length > 0 && <PlanPanel steps={plan}/>
             }
             {currentQueuedPrompts.length > 0 && <PromptQueuePanel items={currentQueuedPrompts} onRemove={removeQueuedPrompt}/>
@@ -711,22 +823,49 @@ export default function App() {
                 </div>
               </div>
             </div>
-          </div>
+          </div>}
         </main>
       </div>
 
       {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
+      {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}
       {approval && <Modal title={approval.title} closable={false} onClose={() => {}}>{approvalQueue.length > 1 && <div className="approval-queue-count">当前任务审批 1 / {approvalQueue.length}</div>}{approval.threadId && <div className="approval-task">{threads.find((thread) => thread.id === approval.threadId)?.title || approval.threadId}</div>}<p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
       {error && <div className="toast"><AlertCircle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     </div>
   );
 }
 
-function ProjectGroup({ project, selectedId, approvalThreadIds, onSelect }: { project: ReturnType<typeof groupProjects>[number]; selectedId?: string; approvalThreadIds: Set<string>; onSelect: (id: string) => Promise<void> }) {
+function ProjectGroup({ project, selectedId, approvalThreadIds, pinnedThreadIds, archived, onSelect, onTogglePin, onRename, onArchive, onUnarchive }: {
+  project: ReturnType<typeof groupProjects>[number]; selectedId?: string; approvalThreadIds: Set<string>; pinnedThreadIds: Set<string>; archived: boolean;
+  onSelect: (id: string) => Promise<void>; onTogglePin: (id: string) => void; onRename: (thread: ThreadSummary) => void;
+  onArchive: (id: string) => Promise<void>; onUnarchive: (id: string) => Promise<void>;
+}) {
   const [open, setOpen] = useState(true);
-  return <section className="project-group"><button className="project-heading" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<Folder size={14}/><span>{project.name}</span><small>{project.threads.length}</small></button>{open && <div className="thread-list">{project.threads.map((thread) => <button key={thread.id} className={`thread-row ${selectedId === thread.id ? "selected" : ""}`} onClick={() => void onSelect(thread.id)}>{approvalThreadIds.has(thread.id) ? <AlertCircle className="thread-approval" size={12}/> : <span className={`thread-running ${isRunningStatus(thread.status) ? "active" : ""}`}/>}<span className="thread-copy"><strong>{thread.title}</strong><small>{relativeTime(thread.updatedAt)}</small></span></button>)}</div>}</section>;
+  return <section className="project-group"><button className="project-heading" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<Folder size={14}/><span>{project.name}</span><small>{project.threads.length}</small></button>{open && <div className="thread-list">{project.threads.map((thread) => <ThreadRow key={thread.id} thread={thread} selected={selectedId === thread.id} needsApproval={approvalThreadIds.has(thread.id)} pinned={pinnedThreadIds.has(thread.id)} archived={archived} onSelect={onSelect} onTogglePin={onTogglePin} onRename={onRename} onArchive={onArchive} onUnarchive={onUnarchive}/>)}</div>}</section>;
+}
+
+function ThreadRow({ thread, selected, needsApproval, pinned, archived, onSelect, onTogglePin, onRename, onArchive, onUnarchive }: {
+  thread: ThreadSummary; selected: boolean; needsApproval: boolean; pinned: boolean; archived: boolean;
+  onSelect: (id: string) => Promise<void>; onTogglePin: (id: string) => void; onRename: (thread: ThreadSummary) => void;
+  onArchive: (id: string) => Promise<void>; onUnarchive: (id: string) => Promise<void>;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return <div className={`thread-row-shell ${selected ? "selected" : ""}`}>
+    <button className="thread-row" onClick={() => void onSelect(thread.id)}>
+      {needsApproval ? <AlertCircle className="thread-approval" size={12}/> : <span className={`thread-running ${isRunningStatus(thread.status) ? "active" : ""}`}/>}
+      <span className="thread-copy">{pinned && <Pin size={10}/>}<strong>{thread.title}</strong><small>{relativeTime(thread.updatedAt)}</small></span>
+    </button>
+    <button className="thread-menu-trigger" title="任务操作" onClick={() => setMenuOpen((value) => !value)}><MoreHorizontal size={14}/></button>
+    {menuOpen && <div className="thread-menu" onMouseLeave={() => setMenuOpen(false)}>
+      {!archived ? <>
+        <button onClick={() => { onTogglePin(thread.id); setMenuOpen(false); }}>{pinned ? <PinOff size={13}/> : <Pin size={13}/>}<span>{pinned ? "取消置顶" : "置顶"}</span></button>
+        <button onClick={() => { onRename(thread); setMenuOpen(false); }}><Pencil size={13}/><span>重命名</span></button>
+        <button className="danger" onClick={() => { setMenuOpen(false); void onArchive(thread.id); }}><Archive size={13}/><span>归档</span></button>
+      </> : <button onClick={() => { setMenuOpen(false); void onUnarchive(thread.id); }}><RotateCcw size={13}/><span>恢复任务</span></button>}
+    </div>}
+  </div>;
 }
 
 function Transcript({ items, turns, activeTurnId }: { items: TranscriptItem[]; turns: Record<string, TurnMetadata>; activeTurnId?: string }) {
@@ -875,6 +1014,20 @@ function normalizedWorkspaceKey(value: string) { return value.trim().replace(/\\
 function accessForWorkspace(value: string, fallback: WorkspaceAccess, projects: Record<string, WorkspaceAccess>) {
   const key = normalizedWorkspaceKey(value);
   return key ? projects[key] || fallback : fallback;
+}
+function pinnedThreadsKey(profileId: string) { return `relay.desktop.pinnedThreads.${profileId || "default"}`; }
+function storedPinnedThreads(profileId: string) {
+  try {
+    const values = JSON.parse(localStorage.getItem(pinnedThreadsKey(profileId)) || "[]");
+    return new Set<string>(Array.isArray(values) ? values.filter((value) => typeof value === "string") : []);
+  } catch { return new Set<string>(); }
+}
+function sortPinnedThreads(threads: ThreadSummary[], pinned: Set<string>) {
+  return [...threads].sort((left, right) => {
+    const leftPinned = pinned.has(left.id);
+    const rightPinned = pinned.has(right.id);
+    return leftPinned === rightPinned ? right.updatedAt - left.updatedAt : leftPinned ? -1 : 1;
+  });
 }
 function effortName(value: string) { return ({ none: "关闭", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "最高", ultra: "极高+" } as Record<string, string>)[value] || value; }
 function errorText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
