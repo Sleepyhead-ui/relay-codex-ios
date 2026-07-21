@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, formatElapsed, mergeSnapshot, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("uses timestamps when an active turn carries a zero history duration", () => {
@@ -140,5 +140,15 @@ describe("desktop transcript", () => {
     }, "turn.1");
     expect(item?.text).toBe("");
     expect(item?.goal).toBe("完成同步核心");
+  });
+
+  it("keeps approval ownership so concurrent tasks cannot overwrite context", () => {
+    const approval = parseApproval({
+      id: 7,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread.2", turnId: "turn.4", command: "npm test" },
+    });
+    expect(approval.threadId).toBe("thread.2");
+    expect(approval.turnId).toBe("turn.4");
   });
 });

@@ -74,6 +74,8 @@ export type WorkspaceAccess = "readOnly" | "workspaceWrite" | "fullAccess";
 export interface ApprovalRequest {
   id: string | number;
   method: string;
+  threadId?: string;
+  turnId?: string;
   params: Record<string, any>;
   title: string;
   summary: string;

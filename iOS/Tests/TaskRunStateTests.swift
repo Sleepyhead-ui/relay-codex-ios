@@ -2,6 +2,58 @@ import XCTest
 @testable import Relay
 
 final class TaskRunStateTests: XCTestCase {
+    func testRecordedEventsReplayDeterministicallyAcrossThreads() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.2", turnId: "turn.2"))
+        replay.apply(method: "item/agentMessage/delta", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "turn/completed", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .completed)
+        XCTAssertEqual(replay.states["thread.2"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.2"]?.turnId, "turn.2")
+    }
+
+    func testRecordedStaleEventsDoNotReplaceCurrentTurnOrPlan() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.new"))
+        replay.apply(method: "turn/plan/updated", params: planParams(threadId: "thread.1", turnId: "turn.new", step: "新计划"))
+        replay.apply(method: "turn/plan/updated", params: planParams(threadId: "thread.1", turnId: "turn.old", step: "旧计划"))
+        replay.apply(method: "turn/completed", params: eventParams(threadId: "thread.1", turnId: "turn.old"))
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.new")
+        XCTAssertEqual(replay.states["thread.1"]?.plan.map(\.text), ["新计划"])
+    }
+
+    func testRecordedRetryAndRecoveryPreserveActiveTurn() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "error", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "willRetry": .bool(true),
+            "message": .string("upstream disconnected")
+        ]))
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .retrying)
+
+        replay.apply(method: "item/reasoning/summaryTextDelta", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.1")
+    }
+
+    func testRecordedDuplicateStartCannotReviveCompletedTurn() {
+        var replay = TaskEventReplay()
+        let params = eventParams(threadId: "thread.1", turnId: "turn.1")
+        replay.apply(method: "turn/started", params: params)
+        replay.apply(method: "turn/completed", params: params)
+        replay.apply(method: "turn/started", params: params)
+        replay.apply(method: "item/agentMessage/delta", params: params)
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .completed)
+        XCTAssertNil(replay.states["thread.1"]?.turnId)
+    }
+
     func testStartingStateIsRunningBeforeTurnIdArrives() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.starting(startedAt: nil))
@@ -60,5 +112,21 @@ final class TaskRunStateTests: XCTestCase {
         state.apply(.started(turnId: "turn.2", startedAt: nil))
         XCTAssertTrue(state.plan.isEmpty)
         XCTAssertEqual(state.turnId, "turn.2")
+    }
+
+    private func eventParams(threadId: String, turnId: String) -> JSONValue {
+        .object([
+            "threadId": .string(threadId),
+            "turnId": .string(turnId),
+            "turn": .object(["id": .string(turnId)])
+        ])
+    }
+
+    private func planParams(threadId: String, turnId: String, step: String) -> JSONValue {
+        .object([
+            "threadId": .string(threadId),
+            "turnId": .string(turnId),
+            "plan": .array([.object(["step": .string(step), "status": .string("inProgress")])])
+        ])
     }
 }

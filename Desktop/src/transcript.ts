@@ -193,19 +193,23 @@ export function isRunningStatus(status?: string) {
 export function parseApproval(message: any): ApprovalRequest {
   const method = String(message.method || "approval");
   const params = message.params || {};
+  const ownership = {
+    threadId: params.threadId || params.thread?.id || params.conversationId,
+    turnId: params.turnId || params.turn?.id,
+  };
   if (method === "mcpServer/elicitation/request") {
-    return { id: message.id, method, params, title: "需要确认", summary: params.message || "Codex 请求继续执行外部操作", detail: params.url };
+    return { id: message.id, method, params, ...ownership, title: "需要确认", summary: params.message || "Codex 请求继续执行外部操作", detail: params.url };
   }
   if (/commandExecution/i.test(method)) {
-    return { id: message.id, method, params, title: "运行这条命令？", summary: params.reason || "Codex 请求运行命令", detail: [params.command, params.cwd].filter(Boolean).join("\n\n") };
+    return { id: message.id, method, params, ...ownership, title: "运行这条命令？", summary: params.reason || "Codex 请求运行命令", detail: [params.command, params.cwd].filter(Boolean).join("\n\n") };
   }
   if (/fileChange/i.test(method)) {
-    return { id: message.id, method, params, title: "应用文件修改？", summary: params.reason || "Codex 请求修改文件", detail: params.grantRoot };
+    return { id: message.id, method, params, ...ownership, title: "应用文件修改？", summary: params.reason || "Codex 请求修改文件", detail: params.grantRoot };
   }
   if (/permissions/i.test(method)) {
-    return { id: message.id, method, params, title: "授予额外权限？", summary: params.reason || "Codex 需要额外权限", detail: pretty(params.permissions) };
+    return { id: message.id, method, params, ...ownership, title: "授予额外权限？", summary: params.reason || "Codex 需要额外权限", detail: pretty(params.permissions) };
   }
-  return { id: message.id, method, params, title: "需要确认", summary: params.reason || params.message || method, detail: pretty(params) };
+  return { id: message.id, method, params, ...ownership, title: "需要确认", summary: params.reason || params.message || method, detail: pretty(params) };
 }
 
 export function formatElapsed(startedAt?: number, completedAt?: number, durationMs?: number) {

@@ -217,6 +217,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .modal { width: min(480px, calc(100vw - 60px)); max-height: min(680px, calc(100vh - 90px)); display: flex; flex-direction: column; gap: 18px; padding: 18px; border: 1px solid rgba(255,255,255,.11); border-radius: 14px; background: #20211f; box-shadow: 0 28px 90px rgba(0,0,0,.42); animation: modal-in .17s ease; }
 .approval-summary { margin: 0; color: #d6d8d2; font-size: 13px; line-height: 1.55; }
 .approval-queue-count { color: #d49b55; font-size: 11px; font-weight: 650; }
+.approval-task { margin-top: 6px; color: #8f938b; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-approval { flex: 0 0 auto; color: #d49b55; }
 .approval-detail { margin: 0; }
 .toast { position: fixed; right: 22px; bottom: 22px; z-index: 50; max-width: 440px; min-height: 42px; display: flex; align-items: center; gap: 9px; padding: 8px 9px 8px 12px; border: 1px solid rgba(239,107,103,.22); border-radius: 10px; background: #2a211f; color: #efb0ad; box-shadow: 0 15px 45px rgba(0,0,0,.35); font-size: 11px; }
 .toast button { width: 25px; height: 25px; display: grid; place-items: center; margin-left: auto; border-radius: 6px; background: transparent; color: inherit; }

@@ -31,7 +31,8 @@ export default function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [effort, setEffort] = useState("high");
-  const [access, setAccess] = useState<WorkspaceAccess>(() => storedWorkspaceAccess());
+  const [defaultAccess, setDefaultAccess] = useState<WorkspaceAccess>(() => storedWorkspaceAccess());
+  const [projectAccesses, setProjectAccesses] = useState<Record<string, WorkspaceAccess>>(() => storedProjectAccesses());
   const [workspace, setWorkspace] = useState(localStorage.getItem("relay.desktop.cwd") || "");
   const [selectedThreadId, setSelectedThreadId] = useState<string>();
   const [messages, setMessages] = useState<TranscriptItem[]>([]);
@@ -66,6 +67,8 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId);
+  const accessKey = normalizedWorkspaceKey(selectedThread?.cwd || workspace);
+  const access = accessKey ? projectAccesses[accessKey] || defaultAccess : defaultAccess;
   const selectedTaskState = selectedThreadId ? taskStates[selectedThreadId] : undefined;
   const activeTurnId = selectedTaskState?.turnId;
   const plan = selectedTaskState && selectedTaskState.planTurnId === activeTurnId ? selectedTaskState.plan : [];
@@ -73,7 +76,10 @@ export default function App() {
   const running = isTaskRunning(selectedTaskState) || (!selectedTaskState && isRunningStatus(selectedThread?.status));
   const selectedModelOption = models.find((model) => model.model === selectedModel || model.id === selectedModel);
   const activeCodexProfile = codexProfiles.find((profile) => profile.id === activeProfileId);
-  const approval = approvals[0];
+  const selectedApprovals = approvals.filter((item) => item.threadId === selectedThreadId || !item.threadId);
+  const approvalQueue = selectedApprovals.length ? selectedApprovals : approvals;
+  const approval = approvalQueue[0];
+  const approvalThreadIds = useMemo(() => new Set(approvals.flatMap((item) => item.threadId ? [item.threadId] : [])), [approvals]);
   const projects = useMemo(() => groupProjects(threads), [threads]);
   const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
   const currentGoal = [...messages].reverse().find((item) => item.goal)?.goal;
@@ -86,10 +92,16 @@ export default function App() {
     }));
   }
 
+  function setAccess(value: WorkspaceAccess) {
+    if (accessKey) setProjectAccesses((current) => ({ ...current, [accessKey]: value }));
+    else setDefaultAccess(value);
+  }
+
   useEffect(() => { selectedRef.current = selectedThreadId; }, [selectedThreadId]);
   useEffect(() => { activeTurnRef.current = activeTurnId; }, [activeTurnId]);
   useEffect(() => { localStorage.setItem("relay.desktop.cwd", workspace); }, [workspace]);
-  useEffect(() => { localStorage.setItem("relay.desktop.access", access); }, [access]);
+  useEffect(() => { localStorage.setItem("relay.desktop.access", defaultAccess); }, [defaultAccess]);
+  useEffect(() => { localStorage.setItem("relay.desktop.accessByProject", JSON.stringify(projectAccesses)); }, [projectAccesses]);
   useEffect(() => { localStorage.setItem("relay.desktop.followUp", followUpBehavior); }, [followUpBehavior]);
 
   useEffect(() => {
@@ -416,10 +428,11 @@ export default function App() {
   }
 
   async function createThread(cwd = workspace) {
+    const threadAccess = accessForWorkspace(cwd, defaultAccess, projectAccesses);
     const result = await rpc.rpc("thread/start", {
       cwd: cwd || undefined,
       approvalPolicy: "on-request",
-      sandbox: access === "fullAccess" ? "danger-full-access" : access === "readOnly" ? "read-only" : "workspace-write",
+      sandbox: threadAccess === "fullAccess" ? "danger-full-access" : threadAccess === "readOnly" ? "read-only" : "workspace-write",
       threadSource: "relay-desktop",
       model: selectedModel || undefined,
     });
@@ -581,7 +594,7 @@ export default function App() {
           </div>
           <div className="sidebar-search"><Search size={13}/><input placeholder="搜索对话"/></div>
           <div className="project-list">
-            {projects.map((project) => <ProjectGroup key={project.path} project={project} selectedId={selectedThreadId} onSelect={selectThread}/>) }
+            {projects.map((project) => <ProjectGroup key={project.path} project={project} selectedId={selectedThreadId} approvalThreadIds={approvalThreadIds} onSelect={selectThread}/>) }
             {!projects.length && <div className="empty-sidebar">暂无对话</div>}
           </div>
           <div className="sidebar-footer"><Server size={12}/><span>{activeCodexProfile?.name || "Codex"}</span><span className="version">v{version}</span></div>
@@ -652,15 +665,15 @@ export default function App() {
       {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
-      {approval && <Modal title={approval.title} closable={false} onClose={() => {}}>{approvals.length > 1 && <div className="approval-queue-count">待处理审批 1 / {approvals.length}</div>}<p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
+      {approval && <Modal title={approval.title} closable={false} onClose={() => {}}>{approvalQueue.length > 1 && <div className="approval-queue-count">当前任务审批 1 / {approvalQueue.length}</div>}{approval.threadId && <div className="approval-task">{threads.find((thread) => thread.id === approval.threadId)?.title || approval.threadId}</div>}<p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
       {error && <div className="toast"><AlertCircle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     </div>
   );
 }
 
-function ProjectGroup({ project, selectedId, onSelect }: { project: ReturnType<typeof groupProjects>[number]; selectedId?: string; onSelect: (id: string) => Promise<void> }) {
+function ProjectGroup({ project, selectedId, approvalThreadIds, onSelect }: { project: ReturnType<typeof groupProjects>[number]; selectedId?: string; approvalThreadIds: Set<string>; onSelect: (id: string) => Promise<void> }) {
   const [open, setOpen] = useState(true);
-  return <section className="project-group"><button className="project-heading" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<Folder size={14}/><span>{project.name}</span><small>{project.threads.length}</small></button>{open && <div className="thread-list">{project.threads.map((thread) => <button key={thread.id} className={`thread-row ${selectedId === thread.id ? "selected" : ""}`} onClick={() => void onSelect(thread.id)}><span className={`thread-running ${isRunningStatus(thread.status) ? "active" : ""}`}/><span className="thread-copy"><strong>{thread.title}</strong><small>{relativeTime(thread.updatedAt)}</small></span></button>)}</div>}</section>;
+  return <section className="project-group"><button className="project-heading" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}<Folder size={14}/><span>{project.name}</span><small>{project.threads.length}</small></button>{open && <div className="thread-list">{project.threads.map((thread) => <button key={thread.id} className={`thread-row ${selectedId === thread.id ? "selected" : ""}`} onClick={() => void onSelect(thread.id)}>{approvalThreadIds.has(thread.id) ? <AlertCircle className="thread-approval" size={12}/> : <span className={`thread-running ${isRunningStatus(thread.status) ? "active" : ""}`}/>}<span className="thread-copy"><strong>{thread.title}</strong><small>{relativeTime(thread.updatedAt)}</small></span></button>)}</div>}</section>;
 }
 
 function Transcript({ items, turns, activeTurnId }: { items: TranscriptItem[]; turns: Record<string, TurnMetadata>; activeTurnId?: string }) {
@@ -797,6 +810,19 @@ function EmptyState({ cwd }: { cwd?: string }) { return <div className="empty-st
 
 function sandboxPolicy(access: WorkspaceAccess, cwd: string) { if (access === "fullAccess") return { type: "dangerFullAccess" }; if (access === "readOnly") return { type: "readOnly", networkAccess: false }; return { type: "workspaceWrite", writableRoots: cwd ? [cwd] : [], networkAccess: false }; }
 function storedWorkspaceAccess(): WorkspaceAccess { const value = localStorage.getItem("relay.desktop.access"); return value === "readOnly" || value === "fullAccess" || value === "workspaceWrite" ? value : "workspaceWrite"; }
+function storedProjectAccesses(): Record<string, WorkspaceAccess> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("relay.desktop.accessByProject") || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, WorkspaceAccess] =>
+      ["readOnly", "workspaceWrite", "fullAccess"].includes(String(entry[1]))));
+  } catch { return {}; }
+}
+function normalizedWorkspaceKey(value: string) { return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }
+function accessForWorkspace(value: string, fallback: WorkspaceAccess, projects: Record<string, WorkspaceAccess>) {
+  const key = normalizedWorkspaceKey(value);
+  return key ? projects[key] || fallback : fallback;
+}
 function effortName(value: string) { return ({ none: "关闭", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "最高", ultra: "极高+" } as Record<string, string>)[value] || value; }
 function errorText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function firstLine(value: string) { return value.split(/\r?\n/)[0]?.trim() || "命令"; }
