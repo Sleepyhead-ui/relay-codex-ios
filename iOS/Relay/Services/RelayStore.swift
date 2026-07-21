@@ -46,6 +46,9 @@ final class RelayStore: ObservableObject {
     @Published private(set) var hostAvailability: [String: Bool] = [:]
     @Published private(set) var currentHostId = ""
     @Published private(set) var isCheckingHosts = false
+    @Published private(set) var updateInfo: RelayUpdateInfo?
+    @Published private(set) var isCheckingUpdate = false
+    @Published private(set) var isDownloadingUpdate = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -324,6 +327,44 @@ final class RelayStore: ObservableObject {
         do {
             try data.write(to: url, options: .atomic)
             sharedFile = SharedFile(url: url)
+        } catch {
+            report(error)
+        }
+    }
+
+    func checkForUpdate() async {
+        guard socket.state == .connected else { return }
+        isCheckingUpdate = true
+        defer { isCheckingUpdate = false }
+        do {
+            let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+            let result = try await socket.rpc(
+                method: "relay/update/check",
+                params: ["currentVersion": .string(currentVersion)],
+                timeoutSeconds: 20,
+                reconnectOnTimeout: false
+            )
+            updateInfo = RelayUpdateInfo(json: result)
+        } catch {
+            report(error)
+        }
+    }
+
+    func downloadLatestIPA() async {
+        guard updateInfo?.available == true, !isDownloadingUpdate else { return }
+        isDownloadingUpdate = true
+        defer { isDownloadingUpdate = false }
+        do {
+            let result = try await socket.rpc(
+                method: "relay/update/download-ios",
+                timeoutSeconds: 300,
+                reconnectOnTimeout: false
+            )
+            guard let path = result["path"]?.stringValue else {
+                throw RelaySocket.SocketError.remote("Bridge did not return the downloaded IPA path.")
+            }
+            let localURL = try await socket.downloadFile(at: path) { _ in }
+            sharedFile = SharedFile(url: localURL)
         } catch {
             report(error)
         }

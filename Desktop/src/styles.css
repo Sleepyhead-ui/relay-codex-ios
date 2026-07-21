@@ -251,6 +251,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .settings-link { width: 100%; height: 36px; display: flex; align-items: center; gap: 8px; margin-top: 9px; padding: 0 7px; border-radius: 7px; background: transparent; color: #9ca099; font-size: 10px; }
 .settings-link:hover { background: rgba(255,255,255,.045); color: #d8dad4; }
 .settings-link svg:last-child { margin-left: auto; }
+.update-row { min-height: 46px; display: flex; align-items: center; gap: 10px; }
+.update-row > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.update-row strong { color: #c8cbc4; font-size: 11px; font-weight: 600; }
+.update-row span { color: #6f736c; font-size: 9px; }
+.update-row button { min-width: 64px; height: 30px; padding: 0 9px; border-radius: 7px; background: rgba(255,255,255,.06); color: #bfc2bb; font-size: 10px; }
+.update-row button:disabled { opacity: .55; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .field > span { color: #8d9189; font-size: 10px; font-weight: 600; }
 .field input, .field select { width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #222320; color: #d9dbd5; color-scheme: dark; font-size: 12px; }

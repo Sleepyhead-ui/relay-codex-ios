@@ -8,12 +8,14 @@ export function installDevBridge() {
   const turnId = "preview.turn";
   const now = Date.now() / 1000;
   let preferences = { autoStart: false, notifications: true };
+  let update = { state: "current" as const, currentVersion: "preview", message: "开发预览版" };
   const items = [
     { id: "goal.1", type: "userMessage", content: [{ type: "text", text: "<codex_internal_context source=\"goal\"><objective>完成第二、第三和第四阶段</objective></codex_internal_context>" }] },
     { id: "user.1", type: "userMessage", content: [{ type: "text", text: "检查这个项目，并让桌面端与手机端保持实时同步" }] },
     { id: "reasoning.1", type: "reasoning", summary: ["Inspecting realtime event flow"], content: [] },
     { id: "comment.1", type: "agentMessage", phase: "commentary", text: "我会先核对 Bridge 的事件转发与会话恢复路径，再验证双端是否接收同一组增量事件。" },
     { id: "command.1", type: "commandExecution", command: "npm test", aggregatedOutput: "18 tests passed", status: "completed", exitCode: 0, cwd: "C:\\Projects\\Relay" },
+    { id: "file.1", type: "fileChange", status: "completed", changes: [{ path: "Desktop/src/App.tsx", diff: "--- a/Desktop/src/App.tsx\n+++ b/Desktop/src/App.tsx\n@@ -10,2 +10,3 @@\n-old line\n+new line\n context" }] },
     { id: "comment.2", type: "agentMessage", phase: "commentary", text: "实时通道已经连通。现在正在检查界面折叠、执行计划和断线恢复。" },
   ];
   const emit = (message: any) => messageListeners.forEach((listener) => listener(message));
@@ -29,6 +31,10 @@ export function installDevBridge() {
     setPreferences: async (patch) => (preferences = { ...preferences, ...patch }),
     notify: async () => true,
     exportDiagnostics: async () => true,
+    updateStatus: async () => update,
+    checkUpdate: async () => update,
+    downloadUpdate: async () => update,
+    installUpdate: async () => true,
     connect: async () => { setTimeout(() => stateListeners.forEach((listener) => listener({ state: "connected" })), 10); return true; },
     disconnect: async () => {},
     send: async (message: any) => {
@@ -74,5 +80,6 @@ export function installDevBridge() {
     onMessage: (listener) => { messageListeners.add(listener); return () => messageListeners.delete(listener); },
     onState: (listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); },
     onService: (listener) => { serviceListeners.add(listener); return () => serviceListeners.delete(listener); },
+    onUpdate: () => () => {},
   };
 }

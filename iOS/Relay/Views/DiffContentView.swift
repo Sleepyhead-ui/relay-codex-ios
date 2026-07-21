@@ -14,7 +14,7 @@ struct DiffContentView: View {
                         Text(gutter(for: line.kind))
                             .foregroundStyle(foreground(for: line.kind).opacity(0.8))
                             .frame(width: 20, alignment: .center)
-                        Text(line.text.isEmpty ? " " : line.text)
+                        Text(content(for: line))
                             .foregroundStyle(foreground(for: line.kind))
                             .padding(.trailing, 12)
                     }
@@ -35,7 +35,12 @@ struct DiffContentView: View {
     }
 
     private func gutter(for kind: DiffLineKind) -> String {
-        switch kind { case .added: return "+"; case .removed: return "-"; case .hunk: return "@"; default: return "" }
+        switch kind { case .added: return "+"; case .removed: return "-"; default: return "" }
+    }
+
+    private func content(for line: DiffLine) -> String {
+        let text = line.kind == .added || line.kind == .removed ? String(line.text.dropFirst()) : line.text
+        return text.isEmpty ? " " : text
     }
 
     private func foreground(for kind: DiffLineKind) -> Color {

@@ -141,12 +141,42 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("应用更新") {
+                    if let update = store.updateInfo {
+                        LabeledContent("当前版本", value: update.currentVersion)
+                        LabeledContent("最新版本", value: update.latestVersion)
+                        if update.available {
+                            Button {
+                                Task { await store.downloadLatestIPA() }
+                            } label: {
+                                HStack {
+                                    if store.isDownloadingUpdate { ProgressView() }
+                                    Label(store.isDownloadingUpdate ? "正在通过 Windows 下载" : "下载 IPA", systemImage: "arrow.down.circle")
+                                }
+                            }
+                            .disabled(store.isDownloadingUpdate)
+                        } else {
+                            Label("当前已是最新版本", systemImage: "checkmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button {
+                        Task { await store.checkForUpdate() }
+                    } label: {
+                        HStack {
+                            if store.isCheckingUpdate { ProgressView() }
+                            Text(store.isCheckingUpdate ? "正在检查" : "检查更新")
+                        }
+                    }
+                    .disabled(store.isCheckingUpdate)
+                }
+
                 Section {
                     Button("Forget this host", role: .destructive) { store.forgetHost() }
                 }
 
                 Section {
-                    LabeledContent("Relay", value: "0.6.16")
+                    LabeledContent("Relay", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")
                     LabeledContent("Protocol", value: "Codex 0.144.x")
                 }
             }

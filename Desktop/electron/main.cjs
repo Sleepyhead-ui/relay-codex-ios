@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WebSocket } = require("ws");
+const { autoUpdater } = require("electron-updater");
 
 let mainWindow;
 let socket;
@@ -16,6 +17,7 @@ let intentionalClose = false;
 let serviceState = "stopped";
 let serviceMessage = "";
 let autoServiceTimer;
+let updateState = { state: "idle", currentVersion: app.getVersion() };
 
 const configPath = () => path.join(app.getPath("userData"), "connection.json");
 const preferencesPath = () => path.join(app.getPath("userData"), "preferences.json");
@@ -82,6 +84,21 @@ function bridgeRoot() {
 function publishService() {
   publish("relay:service", { state: serviceState, message: serviceMessage });
 }
+
+function publishUpdate(patch) {
+  updateState = { ...updateState, ...patch };
+  publish("relay:update", updateState);
+  return updateState;
+}
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("checking-for-update", () => publishUpdate({ state: "checking", message: "正在检查更新" }));
+autoUpdater.on("update-available", (info) => publishUpdate({ state: "available", version: info.version, message: `Relay Desktop ${info.version} 可用` }));
+autoUpdater.on("update-not-available", () => publishUpdate({ state: "current", version: app.getVersion(), message: "当前已是最新版本" }));
+autoUpdater.on("download-progress", (progress) => publishUpdate({ state: "downloading", percent: Math.round(progress.percent), message: `正在下载 ${Math.round(progress.percent)}%` }));
+autoUpdater.on("update-downloaded", (info) => publishUpdate({ state: "ready", version: info.version, percent: 100, message: "更新已下载，重启后安装" }));
+autoUpdater.on("error", (error) => publishUpdate({ state: "error", message: error.message }));
 
 async function inspectRemoteService() {
   let endpoint;
@@ -270,6 +287,20 @@ ipcMain.handle("relay:bootstrap", async () => {
     try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
   }
   return { connection, version: app.getVersion(), service, preferences: readPreferences() };
+});
+ipcMain.handle("relay:update-status", () => updateState);
+ipcMain.handle("relay:check-update", async () => {
+  if (!app.isPackaged) return publishUpdate({ state: "current", message: "开发版本不检查更新" });
+  await autoUpdater.checkForUpdates();
+  return updateState;
+});
+ipcMain.handle("relay:download-update", async () => {
+  await autoUpdater.downloadUpdate();
+  return updateState;
+});
+ipcMain.handle("relay:install-update", () => {
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return true;
 });
 ipcMain.handle("relay:set-preferences", (_event, patch) => {
   const preferences = { ...readPreferences(), ...(patch || {}) };

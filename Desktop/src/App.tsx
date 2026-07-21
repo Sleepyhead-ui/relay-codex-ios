@@ -14,7 +14,7 @@ import {
 import type { UserMessagePlacement } from "./transcript";
 import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
 import type {
-  ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DiagnosticReport, ModelOption,
+  ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
   PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
@@ -64,6 +64,7 @@ export default function App() {
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport>();
   const [preferences, setPreferences] = useState<DesktopPreferences>({ autoStart: false, notifications: true });
+  const [update, setUpdate] = useState<DesktopUpdateState>({ state: "idle" });
   const selectedRef = useRef<string>();
   const activeTurnRef = useRef<string>();
   const profileSwitchingRef = useRef(false);
@@ -124,15 +125,17 @@ export default function App() {
       if (["disconnected", "failed", "error"].includes(state.state)) rpc.failAll("Bridge 连接已断开");
     });
     const offService = window.relayDesktop.onService(setService);
+    const offUpdate = window.relayDesktop.onUpdate(setUpdate);
     const offRpc = rpc.onMessage((message) => messageHandlerRef.current(message));
     void window.relayDesktop.bootstrap().then((bootstrap) => {
       setConfig(bootstrap.connection);
       setVersion(bootstrap.version);
       setService(bootstrap.service);
       setPreferences(bootstrap.preferences || { autoStart: false, notifications: true });
+      void window.relayDesktop.updateStatus().then(setUpdate);
       if (bootstrap.connection.token && ["running", "starting"].includes(bootstrap.service.state)) void window.relayDesktop.connect(bootstrap.connection).catch((reason) => setError(String(reason)));
     });
-    return () => { offMessage(); offState(); offService(); offRpc(); };
+    return () => { offMessage(); offState(); offService(); offUpdate(); offRpc(); };
   }, [rpc]);
 
   useEffect(() => {
@@ -759,6 +762,18 @@ export default function App() {
     catch (reason) { setError(errorText(reason)); }
   }
 
+  async function checkDesktopUpdate() {
+    try { setUpdate(await window.relayDesktop.checkUpdate()); }
+    catch (reason) { setError(errorText(reason)); }
+  }
+
+  async function applyDesktopUpdate() {
+    try {
+      if (update.state === "ready") await window.relayDesktop.installUpdate();
+      else setUpdate(await window.relayDesktop.downloadUpdate());
+    } catch (reason) { setError(errorText(reason)); }
+  }
+
   const serviceAvailable = service.state === "running" || service.state === "starting";
   const connectionLabel = !serviceAvailable ? "远程服务未启动" : profileSwitching ? "正在切换实例" : upstreamRetrying ? "Codex 上游重连中" : connection === "connected" ? "实时同步" : connection === "reconnecting" ? `正在重连 · ${connectionAttempt}` : connection === "handshaking" ? "正在初始化" : "未连接";
 
@@ -860,7 +875,7 @@ export default function App() {
         </main>
       </div>
 
-      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} onPreferences={updatePreferences} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
+      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
       {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}
@@ -985,7 +1000,8 @@ function ToolRow({ item }: { item: TranscriptItem }) {
 function DiffView({ source }: { source: string }) {
   return <div className="diff-view" aria-label="文件差异">{source.split(/\r?\n/).map((line, index) => {
     const kind = diffLineKind(line);
-    return <div className={`diff-line ${kind}`} key={`${index}.${line}`}><span>{kind === "added" ? "+" : kind === "removed" ? "-" : kind === "hunk" ? "@" : ""}</span><code>{line || " "}</code></div>;
+    const content = kind === "added" || kind === "removed" ? line.slice(1) : line;
+    return <div className={`diff-line ${kind}`} key={`${index}.${line}`}><span>{kind === "added" ? "+" : kind === "removed" ? "-" : ""}</span><code>{content || " "}</code></div>;
   })}</div>;
 }
 
@@ -1004,11 +1020,12 @@ function queuedPromptLabel(item: QueuedPrompt) {
   return item.input.filter((input) => input.type !== "text").map((input) => input.name || input.path?.split(/[\\/]/).at(-1)).filter(Boolean).join("、") || "附件";
 }
 
-function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, onPreferences, onDiagnostics, onClose, onSave }: {
+function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, update, onPreferences, onCheckUpdate, onApplyUpdate, onDiagnostics, onClose, onSave }: {
   config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; workspace: string; setWorkspace: (value: string) => void;
   access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; activeProfileId: string;
   switching: boolean; switchDisabled: boolean; onSwitch: (id: string) => Promise<void>; onStartService: () => Promise<void>;
   service: ServiceStatus; preferences: DesktopPreferences; onPreferences: (patch: Partial<DesktopPreferences>) => Promise<void>;
+  update: DesktopUpdateState; onCheckUpdate: () => Promise<void>; onApplyUpdate: () => Promise<void>;
   onDiagnostics: () => void; onClose: () => void; onSave: () => Promise<void>;
 }) {
   const [selectedProfileId, setSelectedProfileId] = useState(activeProfileId);
@@ -1031,6 +1048,7 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
       </div>
       <div className="settings-section"><h3>默认工作区</h3><label className="field"><span>目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>访问权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
       <div className="settings-section"><h3>运行与通知</h3><label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后自动运行 Relay 与 Bridge</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label><label className="toggle-row"><span><strong>任务与审批通知</strong><small>窗口不在前台时显示系统通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button></div>
+      <div className="settings-section"><h3>应用更新</h3><div className="update-row"><div><strong>{update.message || "检查 Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" ? <button onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "重启安装" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : "检查"}</button>}</div></div>
       <details className="advanced-settings"><summary>高级连接</summary><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>Token</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label></details>
       <div className="drawer-actions"><button onClick={onClose}>关闭</button><button className="accent" onClick={() => void onSave()}>保存高级连接</button></div>
     </aside>

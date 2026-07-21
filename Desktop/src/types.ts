@@ -4,6 +4,7 @@ export interface ConnectionConfig { endpoint: string; token: string }
 export type ServiceState = "stopped" | "starting" | "running" | "failed";
 export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig }
 export interface DesktopPreferences { autoStart: boolean; notifications: boolean }
+export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string }
 export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
 
 export interface CodexProfile {
@@ -124,6 +125,10 @@ declare global {
       setPreferences(patch: Partial<DesktopPreferences>): Promise<DesktopPreferences>;
       notify(payload: { title: string; body: string }): Promise<boolean>;
       exportDiagnostics(report: DiagnosticReport): Promise<boolean>;
+      updateStatus(): Promise<DesktopUpdateState>;
+      checkUpdate(): Promise<DesktopUpdateState>;
+      downloadUpdate(): Promise<DesktopUpdateState>;
+      installUpdate(): Promise<boolean>;
       connect(config: ConnectionConfig): Promise<boolean>;
       disconnect(): Promise<void>;
       send(message: unknown): Promise<boolean>;
@@ -133,6 +138,7 @@ declare global {
       onMessage(listener: (message: any) => void): () => void;
       onState(listener: (state: any) => void): () => void;
       onService(listener: (state: ServiceStatus) => void): () => void;
+      onUpdate(listener: (state: DesktopUpdateState) => void): () => void;
     };
   }
 }

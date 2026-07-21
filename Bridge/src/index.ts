@@ -12,6 +12,7 @@ import { PromptQueue } from "./promptQueue.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
+import { UpdateManager } from "./updateManager.js";
 
 interface PendingServerRequest {
   request: JsonObject;
@@ -83,6 +84,7 @@ const desktopSync = new DesktopSync(
   (status) => broadcast(bridgeStatus(codexReady ? "ready" : "starting", status)),
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
+const updateManager = new UpdateManager(fileTransfer.filesRoot);
 const promptQueue = await PromptQueue.create();
 const dispatchingQueueThreads = new Set<string>();
 const queueRetryTimers = new Map<string, NodeJS.Timeout>();
@@ -231,6 +233,19 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       send(socket, { type: "rpcResult", id: message.id, result: diagnosticsReport() });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
+    if (message.method === "relay/update/check" || message.method === "relay/update/download-ios") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      try {
+        const result = message.method === "relay/update/check"
+          ? await updateManager.check(typeof message.params.currentVersion === "string" ? message.params.currentVersion : "0.0.0")
+          : await updateManager.downloadIOS();
+        send(socket, { type: "rpcResult", id: message.id, result });
+      } catch (error) {
+        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } });
+      }
       return;
     }
     if (message.method === "relay/thread/runtime") {

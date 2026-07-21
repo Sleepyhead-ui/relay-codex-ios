@@ -7,6 +7,10 @@ contextBridge.exposeInMainWorld("relayDesktop", {
   setPreferences: (patch) => ipcRenderer.invoke("relay:set-preferences", patch),
   notify: (payload) => ipcRenderer.invoke("relay:notify", payload),
   exportDiagnostics: (report) => ipcRenderer.invoke("relay:export-diagnostics", report),
+  updateStatus: () => ipcRenderer.invoke("relay:update-status"),
+  checkUpdate: () => ipcRenderer.invoke("relay:check-update"),
+  downloadUpdate: () => ipcRenderer.invoke("relay:download-update"),
+  installUpdate: () => ipcRenderer.invoke("relay:install-update"),
   connect: (config) => ipcRenderer.invoke("relay:connect", config),
   disconnect: () => ipcRenderer.invoke("relay:disconnect"),
   send: (message) => ipcRenderer.invoke("relay:send", message),
@@ -27,5 +31,10 @@ contextBridge.exposeInMainWorld("relayDesktop", {
     const handler = (_event, state) => listener(state);
     ipcRenderer.on("relay:service", handler);
     return () => ipcRenderer.removeListener("relay:service", handler);
+  },
+  onUpdate: (listener) => {
+    const handler = (_event, state) => listener(state);
+    ipcRenderer.on("relay:update", handler);
+    return () => ipcRenderer.removeListener("relay:update", handler);
   },
 });
