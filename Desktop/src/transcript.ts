@@ -186,6 +186,13 @@ export function groupProjects(threads: ThreadSummary[]) {
   }));
 }
 
+export function filterThreads(threads: ThreadSummary[], query: string) {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) return threads;
+  return threads.filter((thread) => [thread.title, thread.preview, thread.cwd]
+    .some((value) => value.toLocaleLowerCase().includes(normalized)));
+}
+
 export function isRunningStatus(status?: string) {
   return /active|running|progress|started|processing|pending|queued/i.test(status || "");
 }

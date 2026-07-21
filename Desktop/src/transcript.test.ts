@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("uses timestamps when an active turn carries a zero history duration", () => {
@@ -150,5 +150,15 @@ describe("desktop transcript", () => {
     });
     expect(approval.threadId).toBe("thread.2");
     expect(approval.turnId).toBe("turn.4");
+  });
+
+  it("searches threads by title, preview, and project path", () => {
+    const threads = [
+      { id: "1", title: "同步 Relay", preview: "修复实时输出", cwd: "C:\\Projects\\Relay", updatedAt: 1, status: "idle" },
+      { id: "2", title: "文档", preview: "整理发布说明", cwd: "C:\\Projects\\Docs", updatedAt: 2, status: "idle" },
+    ];
+    expect(filterThreads(threads, "实时").map((thread) => thread.id)).toEqual(["1"]);
+    expect(filterThreads(threads, "docs").map((thread) => thread.id)).toEqual(["2"]);
+    expect(filterThreads(threads, "同步").map((thread) => thread.id)).toEqual(["1"]);
   });
 });

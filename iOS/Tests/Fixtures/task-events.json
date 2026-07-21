@@ -1,0 +1,8 @@
+[
+  {"method":"turn/started","params":{"threadId":"fixture.thread","turnId":"fixture.turn","turn":{"id":"fixture.turn","startedAt":1784635200}}},
+  {"method":"item/reasoning/summaryTextDelta","params":{"threadId":"fixture.thread","turnId":"fixture.turn","delta":"Inspecting state"}},
+  {"method":"turn/plan/updated","params":{"threadId":"fixture.thread","turnId":"fixture.turn","plan":[{"step":"Inspect","status":"completed"},{"step":"Verify","status":"inProgress"}]}},
+  {"method":"error","params":{"threadId":"fixture.thread","turnId":"fixture.turn","willRetry":true,"message":"upstream unavailable"}},
+  {"method":"item/agentMessage/delta","params":{"threadId":"fixture.thread","turnId":"fixture.turn","delta":"Recovered"}},
+  {"method":"turn/completed","params":{"threadId":"fixture.thread","turnId":"fixture.turn","turn":{"id":"fixture.turn","completedAt":1784635260}}}
+]

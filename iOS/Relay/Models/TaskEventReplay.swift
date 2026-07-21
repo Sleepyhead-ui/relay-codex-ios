@@ -61,7 +61,7 @@ enum TaskEventDecoder {
     static func isProgress(_ method: String) -> Bool {
         method == "item/started"
             || method == "item/completed"
-            || (method.hasPrefix("item/") && method.hasSuffix("/delta"))
+            || (method.hasPrefix("item/") && (method.hasSuffix("/delta") || method.hasSuffix("Delta")))
     }
 }
 
@@ -84,5 +84,12 @@ struct TaskEventReplay {
            let turnId = transition.turnId {
             completedTurnIds.insert(turnId)
         }
+    }
+
+    mutating func hydrate(threadId: String, running: Bool, turnId: String?, startedAt: Date? = nil) {
+        var state = states[threadId] ?? TaskRunState(threadId: threadId)
+        state.apply(.hydrate(running: running, turnId: turnId, startedAt: startedAt))
+        states[threadId] = state
+        if !running, let turnId { completedTurnIds.insert(turnId) }
     }
 }

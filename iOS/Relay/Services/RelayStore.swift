@@ -50,7 +50,7 @@ final class RelayStore: ObservableObject {
     private var threadLoadGeneration = UUID()
     private var reconcilingThreadId: String?
     private var queuedEvents: [(method: String, params: JSONValue)] = []
-    private var threadSnapshots: [String: ThreadSnapshot] = [:]
+    private var threadSnapshots = ThreadSnapshotCache()
     private var olderTurnsCursorByThread: [String: String] = [:]
     private var workingDirectoryOverrides: [String: String] = [:]
     private var workspaceAccessByProject: [String: WorkspaceAccessMode] = [:]
@@ -90,13 +90,11 @@ final class RelayStore: ObservableObject {
         return taskRunStates[selectedThreadId]?.turnId
     }
     var currentPendingApprovals: [ApprovalRequest] {
-        guard let selectedThreadId else { return pendingApprovals }
-        let matching = pendingApprovals.filter { $0.threadId == selectedThreadId || $0.threadId == nil }
-        return matching.isEmpty ? pendingApprovals : matching
+        ApprovalQueue.prioritized(pendingApprovals, selectedThreadId: selectedThreadId)
     }
     var pendingApproval: ApprovalRequest? { currentPendingApprovals.first }
     func hasPendingApproval(threadId: String) -> Bool {
-        pendingApprovals.contains { $0.threadId == threadId }
+        ApprovalQueue.contains(pendingApprovals, threadId: threadId)
     }
     var currentQueuedFollowUps: [QueuedFollowUp] {
         guard let selectedThreadId else { return [] }
@@ -246,7 +244,7 @@ final class RelayStore: ObservableObject {
         acceptedMessageIds = []
         outboundDrafts = [:]
         completedTurnIds = []
-        threadSnapshots = [:]
+        threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         hasOlderTurns = false
         workingDirectoryOverrides = [:]
@@ -1552,35 +1550,7 @@ final class RelayStore: ObservableObject {
     }
 
     private func upsert(_ item: TranscriptItem) {
-        if let index = messages.firstIndex(where: { $0.id == item.id }) {
-            messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
-        } else if let index = messages.firstIndex(where: { semanticallyMatches($0, item) }) {
-            messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
-        } else if item.role != .user || !messages.contains(where: {
-            $0.role == .user && $0.text == item.text && $0.imagePaths == item.imagePaths && $0.goal == item.goal
-        }) {
-            messages.append(item)
-        }
-    }
-
-    private func mergeTranscriptItem(existing: TranscriptItem, incoming: TranscriptItem) -> TranscriptItem {
-        var merged = incoming
-        if merged.turnId == nil { merged.turnId = existing.turnId }
-        if merged.title == nil { merged.title = existing.title }
-        if merged.phase == nil { merged.phase = existing.phase }
-        if merged.status == nil { merged.status = existing.status }
-        if merged.text.isEmpty { merged.text = existing.text }
-        if merged.detail?.isEmpty != false, let detail = existing.detail, !detail.isEmpty {
-            merged.detail = detail
-        }
-        if merged.durationMs == nil { merged.durationMs = existing.durationMs }
-        if merged.exitCode == nil { merged.exitCode = existing.exitCode }
-        if merged.cwd == nil { merged.cwd = existing.cwd }
-        if merged.errorMessage == nil { merged.errorMessage = existing.errorMessage }
-        if merged.deliveryState == nil { merged.deliveryState = existing.deliveryState }
-        if merged.imagePaths.isEmpty { merged.imagePaths = existing.imagePaths }
-        if merged.goal == nil { merged.goal = existing.goal }
-        return merged
+        TranscriptReconciler.upsert(item, into: &messages)
     }
 
     private func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
@@ -1652,7 +1622,7 @@ final class RelayStore: ObservableObject {
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
-        threadSnapshots = [:]
+        threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         acceptedMessageIds = []
         outboundDrafts = [:]
@@ -1803,92 +1773,22 @@ final class RelayStore: ObservableObject {
     }
 
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
-        let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
-        let existing = messages.filter { $0.turnId == turnId }
-        let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
-        var consumedExistingIds = Set<String>()
-        var merged = snapshotItems.map { item in
-            if let previous = existingById[item.id] {
-                consumedExistingIds.insert(previous.id)
-                return mergeTranscriptItem(existing: previous, incoming: item)
-            }
-            if let previous = existing.first(where: {
-                !consumedExistingIds.contains($0.id) && semanticallyMatches($0, item)
-            }) {
-                consumedExistingIds.insert(previous.id)
-                var combined = mergeTranscriptItem(existing: previous, incoming: item)
-                // Keep the live/app-server identity so later deltas continue
-                // updating this row instead of recreating a second copy.
-                combined.id = previous.id
-                return combined
-            }
-            return item
-        }
-        merged.append(contentsOf: existing.filter { !consumedExistingIds.contains($0.id) })
-        if merged != existing {
-            messages.removeAll { $0.turnId == turnId }
-            messages.insert(contentsOf: merged, at: min(firstIndex, messages.endIndex))
-        }
+        messages = TranscriptReconciler.mergeSessionItems(snapshotItems, turnId: turnId, into: messages)
         applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
     }
 
     private func applyUserMessagePlacements(turnId: String, threadId: String) {
-        let placements = userMessagePlacements
-            .filter { $0.value.threadId == threadId && $0.value.turnId == turnId }
-            .sorted { $0.value.sequence < $1.value.sequence }
-        for (messageId, placement) in placements {
-            guard let index = messages.firstIndex(where: {
-                $0.id == messageId && $0.role == .user
-            }) else { continue }
-            var prompt = messages.remove(at: index)
-            prompt.turnId = turnId
-            let insertion: Int
-            if let afterItemId = placement.afterItemId,
-               let anchorIndex = messages.firstIndex(where: { $0.id == afterItemId }) {
-                insertion = anchorIndex + 1
-            } else if placement.afterItemId == nil {
-                insertion = messages.firstIndex(where: { $0.turnId == turnId })
-                    ?? min(index, messages.endIndex)
-            } else {
-                insertion = min(index, messages.endIndex)
-            }
-            messages.insert(prompt, at: insertion)
-        }
-    }
-
-    private func semanticallyMatches(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
-        guard lhs.turnId == rhs.turnId, lhs.role == rhs.role, lhs.kind == rhs.kind else { return false }
-        switch lhs.kind {
-        case .message:
-            guard lhs.role == .assistant, lhs.phase == rhs.phase else { return false }
-            let lhsText = normalizedTranscriptText(lhs.text)
-            let rhsText = normalizedTranscriptText(rhs.text)
-            return !lhsText.isEmpty && lhsText == rhsText
-        case .command, .fileChange, .webSearch, .plan, .contextCompaction, .image:
-            let lhsText = normalizedTranscriptText(lhs.text)
-            let rhsText = normalizedTranscriptText(rhs.text)
-            return !lhsText.isEmpty && lhsText == rhsText
-        case .reasoning:
-            let lhsText = normalizedTranscriptText(lhs.text.nonEmpty ?? lhs.detail ?? "")
-            let rhsText = normalizedTranscriptText(rhs.text.nonEmpty ?? rhs.detail ?? "")
-            return !lhsText.isEmpty && lhsText == rhsText
-        case .subagent, .other:
-            return false
-        }
-    }
-
-    private func normalizedTranscriptText(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        messages = TranscriptReconciler.applyUserMessagePlacements(
+            userMessagePlacements,
+            turnId: turnId,
+            threadId: threadId,
+            to: messages
+        )
     }
 
     private func cacheCurrentThread() {
         guard let selectedThreadId else { return }
-        threadSnapshots[selectedThreadId] = ThreadSnapshot(
+        threadSnapshots.store(ThreadSnapshot(
             messages: messages,
             turnMetadata: turnMetadata,
             isRunning: isRunning,
@@ -1898,14 +1798,7 @@ final class RelayStore: ObservableObject {
             modelId: selectedModelId,
             effort: selectedEffort,
             cachedAt: Date()
-        )
-
-        if threadSnapshots.count > 8,
-           let oldest = threadSnapshots
-            .filter({ $0.key != selectedThreadId })
-            .min(by: { $0.value.cachedAt < $1.value.cachedAt })?.key {
-            threadSnapshots.removeValue(forKey: oldest)
-        }
+        ), for: selectedThreadId, preserving: selectedThreadId)
     }
 
     @discardableResult
@@ -1943,27 +1836,8 @@ final class RelayStore: ObservableObject {
     }
 }
 
-private struct ThreadSnapshot {
-    let messages: [TranscriptItem]
-    let turnMetadata: [String: TurnMetadata]
-    let isRunning: Bool
-    let activeTurnId: String?
-    let activePlan: [ExecutionPlanStep]
-    let activePlanTurnId: String?
-    let modelId: String
-    let effort: String
-    let cachedAt: Date
-}
-
 private struct OutboundDraft {
     let threadId: String
     let text: String
     let attachments: [PendingAttachment]
-}
-
-private struct UserMessagePlacement {
-    let threadId: String
-    var turnId: String?
-    let afterItemId: String?
-    let sequence: Int
 }

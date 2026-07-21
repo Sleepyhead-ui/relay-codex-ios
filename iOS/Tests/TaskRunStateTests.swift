@@ -2,6 +2,38 @@ import XCTest
 @testable import Relay
 
 final class TaskRunStateTests: XCTestCase {
+    private struct RecordedEvent: Decodable {
+        let method: String
+        let params: JSONValue
+    }
+
+    func testRecordedJSONFixtureReplaysToTerminalState() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "task-events", withExtension: "json"))
+        let events = try JSONDecoder().decode([RecordedEvent].self, from: Data(contentsOf: url))
+        var replay = TaskEventReplay()
+        for event in events { replay.apply(method: event.method, params: event.params) }
+
+        let state = try XCTUnwrap(replay.states["fixture.thread"])
+        XCTAssertEqual(state.phase, .completed)
+        XCTAssertNil(state.turnId)
+        XCTAssertTrue(state.plan.isEmpty)
+    }
+
+    func testReconnectHydrationPreservesRunningTaskAcrossBackgroundCycle() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+
+        // Backgrounding does not manufacture a terminal event. The reconnect
+        // snapshot remains authoritative when the socket comes back.
+        replay.hydrate(threadId: "thread.1", running: true, turnId: "turn.1")
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.1")
+
+        replay.hydrate(threadId: "thread.1", running: false, turnId: "turn.1")
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .idle)
+        XCTAssertNil(replay.states["thread.1"]?.turnId)
+    }
+
     func testRecordedEventsReplayDeterministicallyAcrossThreads() {
         var replay = TaskEventReplay()
         replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))

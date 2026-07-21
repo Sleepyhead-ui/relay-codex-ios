@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyUserMessagePlacements, bindUserPrompt, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  applyUserMessagePlacements, bindUserPrompt, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
@@ -47,6 +47,9 @@ export default function App() {
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTaskCwd, setNewTaskCwd] = useState(workspace);
   const [loadingThread, setLoadingThread] = useState(false);
+  const [loadingOlderTurns, setLoadingOlderTurns] = useState(false);
+  const [olderTurnsCursor, setOlderTurnsCursor] = useState<string>();
+  const [threadSearch, setThreadSearch] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -80,7 +83,7 @@ export default function App() {
   const approvalQueue = selectedApprovals.length ? selectedApprovals : approvals;
   const approval = approvalQueue[0];
   const approvalThreadIds = useMemo(() => new Set(approvals.flatMap((item) => item.threadId ? [item.threadId] : [])), [approvals]);
-  const projects = useMemo(() => groupProjects(threads), [threads]);
+  const projects = useMemo(() => groupProjects(filterThreads(threads, threadSearch)), [threads, threadSearch]);
   const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
   const currentGoal = [...messages].reverse().find((item) => item.goal)?.goal;
   messagesRef.current = messages;
@@ -246,6 +249,7 @@ export default function App() {
     setSelectedThreadId(id);
     localStorage.setItem("relay.desktop.thread", id);
     setLoadingThread(true);
+    setOlderTurnsCursor(undefined);
     const cachedMessages = threadMessageCacheRef.current.get(id) || [];
     setMessages(cachedMessages);
     messagesRef.current = cachedMessages;
@@ -260,6 +264,7 @@ export default function App() {
       }, 30_000);
       if (selectedRef.current !== id) return;
       const page = result.initialTurnsPage?.data || [];
+      setOlderTurnsCursor(result.initialTurnsPage?.nextCursor || undefined);
       const rawTurns = page.length ? [...page].reverse() : result.thread?.turns || [];
       const loadedMessages: TranscriptItem[] = [];
       const loadedTurns: Record<string, TurnMetadata> = {};
@@ -301,6 +306,53 @@ export default function App() {
       } catch {}
     } catch (reason) { setError(errorText(reason)); }
     finally { if (selectedRef.current === id) setLoadingThread(false); }
+  }
+
+  async function loadOlderTurns() {
+    const threadId = selectedRef.current;
+    const cursor = olderTurnsCursor;
+    if (!threadId || !cursor || loadingOlderTurns) return;
+    setLoadingOlderTurns(true);
+    const scroll = scrollRef.current;
+    const previousHeight = scroll?.scrollHeight || 0;
+    try {
+      const result = await rpc.rpc("thread/turns/list", {
+        threadId,
+        cursor,
+        limit: 12,
+        sortDirection: "desc",
+        itemsView: "full",
+      }, 120_000);
+      if (selectedRef.current !== threadId) return;
+      const page = [...(result.data || [])].reverse();
+      const olderMessages: TranscriptItem[] = [];
+      const olderTurns: Record<string, TurnMetadata> = {};
+      for (const rawTurn of page) {
+        const metadata = parseTurn(rawTurn);
+        if (!metadata) continue;
+        olderTurns[metadata.id] = metadata;
+        for (const rawItem of rawTurn.items || []) {
+          const item = parseItem(rawItem, metadata.id);
+          if (item) olderMessages.push(item);
+        }
+      }
+      setTurns((current) => ({ ...olderTurns, ...current }));
+      setMessages((current) => {
+        const existingIds = new Set(current.map((item) => item.id));
+        const next = [...olderMessages.filter((item) => !existingIds.has(item.id)), ...current];
+        messagesRef.current = next;
+        threadMessageCacheRef.current.set(threadId, next);
+        return next;
+      });
+      setOlderTurnsCursor(result.nextCursor || undefined);
+      requestAnimationFrame(() => {
+        if (scroll) scroll.scrollTop += scroll.scrollHeight - previousHeight;
+      });
+    } catch (reason) {
+      setError(`加载更早对话失败：${errorText(reason)}`);
+    } finally {
+      setLoadingOlderTurns(false);
+    }
   }
 
   function handleSessionSnapshot(threadId: string, snapshot: any) {
@@ -592,10 +644,10 @@ export default function App() {
               ? <button className="primary-action" onClick={() => { setNewTaskCwd(workspace); setNewTaskOpen(true); }}><SquarePen size={15}/><span>新任务</span></button>
               : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void startRemoteService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
           </div>
-          <div className="sidebar-search"><Search size={13}/><input placeholder="搜索对话"/></div>
+          <div className="sidebar-search"><Search size={13}/><input aria-label="搜索对话" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="搜索对话"/>{threadSearch && <button className="icon-button" title="清除搜索" onClick={() => setThreadSearch("")}><X size={12}/></button>}</div>
           <div className="project-list">
             {projects.map((project) => <ProjectGroup key={project.path} project={project} selectedId={selectedThreadId} approvalThreadIds={approvalThreadIds} onSelect={selectThread}/>) }
-            {!projects.length && <div className="empty-sidebar">暂无对话</div>}
+            {!projects.length && <div className="empty-sidebar">{threadSearch ? "没有匹配的对话" : "暂无对话"}</div>}
           </div>
           <div className="sidebar-footer"><Server size={12}/><span>{activeCodexProfile?.name || "Codex"}</span><span className="version">v{version}</span></div>
         </aside>
@@ -614,6 +666,7 @@ export default function App() {
             const element = event.currentTarget; setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight < 80);
           }}>
             <div className="transcript-inner">
+              {!loadingThread && olderTurnsCursor && <button className="load-older" disabled={loadingOlderTurns} onClick={() => void loadOlderTurns()}>{loadingOlderTurns ? <span className="spinner small"/> : <ChevronDown size={13}/>}<span>{loadingOlderTurns ? "正在加载" : "加载更早对话"}</span></button>}
               {service.state !== "running"
                 ? <ServiceState status={service} onStart={startRemoteService}/>
                 : profileSwitching
