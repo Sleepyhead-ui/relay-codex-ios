@@ -105,3 +105,17 @@ test("marks a non-retryable upstream error terminal", () => {
   assert.equal(snapshot.upstreamError, "too many failed attempts");
   assert.equal(tracker.activeCount, 0);
 });
+
+test("stops every active turn when the app server exits", () => {
+  const tracker = new RuntimeStateTracker();
+  tracker.observeTurnStart("thread.1", { id: "turn.1", startedAt: 100 });
+  tracker.observeTurnStart("thread.2", { id: "turn.2", startedAt: 200 });
+  tracker.stopAll("Codex App Server exited.");
+  assert.equal(tracker.activeCount, 0);
+  assert.deepEqual(tracker.snapshot("thread.1"), {
+    known: true,
+    isRunning: false,
+    upstreamError: "Codex App Server exited.",
+    updatedAt: tracker.snapshot("thread.1").updatedAt,
+  });
+});

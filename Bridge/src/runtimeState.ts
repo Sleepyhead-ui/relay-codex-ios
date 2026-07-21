@@ -131,6 +131,17 @@ export class RuntimeStateTracker {
     return count;
   }
 
+  stopAll(error?: string): void {
+    const updatedAt = Date.now() / 1000;
+    for (const threadId of [...this.threads.keys()]) {
+      this.set(threadId, {
+        isRunning: false,
+        ...(error ? { upstreamError: error } : {}),
+        updatedAt,
+      });
+    }
+  }
+
   private set(threadId: string, state: StoredThreadRuntime): void {
     this.threads.delete(threadId);
     this.threads.set(threadId, state);

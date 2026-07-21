@@ -1,7 +1,8 @@
 import { watch, type FSWatcher } from "node:fs";
-import { stat, readFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import type { JsonObject } from "./protocol.js";
 import { isObject } from "./protocol.js";
+import { RolloutTailReader } from "./rolloutTailReader.js";
 
 interface SessionState {
   path: string;
@@ -9,6 +10,7 @@ interface SessionState {
   appServerActive?: boolean;
   signature?: string;
   cachedSnapshot?: SessionTurnSnapshot;
+  reader?: RolloutTailReader;
 }
 
 interface SessionWatch {
@@ -91,85 +93,10 @@ export class SessionActivityTracker {
     }
 
     try {
-      const contents = await readFile(session.path, "utf8");
-      const markerIndex = contents.lastIndexOf('"type":"task_started"');
-      if (markerIndex < 0) {
-        return { known: false, isRunning: false, updatedAt: fileStat.mtimeMs / 1000 };
-      }
-      const lineStart = contents.lastIndexOf("\n", markerIndex) + 1;
-      let turnId: string | undefined;
-      let startedAt: number | undefined;
-      let completedAt: number | undefined;
-      let startTimestamp = 0;
-      let completeTimestamp = 0;
-      const items: JsonObject[] = [];
-      const itemIndexes = new Map<string, number>();
-      const toolIndexes = new Map<string, number>();
-      let lastUserIndex: number | undefined;
-      let responseIndex = 0;
-
-      for (const line of contents.slice(lineStart).split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        let event: JsonObject;
-        try {
-          event = JSON.parse(line) as JsonObject;
-        } catch {
-          continue;
-        }
-        const payload = isObject(event.payload) ? event.payload : {};
-        const type = typeof payload.type === "string" ? payload.type : "";
-        const timestamp = typeof event.timestamp === "string"
-          ? Date.parse(event.timestamp) / 1000
-          : 0;
-        if (type === "task_started") {
-          turnId = typeof payload.turn_id === "string" ? payload.turn_id : turnId;
-          startedAt = typeof payload.started_at === "number" ? payload.started_at : timestamp;
-          startTimestamp = timestamp;
-        } else if (["task_complete", "turn_aborted", "turn_interrupted", "turn_failed", "turn_completed", "task_aborted"].includes(type)) {
-          const completedTurnId = typeof payload.turn_id === "string" ? payload.turn_id : undefined;
-          if (!turnId || !completedTurnId || completedTurnId === turnId) {
-            completedAt = typeof payload.completed_at === "number" ? payload.completed_at : timestamp;
-            completeTimestamp = timestamp;
-          }
-        } else if (type === "user_message" && typeof lastUserIndex === "number") {
-          if (typeof payload.client_id === "string") items[lastUserIndex]!.clientId = payload.client_id;
-        }
-
-        if (event.type !== "response_item" || !isObject(event.payload)) continue;
-        responseIndex += 1;
-        const item = responseItem(event.payload, `rollout.${turnId ?? "turn"}.${responseIndex}`);
-        if (item) {
-          const id = String(item.id);
-          const existingIndex = itemIndexes.get(id);
-          if (typeof existingIndex === "number") items[existingIndex] = item;
-          else {
-            itemIndexes.set(id, items.length);
-            items.push(item);
-          }
-          if (item.type === "userMessage") lastUserIndex = itemIndexes.get(id);
-          const callId = typeof event.payload.call_id === "string" ? event.payload.call_id : undefined;
-          if (callId && item.type === "dynamicToolCall") toolIndexes.set(callId, itemIndexes.get(id)!);
-          continue;
-        }
-
-        if ((type === "custom_tool_call_output" || type === "function_call_output")
-            && typeof payload.call_id === "string") {
-          const toolIndex = toolIndexes.get(payload.call_id);
-          if (typeof toolIndex === "number") {
-            items[toolIndex]!.status = "completed";
-            items[toolIndex]!.result = payload.output ?? payload.result ?? null;
-          }
-        }
-      }
-
-      const active = startTimestamp > completeTimestamp;
+      session.reader ??= new RolloutTailReader(session.path, responseItem);
+      const parsed = await session.reader.read(fileStat.size);
       const snapshot: SessionTurnSnapshot = {
-        known: Boolean(turnId),
-        isRunning: active,
-        ...(turnId ? { turnId } : {}),
-        ...(startedAt ? { startedAt } : {}),
-        ...(completedAt ? { completedAt } : {}),
-        items,
+        ...parsed,
         updatedAt: Math.max(fileStat.mtimeMs / 1000, session.updatedAt),
       };
       session.signature = signature;

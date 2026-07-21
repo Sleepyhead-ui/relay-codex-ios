@@ -9,8 +9,8 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Manual
-    CURRENT_PROJECT_VERSION: 40
-    MARKETING_VERSION: 0.6.21
+    CURRENT_PROJECT_VERSION: 41
+    MARKETING_VERSION: 0.6.22
     TARGETED_DEVICE_FAMILY: "1,2"
 targets:
   Relay:
@@ -28,4 +28,17 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES
     scheme:
-      testTargets: []
+      testTargets:
+        - RelayTests
+  RelayTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Relay
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.relay.mobile.tests
+        GENERATE_INFOPLIST_FILE: YES

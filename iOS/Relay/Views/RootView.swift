@@ -38,7 +38,10 @@ struct RootView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(item: $store.pendingApproval) { approval in ApprovalSheet(approval: approval) }
+        .sheet(item: Binding(
+            get: { store.pendingApproval },
+            set: { _ in }
+        )) { approval in ApprovalSheet(approval: approval) }
         .sheet(item: $store.sharedFile) { file in
             ShareSheet(items: [file.url])
         }

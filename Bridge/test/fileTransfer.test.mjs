@@ -76,3 +76,32 @@ test("creates project folders only under the configured default directory", asyn
   assert.equal((await stat(created.path)).isDirectory(), true);
   await assert.rejects(() => manager.handle("relay/project/create", { name: "..\\outside" }), /cannot contain/);
 });
+
+test("expires abandoned transfer sessions and removes partial uploads", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
+  const filesRoot = path.join(root, ".relay-files");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const manager = new FileTransferManager(root, filesRoot, 10);
+  t.after(() => manager.dispose());
+
+  const upload = await manager.handle("relay/file/upload/start", { name: "partial.txt", size: 10 });
+  const uploadPath = path.join(filesRoot, upload.uploadId, "partial.txt");
+  const source = path.join(root, "source.txt");
+  await writeFile(source, "download");
+  const download = await manager.handle("relay/file/download/start", { path: source });
+
+  await manager.cleanupExpired(Date.now() + 20);
+  await assert.rejects(() => manager.handle("relay/file/upload/chunk", { uploadId: upload.uploadId, index: 0, data: "YQ==" }), /expired/);
+  await assert.rejects(() => manager.handle("relay/file/download/chunk", { downloadId: download.downloadId, index: 0 }), /expired/);
+  await assert.rejects(() => stat(uploadPath), /ENOENT/);
+});
+
+test("cancels transfers explicitly", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const manager = new FileTransferManager(root, path.join(root, ".relay-files"));
+  t.after(() => manager.dispose());
+  const upload = await manager.handle("relay/file/upload/start", { name: "cancel.txt", size: 1 });
+  assert.deepEqual(await manager.handle("relay/file/upload/cancel", { uploadId: upload.uploadId }), { cancelled: true });
+  assert.deepEqual(await manager.handle("relay/file/upload/cancel", { uploadId: upload.uploadId }), { cancelled: false });
+});

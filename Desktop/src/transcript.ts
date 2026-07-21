@@ -57,7 +57,8 @@ export function parseItem(value: any, turnId?: string): TranscriptItem | null {
   switch (value.type) {
     case "userMessage": {
       const content = userContent(value.content);
-      return { id, turnId, kind: "user", text: cleanDesktopUserText(content.text), imagePaths: content.imagePaths };
+      const visible = extractGoalContext(cleanDesktopUserText(content.text));
+      return { id, turnId, kind: "user", text: visible.text, imagePaths: content.imagePaths, goal: visible.objective };
     }
     case "agentMessage": return { id, turnId, kind: "assistant", text: value.text || "", phase: value.phase };
     case "reasoning": return { id, turnId, kind: "reasoning", title: "思考", text: arrayText(value.summary), detail: arrayText(value.content) };
@@ -214,6 +215,17 @@ export function formatElapsed(startedAt?: number, completedAt?: number, duration
   const seconds = Math.floor(milliseconds / 1000);
   if (seconds < 60) return `${seconds} 秒`;
   return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+}
+
+export function extractGoalContext(value: string): { text: string; objective?: string } {
+  let objective: string | undefined;
+  const text = value.replace(/<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*>([\s\S]*?)<\/codex_internal_context>/gi, (_block, content: string) => {
+    const match = content.match(/<objective>([\s\S]*?)<\/objective>/i);
+    const candidate = match?.[1]?.trim();
+    if (!objective && candidate) objective = candidate;
+    return "";
+  }).replace(/\n{3,}/g, "\n\n").trim();
+  return { text, objective };
 }
 
 function semanticMatch(left: TranscriptItem, right: TranscriptItem) {

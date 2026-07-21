@@ -7,15 +7,26 @@ import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
+import { PromptQueue } from "./promptQueue.js";
+import { RequestLifecycle } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
 
-interface PendingClientRequest {
-  socket: WebSocket;
-  clientId: string;
-  method: string;
-  params: JsonObject;
+interface PendingServerRequest {
+  request: JsonObject;
+  timeout: NodeJS.Timeout;
 }
+
+interface PendingInternalRequest {
+  method: string;
+  resolve: (value: JsonObject) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+}
+
+const defaultRpcTimeoutMs = 2 * 60_000;
+const historyRpcTimeoutMs = 10 * 60_000;
+const approvalTimeoutMs = 30 * 60_000;
 
 async function main(): Promise<void> {
 const codexProfiles = await CodexProfileRegistry.create();
@@ -41,11 +52,24 @@ const rpcDiagnostics = {
   lastErrorAt: null as string | null,
   lastError: null as string | null,
 };
-const pendingClientRequests = new Map<string, PendingClientRequest>();
-const pendingServerRequests = new Map<string, JsonObject>();
+const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridgeId, request) => {
+  rpcDiagnostics.lastErrorAt = new Date().toISOString();
+  rpcDiagnostics.lastError = `Codex request timed out: ${request.method}`;
+  send(request.socket, {
+    type: "rpcResult",
+    id: request.clientId,
+    error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
+  });
+  cancelForwardedRequest(bridgeId);
+});
+const pendingServerRequests = new Map<string, PendingServerRequest>();
 let nextRequestId = 1;
 let codexReady = false;
 let codexGeneration = 1;
+let codexRestartAttempt = 0;
+let codexRestartTimer: NodeJS.Timeout | undefined;
+let codexStartupTimer: NodeJS.Timeout | undefined;
+let shuttingDown = false;
 let activeCodexProfile = (await codexProfiles.list()).find((profile) => profile.active)!;
 const desktopSync = new DesktopSync(
   config.desktopSync,
@@ -55,12 +79,18 @@ const desktopSync = new DesktopSync(
   (status) => broadcast(bridgeStatus(codexReady ? "ready" : "starting", status)),
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
+const promptQueue = await PromptQueue.create();
+const dispatchingQueueThreads = new Set<string>();
+const queueRetryTimers = new Map<string, NodeJS.Timeout>();
+const pendingInternalRequests = new Map<string, PendingInternalRequest>();
+let nextInternalRequestId = 1;
 let runtimeState = new RuntimeStateTracker();
 let sessionActivity = new SessionActivityTracker();
 
 let codex = createCodexAppServer(codexGeneration);
 
 await codex.start();
+armCodexStartupWatchdog(codexGeneration);
 
 const httpServer = createServer((request, response) => {
   if (request.url === "/health") {
@@ -71,6 +101,7 @@ const httpServer = createServer((request, response) => {
       uptimeSeconds: Math.floor(process.uptime()),
       activeTurns: runtimeState.activeCount,
       pendingRpcCount: pendingClientRequests.size,
+      codexRestartAttempt,
       socket: socketDiagnostics,
       rpc: rpcDiagnostics,
       desktopSync: desktopSync.status,
@@ -112,8 +143,8 @@ webSocketServer.on("connection", (socket) => {
   socketDiagnostics.lastError = null;
   console.log(`[socket] mobile client connected (${clients.size} total)`);
   send(socket, bridgeStatus(codexReady ? "ready" : "starting"));
-  for (const request of pendingServerRequests.values()) {
-    send(socket, { type: "serverRequest", ...request });
+  for (const pending of pendingServerRequests.values()) {
+    send(socket, { type: "serverRequest", ...pending.request });
   }
 
   socket.on("message", (data, isBinary) => {
@@ -135,6 +166,7 @@ webSocketServer.on("connection", (socket) => {
     sessionSubscriptions.delete(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
+    for (const [bridgeId] of pendingClientRequests.removeSocket(socket)) cancelForwardedRequest(bridgeId);
     socketDiagnostics.lastDisconnectedAt = new Date().toISOString();
     socketDiagnostics.lastClose = `${code}${reason.length ? `: ${reason.toString("utf8")}` : ""}`;
     console.log(`[socket] mobile client disconnected (${clients.size} total)`);
@@ -172,6 +204,11 @@ httpServer.listen(config.port, config.host, () => {
 
 async function handleClientMessage(socket: WebSocket, raw: string): Promise<void> {
   const message = parseClientMessage(raw);
+  if (message.type === "rpcCancel") {
+    const cancelled = pendingClientRequests.cancelClient(socket, message.id);
+    if (cancelled) cancelForwardedRequest(cancelled[0]);
+    return;
+  }
   if (message.type === "rpc") {
     rpcDiagnostics.lastReceivedAt = new Date().toISOString();
     rpcDiagnostics.lastMethod = message.method;
@@ -250,6 +287,33 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
+    if (message.method === "relay/prompt/queue/list") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      const threadId = typeof message.params.threadId === "string" ? message.params.threadId : undefined;
+      send(socket, { type: "rpcResult", id: message.id, result: { items: promptQueue.list(activeCodexProfile.id, threadId) } });
+      return;
+    }
+    if (message.method === "relay/prompt/queue/add") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      try {
+        const item = await promptQueue.enqueue({ ...message.params, profileId: activeCodexProfile.id });
+        send(socket, { type: "rpcResult", id: message.id, result: { item } });
+        broadcastPromptQueue(item.threadId);
+        void dispatchNextQueuedPrompt(item.threadId);
+      } catch (error) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: error instanceof Error ? error.message : "Could not queue the prompt." } });
+      }
+      return;
+    }
+    if (message.method === "relay/prompt/queue/remove") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      const id = typeof message.params.id === "string" ? message.params.id : "";
+      const existing = promptQueue.list(activeCodexProfile.id).find((item) => item.id === id);
+      const removed = id ? await promptQueue.remove(id) : false;
+      send(socket, { type: "rpcResult", id: message.id, result: { removed } });
+      if (existing) broadcastPromptQueue(existing.threadId);
+      return;
+    }
     if (message.method.startsWith("relay/")) {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -284,7 +348,8 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
       params.cwd = config.defaultCwd;
     }
-    pendingClientRequests.set(bridgeId, { socket, clientId: message.id, method: message.method, params });
+    const timeoutMs = message.method === "thread/turns/list" ? historyRpcTimeoutMs : defaultRpcTimeoutMs;
+    pendingClientRequests.add(bridgeId, { socket, clientId: message.id, method: message.method, params }, timeoutMs);
     try {
       codex.send({ method: message.method, id: bridgeId, params });
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
@@ -303,7 +368,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
   }
 
   const serverId = String(message.id);
-  if (!pendingServerRequests.has(serverId)) return;
+  const pendingServer = pendingServerRequests.get(serverId);
+  if (!pendingServer) return;
+  clearTimeout(pendingServer.timeout);
   pendingServerRequests.delete(serverId);
   const response: JsonObject = { id: message.id };
   if (message.error) response.error = message.error;
@@ -314,9 +381,20 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
 
 function handleCodexResponse(message: JsonObject): void {
   const id = String(message.id);
-  const pending = pendingClientRequests.get(id);
+  const internal = pendingInternalRequests.get(id);
+  if (internal) {
+    clearTimeout(internal.timeout);
+    pendingInternalRequests.delete(id);
+    if ("error" in message) {
+      const errorMessage = isObject(message.error) && typeof message.error.message === "string" ? message.error.message : `${internal.method} failed.`;
+      internal.reject(new Error(errorMessage));
+    } else {
+      internal.resolve(isObject(message.result) ? message.result : {});
+    }
+    return;
+  }
+  const pending = pendingClientRequests.take(id);
   if (!pending) return;
-  pendingClientRequests.delete(id);
   rpcDiagnostics.lastCompletedAt = new Date().toISOString();
   rpcDiagnostics.lastCompletedMethod = pending.method;
   if ("error" in message) {
@@ -351,6 +429,11 @@ function handleCodexResponse(message: JsonObject): void {
 function handleCodexNotification(message: JsonObject): void {
   runtimeState.observeNotification(message);
   broadcast({ type: "event", ...message });
+  if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
+    clearTerminalApprovals(message.params);
+    const params = isObject(message.params) ? message.params : {};
+    if (typeof params.threadId === "string") void dispatchNextQueuedPrompt(params.threadId);
+  }
   if (message.method === "turn/completed" && isObject(message.params)) {
     desktopSync.activateThread(message.params.threadId, "turn-completed");
   }
@@ -358,8 +441,41 @@ function handleCodexNotification(message: JsonObject): void {
 
 function handleCodexRequest(message: JsonObject): void {
   const id = String(message.id);
-  pendingServerRequests.set(id, message);
+  const existing = pendingServerRequests.get(id);
+  if (existing) clearTimeout(existing.timeout);
+  const timeout = setTimeout(() => {
+    const pending = pendingServerRequests.get(id);
+    if (!pending) return;
+    pendingServerRequests.delete(id);
+    try {
+      codex.send({ id: message.id, error: { code: -32000, message: "Relay approval timed out." } });
+    } catch {}
+    broadcast({ type: "serverRequestResolved", id: message.id, reason: "timeout" });
+  }, approvalTimeoutMs);
+  timeout.unref();
+  pendingServerRequests.set(id, { request: message, timeout });
   broadcast({ type: "serverRequest", ...message });
+}
+
+function cancelForwardedRequest(bridgeId: string): void {
+  if (!codexReady) return;
+  try { codex.send({ method: "$/cancelRequest", params: { id: bridgeId } }); } catch {}
+}
+
+function clearTerminalApprovals(params: unknown): void {
+  const terminal = isObject(params) ? params : {};
+  const threadId = typeof terminal.threadId === "string" ? terminal.threadId : undefined;
+  const turn = isObject(terminal.turn) ? terminal.turn : {};
+  const turnId = typeof turn.id === "string" ? turn.id : typeof terminal.turnId === "string" ? terminal.turnId : undefined;
+  for (const [id, pending] of pendingServerRequests) {
+    const requestParams = isObject(pending.request.params) ? pending.request.params : {};
+    const sameThread = !threadId || requestParams.threadId === threadId;
+    const sameTurn = !turnId || requestParams.turnId === turnId;
+    if (!sameThread || !sameTurn) continue;
+    clearTimeout(pending.timeout);
+    pendingServerRequests.delete(id);
+    broadcast({ type: "serverRequestResolved", id: pending.request.id, reason: "turn-terminal" });
+  }
 }
 
 function broadcast(message: JsonObject): void {
@@ -394,16 +510,164 @@ function createCodexAppServer(generation: number): CodexAppServer {
       if (message) console.log(`[codex] ${message}`);
       if (message.includes("initialized")) {
         codexReady = true;
+        codexRestartAttempt = 0;
+        if (codexStartupTimer) clearTimeout(codexStartupTimer);
+        codexStartupTimer = undefined;
         broadcast(bridgeStatus("ready"));
+        void dispatchAllQueuedPrompts();
       }
     },
     onExit: (code, signal) => {
       if (generation !== codexGeneration) return;
-      codexReady = false;
-      broadcast({ ...bridgeStatus("codexExited"), code, signal });
-      console.error(`Codex App Server exited (code=${code}, signal=${signal}). Restart Relay Bridge.`);
+      handleCodexExit(generation, code, signal);
     },
   }, { CODEX_HOME: codexProfiles.activeCodexHome });
+}
+
+function handleCodexExit(generation: number, code: number | null, signal: NodeJS.Signals | null): void {
+  if (generation !== codexGeneration || shuttingDown) return;
+  codexReady = false;
+  if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  codexStartupTimer = undefined;
+  failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
+  clearPendingApprovals("codex-exited");
+  runtimeState.stopAll("Codex App Server exited.");
+  broadcast({ ...bridgeStatus("restarting"), code, signal });
+  console.error(`Codex App Server exited (code=${code}, signal=${signal}). Scheduling restart.`);
+  scheduleCodexRestart(generation);
+}
+
+function scheduleCodexRestart(generation: number): void {
+  if (shuttingDown || generation !== codexGeneration || codexRestartTimer) return;
+  codexRestartAttempt += 1;
+  const delay = Math.min(1_000 * Math.pow(1.8, codexRestartAttempt - 1), 30_000);
+  broadcast({ ...bridgeStatus("restarting"), restartAttempt: codexRestartAttempt, retryInMs: delay });
+  codexRestartTimer = setTimeout(() => {
+    codexRestartTimer = undefined;
+    void replaceCodex(false);
+  }, delay);
+  codexRestartTimer.unref();
+}
+
+async function replaceCodex(stopCurrent: boolean): Promise<void> {
+  if (shuttingDown) return;
+  const previous = codex;
+  codexGeneration += 1;
+  const generation = codexGeneration;
+  codexReady = false;
+  if (stopCurrent) await previous.stop();
+  codex = createCodexAppServer(generation);
+  try {
+    await codex.start();
+    armCodexStartupWatchdog(generation);
+  } catch (error) {
+    console.error(`[codex] restart failed: ${error instanceof Error ? error.message : error}`);
+    scheduleCodexRestart(generation);
+  }
+}
+
+function armCodexStartupWatchdog(generation: number): void {
+  if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  codexStartupTimer = setTimeout(() => {
+    if (shuttingDown || generation !== codexGeneration || codexReady) return;
+    console.error("[codex] initialization timed out; replacing App Server.");
+    failPendingRequests("Codex 初始化超时，Relay 正在重新启动服务。", true);
+    clearPendingApprovals("startup-timeout");
+    void replaceCodex(true);
+  }, 30_000);
+  codexStartupTimer.unref();
+}
+
+function failPendingRequests(message: string, notifyClients: boolean): void {
+  for (const [, pending] of pendingClientRequests.clear()) {
+    if (notifyClients) send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message } });
+  }
+  for (const pending of pendingInternalRequests.values()) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error(message));
+  }
+  pendingInternalRequests.clear();
+}
+
+function clearPendingApprovals(reason: string): void {
+  for (const pending of pendingServerRequests.values()) {
+    clearTimeout(pending.timeout);
+    broadcast({ type: "serverRequestResolved", id: pending.request.id, reason });
+  }
+  pendingServerRequests.clear();
+}
+
+function codexRequest(method: string, params: JsonObject, timeoutMs = defaultRpcTimeoutMs): Promise<JsonObject> {
+  if (!codexReady) return Promise.reject(new Error("Codex App Server is not ready."));
+  const id = `relay.internal.${nextInternalRequestId++}`;
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingInternalRequests.delete(id);
+      cancelForwardedRequest(id);
+      reject(new Error(`${method} timed out.`));
+    }, timeoutMs);
+    timeout.unref();
+    pendingInternalRequests.set(id, { method, resolve, reject, timeout });
+    try { codex.send({ id, method, params }); }
+    catch (error) {
+      clearTimeout(timeout);
+      pendingInternalRequests.delete(id);
+      reject(error);
+    }
+  });
+}
+
+async function dispatchAllQueuedPrompts(): Promise<void> {
+  for (const threadId of new Set(promptQueue.list(activeCodexProfile.id).map((item) => item.threadId))) {
+    void dispatchNextQueuedPrompt(threadId);
+  }
+}
+
+async function dispatchNextQueuedPrompt(threadId: string): Promise<void> {
+  if (!codexReady || dispatchingQueueThreads.has(threadId)) return;
+  const next = promptQueue.peek(activeCodexProfile.id, threadId);
+  if (!next) return;
+  const runtime = await runtimeState.snapshotWithExternal(threadId, sessionActivity);
+  if (runtime.known && runtime.isRunning) {
+    scheduleQueueRetry(threadId);
+    return;
+  }
+  dispatchingQueueThreads.add(threadId);
+  try {
+    const params: JsonObject = {
+      threadId,
+      clientUserMessageId: next.clientUserMessageId,
+      input: next.input,
+      summary: "detailed",
+      ...(next.sandboxPolicy ? { sandboxPolicy: next.sandboxPolicy } : {}),
+      ...(next.model ? { model: next.model } : {}),
+      ...(next.effort ? { effort: next.effort } : {}),
+    };
+    const result = await codexRequest("turn/start", params);
+    await promptQueue.remove(next.id);
+    runtimeState.observeTurnStart(threadId, result.turn);
+    desktopSync.activateThread(threadId, "queued-turn-started");
+    broadcastPromptQueue(threadId);
+  } catch (error) {
+    console.error(`[queue] ${threadId}: ${error instanceof Error ? error.message : error}`);
+    scheduleQueueRetry(threadId);
+  } finally {
+    dispatchingQueueThreads.delete(threadId);
+  }
+}
+
+function scheduleQueueRetry(threadId: string): void {
+  if (shuttingDown || queueRetryTimers.has(threadId) || !promptQueue.peek(activeCodexProfile.id, threadId)) return;
+  const timer = setTimeout(() => {
+    queueRetryTimers.delete(threadId);
+    void dispatchNextQueuedPrompt(threadId);
+  }, 15_000);
+  timer.unref();
+  queueRetryTimers.set(threadId, timer);
+}
+
+function broadcastPromptQueue(threadId: string): void {
+  broadcast({ type: "promptQueueUpdated", threadId, items: promptQueue.list(activeCodexProfile.id, threadId) });
 }
 
 async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
@@ -429,18 +693,32 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
 
   const previous = codex;
   codexGeneration += 1;
+  if (codexRestartTimer) clearTimeout(codexRestartTimer);
+  codexRestartTimer = undefined;
+  if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  codexStartupTimer = undefined;
+  codexRestartAttempt = 0;
   await previous.stop();
   codex = createCodexAppServer(codexGeneration);
   await codex.start();
+  armCodexStartupWatchdog(codexGeneration);
   return activeCodexProfile;
 }
 
 function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   clearInterval(heartbeatInterval);
+  if (codexRestartTimer) clearTimeout(codexRestartTimer);
+  if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  for (const timer of queueRetryTimers.values()) clearTimeout(timer);
+  queueRetryTimers.clear();
+  failPendingRequests("Relay Bridge 正在关闭。", true);
+  clearPendingApprovals("bridge-shutdown");
   for (const client of clients) client.close(1001, "Bridge shutting down");
   sessionActivity.dispose();
-  void codex.stop();
-  httpServer.close(() => process.exit(0));
+  void Promise.all([fileTransfer.dispose(), codex.stop()])
+    .finally(() => httpServer.close(() => process.exit(0)));
 }
 
 process.on("SIGINT", shutdown);

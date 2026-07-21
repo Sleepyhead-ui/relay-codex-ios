@@ -94,15 +94,30 @@ enum FollowUpBehavior: String, Codable, CaseIterable, Identifiable {
 }
 
 struct QueuedFollowUp: Identifiable, Equatable {
-    let id: UUID
+    let id: String
     let threadId: String
     let text: String
-    let attachments: [PendingAttachment]
+    let attachmentNames: [String]
     let createdAt: Date
+
+    init?(json: JSONValue) {
+        guard let id = json["id"]?.stringValue,
+              let threadId = json["threadId"]?.stringValue else { return nil }
+        self.id = id
+        self.threadId = threadId
+        text = json["text"]?.stringValue ?? ""
+        createdAt = Date(timeIntervalSince1970: json["createdAt"]?.doubleValue ?? 0)
+        attachmentNames = (json["input"]?.arrayValue ?? []).compactMap { input in
+            guard input["type"]?.stringValue != "text" else { return nil }
+            if let name = input["name"]?.stringValue?.nonEmpty { return name }
+            guard let path = input["path"]?.stringValue?.nonEmpty else { return nil }
+            return (path as NSString).lastPathComponent
+        }
+    }
 
     var displayText: String {
         if let text = text.nonEmpty { return text }
-        return attachments.map(\.name).joined(separator: "、")
+        return attachmentNames.joined(separator: "、")
     }
 }
 
@@ -312,6 +327,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var errorMessage: String?
     var deliveryState: MessageDeliveryState?
     var imagePaths: [String]
+    var goal: String?
 
     init(
         id: String,
@@ -328,7 +344,8 @@ struct TranscriptItem: Identifiable, Equatable {
         cwd: String? = nil,
         errorMessage: String? = nil,
         deliveryState: MessageDeliveryState? = nil,
-        imagePaths: [String] = []
+        imagePaths: [String] = [],
+        goal: String? = nil
     ) {
         self.id = id
         self.turnId = turnId
@@ -345,6 +362,7 @@ struct TranscriptItem: Identifiable, Equatable {
         self.errorMessage = errorMessage
         self.deliveryState = deliveryState
         self.imagePaths = imagePaths
+        self.goal = goal
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
@@ -396,12 +414,15 @@ struct TranscriptItem: Identifiable, Equatable {
         switch type {
         case "userMessage":
             var imagePaths: [String] = []
+            var goalObjective: String?
             let text = json["content"]?.arrayValue?
                 .compactMap { content -> String? in
                     if let text = content["text"]?.stringValue {
                         let parsed = extractImageMarkup(text)
                         for path in parsed.paths where !imagePaths.contains(path) { imagePaths.append(path) }
-                        return cleanDesktopUserText(parsed.text).nonEmpty
+                        let visible = extractGoalContext(cleanDesktopUserText(parsed.text))
+                        if goalObjective == nil { goalObjective = visible.objective }
+                        return visible.text.nonEmpty
                     }
                     if content["type"]?.stringValue == "mention" {
                         return "📎 \(content["name"]?.stringValue ?? content["path"]?.stringValue?.lastPathComponentForDisplay ?? "文件")"
@@ -415,7 +436,7 @@ struct TranscriptItem: Identifiable, Equatable {
                     return nil
                 }
                 .joined(separator: "\n") ?? ""
-            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths)
+            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective)
         case "agentMessage":
             return TranscriptItem(
                 id: id,
@@ -593,6 +614,29 @@ struct TranscriptItem: Identifiable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func extractGoalContext(_ text: String) -> (text: String, objective: String?) {
+        let blockPattern = #"<codex_internal_context\b[^>]*\bsource\s*=\s*[\"']goal[\"'][^>]*>([\s\S]*?)</codex_internal_context>"#
+        guard let blocks = try? NSRegularExpression(pattern: blockPattern, options: [.caseInsensitive]) else {
+            return (text, nil)
+        }
+        var objective: String?
+        for match in blocks.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard match.numberOfRanges > 1, let contentRange = Range(match.range(at: 1), in: text) else { continue }
+            let content = String(text[contentRange])
+            let objectivePattern = #"<objective>([\s\S]*?)</objective>"#
+            guard let expression = try? NSRegularExpression(pattern: objectivePattern, options: [.caseInsensitive]),
+                  let objectiveMatch = expression.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
+                  objectiveMatch.numberOfRanges > 1,
+                  let valueRange = Range(objectiveMatch.range(at: 1), in: content) else { continue }
+            let candidate = String(content[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty { objective = candidate; break }
+        }
+        let cleaned = blocks.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cleaned, objective)
+    }
+
     private static func extractImageMarkup(_ text: String) -> (text: String, paths: [String]) {
         let pattern = #"<image\b[^>]*\bpath\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>]+))[^>]*>"#
         guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
@@ -685,6 +729,7 @@ struct TranscriptGroup: Identifiable, Equatable {
 }
 
 struct ApprovalRequest: Identifiable, Equatable {
+    let id: String
     let rpcId: JSONValue
     let method: String
     let requestedPermissions: JSONValue?
@@ -692,10 +737,9 @@ struct ApprovalRequest: Identifiable, Equatable {
     let summary: String
     let detail: String
 
-    var id: String { rpcId.stringValue ?? UUID().uuidString }
-
     init?(message: JSONValue) {
         guard let rpcId = message["id"], let method = message["method"]?.stringValue else { return nil }
+        id = rpcId.stringValue ?? rpcId.intValue.map(String.init) ?? UUID().uuidString
         self.rpcId = rpcId
         self.method = method
         let params = message["params"] ?? .object([:])

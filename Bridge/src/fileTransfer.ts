@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, rm, stat, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { JsonObject } from "./protocol.js";
@@ -12,15 +12,19 @@ export const FILE_CHUNK_BYTES = 512 * 1024;
 interface UploadSession {
   path: string;
   name: string;
+  handle: FileHandle;
   expectedSize: number;
   receivedSize: number;
   nextIndex: number;
+  lastActivityAt: number;
 }
 
 interface DownloadSession {
   path: string;
   name: string;
   size: number;
+  handle: FileHandle;
+  lastActivityAt: number;
 }
 
 export class FileTransferManager {
@@ -29,11 +33,18 @@ export class FileTransferManager {
   private readonly defaultCwd: string | undefined;
   private readonly uploads = new Map<string, UploadSession>();
   private readonly downloads = new Map<string, DownloadSession>();
+  private readonly cleanupTimer: NodeJS.Timeout;
 
-  constructor(defaultCwd?: string, filesRoot = path.join(homedir(), ".relay", "files")) {
+  constructor(
+    defaultCwd?: string,
+    filesRoot = path.join(homedir(), ".relay", "files"),
+    private readonly sessionTtlMs = 10 * 60_000,
+  ) {
     this.filesRoot = path.resolve(filesRoot);
     this.defaultCwd = defaultCwd ? path.resolve(defaultCwd) : undefined;
     this.allowedRoots = [this.filesRoot, ...(this.defaultCwd ? [this.defaultCwd] : [])];
+    this.cleanupTimer = setInterval(() => { void this.cleanupExpired(); }, Math.min(sessionTtlMs, 60_000));
+    this.cleanupTimer.unref();
   }
 
   async handle(method: string, params: JsonObject): Promise<JsonObject> {
@@ -41,12 +52,31 @@ export class FileTransferManager {
     case "relay/file/upload/start": return this.startUpload(params);
     case "relay/file/upload/chunk": return this.uploadChunk(params);
     case "relay/file/upload/finish": return this.finishUpload(params);
+    case "relay/file/upload/cancel": return this.cancelUpload(params);
     case "relay/file/download/start": return this.startDownload(params);
     case "relay/image/download/start": return this.startImageDownload(params);
     case "relay/file/download/chunk": return this.downloadChunk(params);
+    case "relay/file/download/cancel": return this.cancelDownload(params);
     case "relay/project/create": return this.createProject(params);
     default: throw new Error(`Unsupported Relay method: ${method}`);
     }
+  }
+
+  async cleanupExpired(now = Date.now()): Promise<void> {
+    const uploads = [...this.uploads.entries()].filter(([, session]) => now - session.lastActivityAt >= this.sessionTtlMs);
+    const downloads = [...this.downloads.entries()].filter(([, session]) => now - session.lastActivityAt >= this.sessionTtlMs);
+    await Promise.all([
+      ...uploads.map(([id]) => this.releaseUpload(id, true)),
+      ...downloads.map(([id]) => this.releaseDownload(id)),
+    ]);
+  }
+
+  async dispose(): Promise<void> {
+    clearInterval(this.cleanupTimer);
+    await Promise.all([
+      ...[...this.uploads.keys()].map((id) => this.releaseUpload(id, true)),
+      ...[...this.downloads.keys()].map((id) => this.releaseDownload(id)),
+    ]);
   }
 
   private async createProject(params: JsonObject): Promise<JsonObject> {
@@ -70,8 +100,8 @@ export class FileTransferManager {
     const directory = path.join(this.filesRoot, uploadId);
     const filePath = path.join(directory, name);
     await mkdir(directory, { recursive: true });
-    await writeFile(filePath, Buffer.alloc(0), { flag: "wx" });
-    this.uploads.set(uploadId, { path: filePath, name, expectedSize: size, receivedSize: 0, nextIndex: 0 });
+    const handle = await open(filePath, "wx");
+    this.uploads.set(uploadId, { path: filePath, name, handle, expectedSize: size, receivedSize: 0, nextIndex: 0, lastActivityAt: Date.now() });
     return { uploadId, chunkSize: FILE_CHUNK_BYTES };
   }
 
@@ -84,9 +114,10 @@ export class FileTransferManager {
     const data = Buffer.from(requiredString(params, "data"), "base64");
     if (data.length > FILE_CHUNK_BYTES) throw new Error("Upload chunk is too large.");
     if (session.receivedSize + data.length > session.expectedSize) throw new Error("Upload exceeds the declared file size.");
-    await appendFile(session.path, data);
+    await writeAll(session.handle, data, session.receivedSize);
     session.receivedSize += data.length;
     session.nextIndex += 1;
+    session.lastActivityAt = Date.now();
     return { received: session.receivedSize, nextIndex: session.nextIndex };
   }
 
@@ -98,7 +129,12 @@ export class FileTransferManager {
       throw new Error(`Upload is incomplete (${session.receivedSize} of ${session.expectedSize} bytes).`);
     }
     this.uploads.delete(uploadId);
+    await session.handle.close();
     return { path: session.path, name: session.name, size: session.receivedSize };
+  }
+
+  private async cancelUpload(params: JsonObject): Promise<JsonObject> {
+    return { cancelled: await this.releaseUpload(requiredString(params, "uploadId"), true) };
   }
 
   private async startDownload(params: JsonObject): Promise<JsonObject> {
@@ -124,7 +160,8 @@ export class FileTransferManager {
     if (info.size > maximumBytes) throw new Error(`File must be ${Math.floor(maximumBytes / 1024 / 1024)} MB or smaller.`);
     const downloadId = randomUUID();
     const name = path.basename(requestedPath);
-    this.downloads.set(downloadId, { path: requestedPath, name, size: info.size });
+    const handle = await open(requestedPath, "r");
+    this.downloads.set(downloadId, { path: requestedPath, name, size: info.size, handle, lastActivityAt: Date.now() });
     return { downloadId, name, size: info.size, chunkSize: FILE_CHUNK_BYTES };
   }
 
@@ -136,10 +173,45 @@ export class FileTransferManager {
     if (index < 0) throw new Error("Invalid download chunk index.");
     const offset = index * FILE_CHUNK_BYTES;
     if (offset > session.size) throw new Error("Download chunk is out of range.");
-    const data = (await readFile(session.path)).subarray(offset, Math.min(offset + FILE_CHUNK_BYTES, session.size));
+    const length = Math.min(FILE_CHUNK_BYTES, session.size - offset);
+    const buffer = Buffer.allocUnsafe(length);
+    let bytesRead = 0;
+    if (length > 0) ({ bytesRead } = await session.handle.read(buffer, 0, length, offset));
+    session.lastActivityAt = Date.now();
+    const data = buffer.subarray(0, bytesRead);
     const done = offset + data.length >= session.size;
-    if (done) this.downloads.delete(downloadId);
+    if (done) await this.releaseDownload(downloadId);
     return { index, data: data.toString("base64"), done };
+  }
+
+  private async cancelDownload(params: JsonObject): Promise<JsonObject> {
+    return { cancelled: await this.releaseDownload(requiredString(params, "downloadId")) };
+  }
+
+  private async releaseUpload(id: string, removePartial: boolean): Promise<boolean> {
+    const session = this.uploads.get(id);
+    if (!session) return false;
+    this.uploads.delete(id);
+    await session.handle.close().catch(() => {});
+    if (removePartial) await rm(path.dirname(session.path), { recursive: true, force: true }).catch(() => {});
+    return true;
+  }
+
+  private async releaseDownload(id: string): Promise<boolean> {
+    const session = this.downloads.get(id);
+    if (!session) return false;
+    this.downloads.delete(id);
+    await session.handle.close().catch(() => {});
+    return true;
+  }
+}
+
+async function writeAll(handle: FileHandle, data: Buffer, position: number): Promise<void> {
+  let offset = 0;
+  while (offset < data.length) {
+    const { bytesWritten } = await handle.write(data, offset, data.length - offset, position + offset);
+    if (bytesWritten <= 0) throw new Error("Could not write the upload chunk.");
+    offset += bytesWritten;
   }
 }
 

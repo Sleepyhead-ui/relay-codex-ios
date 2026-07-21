@@ -37,7 +37,9 @@ final class RelaySocket: ObservableObject {
     var onBridgeStatus: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onSessionSnapshot: ((String, JSONValue) -> Void)?
+    var onPromptQueueUpdated: ((String, JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
+    var onServerRequestResolved: ((JSONValue) -> Void)?
     var onNonfatalError: ((String) -> Void)?
 
     private var task: URLSessionWebSocketTask?
@@ -118,6 +120,7 @@ final class RelaySocket: ObservableObject {
                     self.pendingAccepted.removeValue(forKey: id)
                     self.pendingTimeouts.removeValue(forKey: id)?.cancel()
                     let error = SocketError.remote("Bridge 在 8 秒内没有确认收到消息。")
+                    try? await self.send(["type": "rpcCancel", "id": id])
                     continuation.resume(throwing: error)
                     self.handleConnectionFailure(error, generation: requestGeneration)
                 }
@@ -138,6 +141,7 @@ final class RelaySocket: ObservableObject {
                         ? "Windows 长时间没有确认请求，Relay 正在重新连接。"
                         : "Windows 长时间没有完成请求，但连接仍保持。"
                 )
+                try? await self.send(["type": "rpcCancel", "id": id])
                 continuation.resume(throwing: error)
                 if reconnectOnTimeout {
                     self.handleConnectionFailure(error, generation: self.connectionGeneration)
@@ -165,40 +169,53 @@ final class RelaySocket: ObservableObject {
     func uploadFile(_ url: URL, progress: @escaping (Double) -> Void) async throws -> (path: String, size: Int64) {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard data.count <= 50 * 1024 * 1024 else {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard fileSize <= 50 * 1024 * 1024 else {
             throw SocketError.remote("文件不能超过 50 MB。")
         }
         let started = try await rpc(method: "relay/file/upload/start", params: [
             "name": .string(url.lastPathComponent),
-            "size": .number(Double(data.count))
+            "size": .number(Double(fileSize))
         ])
         guard let uploadId = started["uploadId"]?.stringValue else {
             throw SocketError.remote("Windows 未能开始接收文件。")
         }
         let chunkSize = started["chunkSize"]?.intValue ?? (512 * 1024)
-        if !data.isEmpty {
-            var index = 0
-            var offset = 0
-            while offset < data.count {
-                let end = min(offset + chunkSize, data.count)
-                let chunk = data.subdata(in: offset..<end)
+        let handle = try FileHandle(forReadingFrom: url)
+        var sentSize: Int64 = 0
+        var index = 0
+        do {
+            while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
                 _ = try await rpc(method: "relay/file/upload/chunk", params: [
                     "uploadId": .string(uploadId),
                     "index": .number(Double(index)),
                     "data": .string(chunk.base64EncodedString())
                 ])
-                offset = end
+                sentSize += Int64(chunk.count)
                 index += 1
-                progress(Double(offset) / Double(data.count))
+                progress(fileSize == 0 ? 1 : min(1, Double(sentSize) / Double(fileSize)))
             }
+            try handle.close()
+            guard sentSize == fileSize else {
+                throw SocketError.remote("文件在上传过程中发生了变化，请重新选择。")
+            }
+            let finished = try await rpc(method: "relay/file/upload/finish", params: ["uploadId": .string(uploadId)])
+            guard let path = finished["path"]?.stringValue else {
+                throw SocketError.remote("Windows 未返回上传文件的位置。")
+            }
+            progress(1)
+            return (path, Int64(finished["size"]?.intValue ?? Int(sentSize)))
+        } catch {
+            try? handle.close()
+            _ = try? await rpc(
+                method: "relay/file/upload/cancel",
+                params: ["uploadId": .string(uploadId)],
+                timeoutSeconds: 4,
+                reconnectOnTimeout: false
+            )
+            throw error
         }
-        let finished = try await rpc(method: "relay/file/upload/finish", params: ["uploadId": .string(uploadId)])
-        guard let path = finished["path"]?.stringValue else {
-            throw SocketError.remote("Windows 未返回上传文件的位置。")
-        }
-        progress(1)
-        return (path, Int64(finished["size"]?.intValue ?? data.count))
     }
 
     func downloadFile(at remotePath: String, progress: @escaping (Double) -> Void) async throws -> URL {
@@ -220,31 +237,55 @@ final class RelaySocket: ObservableObject {
             throw SocketError.remote("Windows 未能开始发送文件。")
         }
         let name = started["name"]?.stringValue ?? URL(fileURLWithPath: remotePath).lastPathComponent
-        let totalSize = started["size"]?.intValue ?? 0
-        var output = Data()
-        if totalSize > 0 { output.reserveCapacity(totalSize) }
-        var index = 0
-        var done = false
-        while !done {
-            let chunk = try await rpc(method: "relay/file/download/chunk", params: [
-                "downloadId": .string(downloadId),
-                "index": .number(Double(index))
-            ])
-            guard let encoded = chunk["data"]?.stringValue, let data = Data(base64Encoded: encoded) else {
-                throw SocketError.remote("收到的文件数据无效。")
-            }
-            output.append(data)
-            done = chunk["done"]?.boolValue ?? false
-            index += 1
-            progress(totalSize == 0 ? 1 : min(1, Double(output.count) / Double(totalSize)))
-        }
+        let totalSize = Int64(started["size"]?.intValue ?? 0)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(directoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = startMethod == "relay/image/download/start"
             ? directory.appendingPathComponent(cacheFileName(for: remotePath, originalName: name))
             : uniqueFileURL(in: directory, name: name)
-        try output.write(to: destination, options: .atomic)
-        return destination
+        let partial = directory.appendingPathComponent(".\(UUID().uuidString).partial")
+        guard FileManager.default.createFile(atPath: partial.path, contents: nil) else {
+            throw SocketError.remote("无法创建本地下载文件。")
+        }
+        let handle = try FileHandle(forWritingTo: partial)
+        var receivedSize: Int64 = 0
+        var index = 0
+        var done = false
+        do {
+            while !done {
+                let chunk = try await rpc(method: "relay/file/download/chunk", params: [
+                    "downloadId": .string(downloadId),
+                    "index": .number(Double(index))
+                ])
+                guard let encoded = chunk["data"]?.stringValue, let data = Data(base64Encoded: encoded) else {
+                    throw SocketError.remote("收到的文件数据无效。")
+                }
+                try handle.write(contentsOf: data)
+                receivedSize += Int64(data.count)
+                done = chunk["done"]?.boolValue ?? false
+                index += 1
+                progress(totalSize == 0 ? 1 : min(1, Double(receivedSize) / Double(totalSize)))
+            }
+            guard receivedSize == totalSize else {
+                throw SocketError.remote("下载内容不完整，请重试。")
+            }
+            try handle.close()
+            if startMethod == "relay/image/download/start", FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: partial, to: destination)
+            return destination
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: partial)
+            _ = try? await rpc(
+                method: "relay/file/download/cancel",
+                params: ["downloadId": .string(downloadId)],
+                timeoutSeconds: 4,
+                reconnectOnTimeout: false
+            )
+            throw error
+        }
     }
 
     private func cacheFileName(for remotePath: String, originalName: String) -> String {
@@ -395,8 +436,14 @@ final class RelaySocket: ObservableObject {
             if let threadId = raw["threadId"] as? String {
                 onSessionSnapshot?(threadId, message["snapshot"] ?? .object([:]))
             }
+        case "promptQueueUpdated":
+            if let threadId = raw["threadId"] as? String {
+                onPromptQueueUpdated?(threadId, message)
+            }
         case "serverRequest":
             onServerRequest?(message)
+        case "serverRequestResolved":
+            onServerRequestResolved?(message)
         case "bridgeError":
             onNonfatalError?(raw["message"] as? String ?? "Bridge reported an error.")
         default:

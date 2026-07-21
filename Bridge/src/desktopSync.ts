@@ -12,6 +12,8 @@ export interface DesktopSyncStatus {
   lastResult?: string;
 }
 
+type DesktopSyncReason = "turn-started" | "queued-turn-started" | "turn-steered" | "turn-completed";
+
 interface CdpTarget {
   type?: string;
   title?: string;
@@ -38,7 +40,7 @@ export class DesktopSync {
 
   get status(): DesktopSyncStatus { return { ...this.statusValue }; }
 
-  activateThread(threadId: unknown, reason: "turn-started" | "turn-steered" | "turn-completed"): void {
+  activateThread(threadId: unknown, reason: DesktopSyncReason): void {
     if (!this.enabled || process.platform !== "win32" || typeof threadId !== "string" || !THREAD_ID_PATTERN.test(threadId)) {
       return;
     }
@@ -48,11 +50,11 @@ export class DesktopSync {
     if (now - previous < 750) return;
     this.lastActivation.set(threadId, now);
 
-    const delay = reason === "turn-started" ? 240 : 120;
+    const delay = reason === "turn-started" || reason === "queued-turn-started" ? 240 : 120;
     setTimeout(() => void this.performSync(threadId, reason), delay).unref();
   }
 
-  private async performSync(threadId: string, reason: "turn-started" | "turn-steered" | "turn-completed"): Promise<void> {
+  private async performSync(threadId: string, reason: DesktopSyncReason): Promise<void> {
     this.statusValue = { ...this.statusValue, lastAttemptAt: new Date().toISOString() };
     this.onStatusChange(this.status);
     await this.ensureDesktopDebugging();

@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
   AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop,
-  FileCode2, Folder, FolderOpen, Menu, MessageSquare, Paperclip, Plus, Search,
+  FileCode2, Folder, FolderOpen, Menu, MessageSquare, Paperclip, Plus, Search, Target,
   Power, Server, Settings, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
@@ -12,9 +12,10 @@ import {
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
+import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, ModelOption,
-  PlanStep, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
+  PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
 const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"]);
@@ -30,15 +31,16 @@ export default function App() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [effort, setEffort] = useState("high");
-  const [access, setAccess] = useState<WorkspaceAccess>("fullAccess");
+  const [access, setAccess] = useState<WorkspaceAccess>(() => storedWorkspaceAccess());
   const [workspace, setWorkspace] = useState(localStorage.getItem("relay.desktop.cwd") || "");
   const [selectedThreadId, setSelectedThreadId] = useState<string>();
   const [messages, setMessages] = useState<TranscriptItem[]>([]);
   const [turns, setTurns] = useState<Record<string, TurnMetadata>>({});
-  const [activeTurnId, setActiveTurnId] = useState<string>();
-  const [plan, setPlan] = useState<PlanStep[]>([]);
+  const [taskStates, setTaskStates] = useState<Record<string, TaskRunState>>({});
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [followUpBehavior, setFollowUpBehavior] = useState<"steer" | "queue">(() => localStorage.getItem("relay.desktop.followUp") === "queue" ? "queue" : "steer");
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
@@ -46,8 +48,7 @@ export default function App() {
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
-  const [approval, setApproval] = useState<ApprovalRequest>();
-  const [upstreamRetrying, setUpstreamRetrying] = useState(false);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState("");
   const [profileSwitching, setProfileSwitching] = useState(false);
@@ -65,15 +66,31 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId);
-  const running = Boolean(activeTurnId) || isRunningStatus(selectedThread?.status);
+  const selectedTaskState = selectedThreadId ? taskStates[selectedThreadId] : undefined;
+  const activeTurnId = selectedTaskState?.turnId;
+  const plan = selectedTaskState && selectedTaskState.planTurnId === activeTurnId ? selectedTaskState.plan : [];
+  const upstreamRetrying = selectedTaskState?.phase === "retrying";
+  const running = isTaskRunning(selectedTaskState) || (!selectedTaskState && isRunningStatus(selectedThread?.status));
   const selectedModelOption = models.find((model) => model.model === selectedModel || model.id === selectedModel);
   const activeCodexProfile = codexProfiles.find((profile) => profile.id === activeProfileId);
+  const approval = approvals[0];
   const projects = useMemo(() => groupProjects(threads), [threads]);
+  const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
+  const currentGoal = [...messages].reverse().find((item) => item.goal)?.goal;
   messagesRef.current = messages;
+
+  function updateTaskState(threadId: string, event: TaskRunEvent) {
+    setTaskStates((current) => ({
+      ...current,
+      [threadId]: reduceTaskRunState(current[threadId] || idleTaskState(threadId), event),
+    }));
+  }
 
   useEffect(() => { selectedRef.current = selectedThreadId; }, [selectedThreadId]);
   useEffect(() => { activeTurnRef.current = activeTurnId; }, [activeTurnId]);
   useEffect(() => { localStorage.setItem("relay.desktop.cwd", workspace); }, [workspace]);
+  useEffect(() => { localStorage.setItem("relay.desktop.access", access); }, [access]);
+  useEffect(() => { localStorage.setItem("relay.desktop.followUp", followUpBehavior); }, [followUpBehavior]);
 
   useEffect(() => {
     const offMessage = window.relayDesktop.onMessage((message) => rpc.handle(message));
@@ -105,18 +122,30 @@ export default function App() {
   messageHandlerRef.current = (message: any) => {
     if (message?.type === "event") handleEvent(String(message.method || ""), message.params || {});
     else if (message?.type === "sessionSnapshot") handleSessionSnapshot(message.threadId, message.snapshot);
-    else if (message?.type === "serverRequest") setApproval(parseApproval(message));
-    else if (message?.type === "serverRequestResolved") setApproval((current) => current?.id === message.id ? undefined : current);
+    else if (message?.type === "serverRequest") {
+      const incoming = parseApproval(message);
+      setApprovals((current) => current.some((item) => String(item.id) === String(incoming.id))
+        ? current.map((item) => String(item.id) === String(incoming.id) ? incoming : item)
+        : [...current, incoming]);
+    }
+    else if (message?.type === "serverRequestResolved") setApprovals((current) => current.filter((item) => String(item.id) !== String(message.id)));
+    else if (message?.type === "promptQueueUpdated") {
+      setQueuedPrompts((current) => [
+        ...current.filter((item) => item.threadId !== message.threadId),
+        ...(message.items || []),
+      ].sort((left, right) => left.createdAt - right.createdAt));
+    }
     else if (message?.type === "bridgeStatus") handleBridgeStatus(message);
     else if (message?.type === "bridgeError") setError(message.message || "Bridge 出错");
   };
 
   async function initialize() {
     try {
-      const [threadResult, modelResult, profileResult] = await Promise.all([
+      const [threadResult, modelResult, profileResult, queueResult] = await Promise.all([
         rpc.rpc("thread/list", { limit: 200, sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true }),
         rpc.rpc("model/list", { limit: 100, includeHidden: false }),
         rpc.rpc("relay/codex/profiles/list", {}, 12_000),
+        rpc.rpc("relay/prompt/queue/list", {}, 12_000),
       ]);
       const nextThreads = (threadResult.data || []).map(parseThread).filter(Boolean) as ThreadSummary[];
       const nextModels = (modelResult.data || []).map(parseModel).filter(Boolean) as ModelOption[];
@@ -124,6 +153,7 @@ export default function App() {
       setModels(nextModels);
       setCodexProfiles(profileResult.profiles || []);
       setActiveProfileId(profileResult.activeProfileId || "");
+      setQueuedPrompts((queueResult.items || []).sort((left: QueuedPrompt, right: QueuedPrompt) => left.createdAt - right.createdAt));
       const preferred = nextModels.find((model) => model.isDefault) || nextModels[0];
       if (!selectedModel && preferred) {
         setSelectedModel(preferred.model);
@@ -147,6 +177,8 @@ export default function App() {
       selectedRef.current = undefined;
       setThreads([]);
       setMessages([]);
+      setApprovals([]);
+      setQueuedPrompts([]);
       userMessagePlacementsRef.current.clear();
       threadMessageCacheRef.current.clear();
       setTurns({});
@@ -205,9 +237,7 @@ export default function App() {
     setMessages(cachedMessages);
     messagesRef.current = cachedMessages;
     setTurns({});
-    setPlan([]);
-    setActiveTurnId(undefined);
-    setUpstreamRetrying(false);
+    updateTaskState(id, { type: "reset" });
     try {
       if (previous && previous !== id) void rpc.rpc("relay/thread/session/unsubscribe", { threadId: previous }, 5_000).catch(() => {});
       const result = await rpc.rpc("thread/resume", {
@@ -244,7 +274,12 @@ export default function App() {
       messagesRef.current = orderedMessages;
       threadMessageCacheRef.current.set(id, orderedMessages);
       setTurns(loadedTurns);
-      setActiveTurnId(nextActiveTurnId);
+      updateTaskState(id, {
+        type: "hydrate",
+        running: Boolean(nextActiveTurnId) || threadActive,
+        turnId: nextActiveTurnId,
+        startedAt: nextActiveTurnId ? loadedTurns[nextActiveTurnId]?.startedAt : undefined,
+      });
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
       try {
@@ -276,10 +311,14 @@ export default function App() {
         durationMs: live || snapshot.stale ? undefined : current[snapshot.turnId]?.durationMs,
       },
     }));
-    if (live) setActiveTurnId(snapshot.turnId);
+    if (live) updateTaskState(threadId, { type: "progress", turnId: snapshot.turnId, startedAt: snapshot.startedAt });
     else {
-      setActiveTurnId((current) => current === snapshot.turnId ? undefined : current);
-      setPlan([]);
+      updateTaskState(threadId, {
+        type: "terminal",
+        turnId: snapshot.turnId,
+        phase: snapshot.stale ? "interrupted" : "completed",
+        completedAt: snapshot.completedAt,
+      });
       if (snapshot.stale) {
         setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, status: "idle" } : thread));
       }
@@ -294,19 +333,37 @@ export default function App() {
       setThreads((current) => current.map((thread) => thread.id === threadId
         ? { ...thread, status: terminal ? "idle" : method.startsWith("turn/") || method.startsWith("item/") ? "active" : thread.status, updatedAt: Date.now() / 1000 }
         : thread));
+      if (method === "turn/started" && turnId) {
+        updateTaskState(threadId, { type: "started", turnId, startedAt: params.turn?.startedAt });
+      } else if (terminal) {
+        updateTaskState(threadId, {
+          type: "terminal",
+          turnId,
+          phase: method === "turn/failed" ? "failed" : method === "turn/completed" ? "completed" : "interrupted",
+          completedAt: params.turn?.completedAt,
+        });
+      } else if (method === "turn/plan/updated" && turnId) {
+        updateTaskState(threadId, {
+          type: "plan",
+          turnId,
+          plan: (params.plan || []).map((step: any, index: number) => ({ id: `${turnId}.${index}`, text: step.step, status: step.status || "pending" })),
+        });
+      } else if (method === "error") {
+        if (params.willRetry === true) updateTaskState(threadId, { type: "retrying", turnId, message: params.error?.message || params.message });
+        else if (params.willRetry === false) updateTaskState(threadId, { type: "terminal", turnId, phase: "failed" });
+      } else if (turnId && method.startsWith("item/")) {
+        updateTaskState(threadId, { type: "progress", turnId });
+      }
     }
     if (threadId !== selectedRef.current) return;
     if (turnId && (method === "turn/started" || method.startsWith("item/") || method === "turn/plan/updated")) {
       bindPendingStartMessage(turnId);
     }
-    if (method !== "error" && (method.startsWith("item/") || method === "turn/plan/updated")) setUpstreamRetrying(false);
     if (method === "turn/started") {
       const metadata: TurnMetadata = parseTurn(params.turn) || { id: String(turnId || ""), status: "inProgress" };
       if (turnId) {
-        setActiveTurnId(turnId);
         setTurns((current) => ({ ...current, [turnId]: { ...metadata, status: "inProgress", startedAt: metadata.startedAt || Date.now() / 1000 } }));
       }
-      setPlan([]);
       return;
     }
     if (terminal) {
@@ -319,30 +376,22 @@ export default function App() {
           if (item) setMessages((current) => upsert(current, item));
         }
       }
-      setActiveTurnId(undefined);
-      setPlan([]);
-      setUpstreamRetrying(false);
       void refreshThreads();
       return;
     }
     if (method === "item/started" || method === "item/completed") {
       const item = parseItem(params.item, turnId);
       if (item) setMessages((current) => upsert(current, item));
-      if (turnId) setActiveTurnId(turnId);
       return;
     }
     if (method === "item/agentMessage/delta") appendText(params.itemId, params.delta, turnId, "assistant");
     else if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoningSummaryText/delta") appendText(params.itemId, params.delta, turnId, "reasoning");
     else if (method === "item/reasoning/textDelta") appendDetail(params.itemId, params.delta, turnId, "reasoning");
     else if (method === "item/commandExecution/outputDelta") appendDetail(params.itemId, params.delta, turnId, "command");
-    else if (method === "turn/plan/updated" && turnId) {
-      setPlan((params.plan || []).map((step: any, index: number) => ({ id: `${turnId}.${index}`, text: step.step, status: step.status || "pending" })));
-    } else if (method === "error") {
+    else if (method === "error") {
       const message = params.error?.message || params.message || "Codex 出错";
-      if (params.willRetry === true) setUpstreamRetrying(true);
-      else {
+      if (params.willRetry !== true) {
         setError(message);
-        if (params.willRetry === false) setActiveTurnId(undefined);
       }
     }
   }
@@ -354,7 +403,6 @@ export default function App() {
       if (index < 0) return [...current, { id, turnId, kind, text: delta, phase: kind === "assistant" ? "commentary" : undefined, title: kind === "reasoning" ? "思考" : undefined }];
       const next = [...current]; next[index] = { ...next[index], text: next[index].text + delta, turnId: next[index].turnId || turnId }; return next;
     });
-    if (turnId) setActiveTurnId(turnId);
   }
 
   function appendDetail(id: string, delta: string, turnId: string, kind: "reasoning" | "command") {
@@ -378,7 +426,7 @@ export default function App() {
     if (!id) throw new Error("Codex 未返回对话编号");
     if (cwd) { setWorkspace(cwd); setNewTaskCwd(cwd); }
     await refreshThreads();
-    setSelectedThreadId(id); selectedRef.current = id; setMessages([]); setTurns({}); setActiveTurnId(undefined);
+    setSelectedThreadId(id); selectedRef.current = id; setMessages([]); setTurns({}); updateTaskState(id, { type: "reset" });
     localStorage.setItem("relay.desktop.thread", id);
     return id as string;
   }
@@ -398,6 +446,28 @@ export default function App() {
       const clientId = crypto.randomUUID();
       submittedMessageId = clientId;
       const currentTurnId = activeTurnRef.current;
+      const input = [
+        ...(text ? [{ type: "text", text }] : []),
+        ...selectedAttachments.map((item) => item.isImage
+          ? { type: "localImage", path: item.path }
+          : { type: "mention", name: item.name, path: item.path }),
+      ];
+      if (currentTurnId && followUpBehavior === "queue") {
+        const result = await rpc.rpc("relay/prompt/queue/add", {
+          threadId,
+          clientUserMessageId: clientId,
+          text,
+          input,
+          sandboxPolicy: sandboxPolicy(access, selectedThread?.cwd || workspace),
+          model: selectedModelOption?.model || selectedModel || undefined,
+          effort: effort || undefined,
+        }, 12_000);
+        if (result.item) {
+          setQueuedPrompts((current) => [...current.filter((item) => item.id !== result.item.id), result.item]
+            .sort((left, right) => left.createdAt - right.createdAt));
+        }
+        return;
+      }
       const afterItemId = currentTurnId
         ? [...messagesRef.current].reverse().find((item) => item.turnId === currentTurnId)?.id
         : undefined;
@@ -412,12 +482,6 @@ export default function App() {
       const display = [text, ...selectedAttachments.filter((item) => !item.isImage).map((item) => `附件 ${item.name}`)].filter(Boolean).join("\n\n");
       setMessages((current) => [...current, { id: clientId, kind: "user", text: display, imagePaths }]);
       if (!activeTurnRef.current) pendingStartMessageRef.current = clientId;
-      const input = [
-        ...(text ? [{ type: "text", text }] : []),
-        ...selectedAttachments.map((item) => item.isImage
-          ? { type: "localImage", path: item.path }
-          : { type: "mention", name: item.name, path: item.path }),
-      ];
       if (activeTurnRef.current) {
         const result = await rpc.rpc("turn/steer", { threadId, expectedTurnId: activeTurnRef.current, clientUserMessageId: clientId, input }, 120_000);
         const confirmed = result.turnId || activeTurnRef.current;
@@ -433,7 +497,7 @@ export default function App() {
         }, 120_000);
         const confirmed = result.turn?.id;
         if (confirmed) {
-          setActiveTurnId(confirmed);
+          updateTaskState(threadId, { type: "started", turnId: confirmed, startedAt: result.turn?.startedAt });
           bindPendingStartMessage(confirmed);
         }
       }
@@ -464,9 +528,16 @@ export default function App() {
   async function stopTurn() {
     const threadId = selectedRef.current;
     const turnId = activeTurnRef.current;
-    if (!threadId || !turnId) { setActiveTurnId(undefined); return; }
-    try { await rpc.rpc("turn/interrupt", { threadId, turnId }, 20_000); setActiveTurnId(undefined); }
+    if (!threadId || !turnId) return;
+    try { await rpc.rpc("turn/interrupt", { threadId, turnId }, 20_000); updateTaskState(threadId, { type: "terminal", turnId, phase: "interrupted" }); }
     catch (reason) { setError(errorText(reason)); }
+  }
+
+  async function removeQueuedPrompt(id: string) {
+    try {
+      await rpc.rpc("relay/prompt/queue/remove", { id }, 12_000);
+      setQueuedPrompts((current) => current.filter((item) => item.id !== id));
+    } catch (reason) { setError(errorText(reason)); }
   }
 
   async function pickFiles() {
@@ -485,7 +556,7 @@ export default function App() {
       else if (/permissions/i.test(approval.method)) result = { permissions: accepted ? approval.params.permissions || {} : {}, scope: "turn" };
       else result = { decision: accepted ? "accept" : "decline" };
       await rpc.respond(approval.id, result);
-      setApproval(undefined);
+      setApprovals((current) => current.filter((item) => String(item.id) !== String(approval.id)));
     } catch (reason) { setError(errorText(reason)); }
   }
 
@@ -547,14 +618,19 @@ export default function App() {
           <div className="composer-zone">
             {plan.length > 0 && <PlanPanel steps={plan}/>
             }
+            {currentQueuedPrompts.length > 0 && <PromptQueuePanel items={currentQueuedPrompts} onRemove={removeQueuedPrompt}/>
+            }
+            {currentGoal && <GoalPanel objective={currentGoal}/>
+            }
             <div className={`composer ${!serviceAvailable || connection !== "connected" ? "offline" : ""}`}>
               {attachments.length > 0 && <div className="attachments">{attachments.map((item) => <span key={item.path}><FileCode2 size={12}/>{item.name}<button onClick={() => setAttachments((current) => current.filter((value) => value.path !== item.path))}><X size={11}/></button></span>)}</div>}
-              <textarea disabled={!serviceAvailable || connection !== "connected"} value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={!serviceAvailable ? "启动远程服务后开始" : running ? "引导当前任务" : "随心输入"} rows={1} onKeyDown={(event) => {
+              <textarea disabled={!serviceAvailable || connection !== "connected"} value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={!serviceAvailable ? "启动远程服务后开始" : running ? followUpBehavior === "queue" ? "排队到下一轮" : "引导当前任务" : "随心输入"} rows={1} onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
               }}/>
               <div className="composer-controls">
                 <button disabled={!serviceAvailable || connection !== "connected"} className="icon-button attach" onClick={() => void pickFiles()} title="添加文件"><Paperclip size={17}/></button>
                 <div className="generation-controls">
+                  {running && <select aria-label="后续消息方式" value={followUpBehavior} onChange={(event) => setFollowUpBehavior(event.target.value as "steer" | "queue")}><option value="steer">引导</option><option value="queue">排队</option></select>}
                   <select disabled={!serviceAvailable || connection !== "connected"} value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); const model = models.find((item) => item.model === event.target.value); if (model && !model.efforts.includes(effort)) setEffort(model.defaultEffort); }}>
                     {models.map((model) => <option key={model.id} value={model.model}>{model.displayName}</option>)}
                   </select>
@@ -575,7 +651,7 @@ export default function App() {
       {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
-      {approval && <Modal title={approval.title} closable={false} onClose={() => {}}><p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
+      {approval && <Modal title={approval.title} closable={false} onClose={() => {}}>{approvals.length > 1 && <div className="approval-queue-count">待处理审批 1 / {approvals.length}</div>}<p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
       {error && <div className="toast"><AlertCircle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     </div>
   );
@@ -612,7 +688,7 @@ function TurnBlock({ items, metadata, live }: { items: TranscriptItem[]; metadat
 }
 
 function MessageRow({ item }: { item: TranscriptItem }) {
-  if (item.kind === "user") return <div className="user-row"><div className="user-message">{Boolean(item.imagePaths?.length) && <div className={`user-images ${item.imagePaths!.length > 1 ? "multiple" : ""}`}>{item.imagePaths!.map((path) => <LocalImage key={path} path={path}/>)}</div>}{item.text && <div className="user-bubble"><Markdown text={item.text}/></div>}</div></div>;
+  if (item.kind === "user") return (item.text || item.imagePaths?.length) ? <div className="user-row"><div className="user-message">{Boolean(item.imagePaths?.length) && <div className={`user-images ${item.imagePaths!.length > 1 ? "multiple" : ""}`}>{item.imagePaths!.map((path) => <LocalImage key={path} path={path}/>)}</div>}{item.text && <div className="user-bubble"><Markdown text={item.text}/></div>}</div></div> : null;
   if (item.kind === "assistant") return <div className="assistant-answer"><Markdown text={item.text}/></div>;
   return <ToolRow item={item}/>;
 }
@@ -668,6 +744,19 @@ function ToolRow({ item }: { item: TranscriptItem }) {
 
 function PlanPanel({ steps }: { steps: PlanStep[] }) { return <div className="plan-panel"><div className="plan-title"><Sparkles size={14}/><span>执行计划</span></div>{steps.map((step) => <div className="plan-step" key={step.id}>{/complete/i.test(step.status) ? <Check size={13}/> : /progress|running|active/i.test(step.status) ? <span className="spinner small"/> : <span className="plan-dot"/>}<span>{step.text}</span></div>)}</div>; }
 
+function GoalPanel({ objective }: { objective: string }) {
+  return <div className="goal-panel"><Target size={15}/><strong>进行中的目标</strong><span>{objective}</span></div>;
+}
+
+function PromptQueuePanel({ items, onRemove }: { items: QueuedPrompt[]; onRemove: (id: string) => Promise<void> }) {
+  return <div className="prompt-queue-panel"><div className="prompt-queue-title"><MessageSquare size={13}/><span>已排队 {items.length} 条后续消息</span><small>任务结束后发送</small></div>{items.slice(0, 3).map((item) => <div className="prompt-queue-row" key={item.id}><span>{queuedPromptLabel(item)}</span><button className="icon-button" title="删除排队消息" onClick={() => void onRemove(item.id)}><X size={11}/></button></div>)}</div>;
+}
+
+function queuedPromptLabel(item: QueuedPrompt) {
+  if (item.text.trim()) return item.text.trim();
+  return item.input.filter((input) => input.type !== "text").map((input) => input.name || input.path?.split(/[\\/]/).at(-1)).filter(Boolean).join("、") || "附件";
+}
+
 function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, onClose, onSave }: {
   config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; workspace: string; setWorkspace: (value: string) => void;
   access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; activeProfileId: string;
@@ -706,6 +795,7 @@ function ServiceState({ status, onStart }: { status: ServiceStatus; onStart: () 
 function EmptyState({ cwd }: { cwd?: string }) { return <div className="empty-state"><div className="relay-mark"><Sparkles size={24}/></div><h1>Codex 要处理什么？</h1><p>{cwd || "选择项目目录后开始任务"}</p></div>; }
 
 function sandboxPolicy(access: WorkspaceAccess, cwd: string) { if (access === "fullAccess") return { type: "dangerFullAccess" }; if (access === "readOnly") return { type: "readOnly", networkAccess: false }; return { type: "workspaceWrite", writableRoots: cwd ? [cwd] : [], networkAccess: false }; }
+function storedWorkspaceAccess(): WorkspaceAccess { const value = localStorage.getItem("relay.desktop.access"); return value === "readOnly" || value === "fullAccess" || value === "workspaceWrite" ? value : "workspaceWrite"; }
 function effortName(value: string) { return ({ none: "关闭", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "最高", ultra: "极高+" } as Record<string, string>)[value] || value; }
 function errorText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function firstLine(value: string) { return value.split(/\r?\n/)[0]?.trim() || "命令"; }

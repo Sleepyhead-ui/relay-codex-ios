@@ -20,6 +20,11 @@ struct ApprovalSheet: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(approval.title)
                             .font(.system(size: 20, weight: .semibold))
+                        if store.pendingApprovals.count > 1 {
+                            Text("待处理审批 1 / \(store.pendingApprovals.count)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
                         Text(approval.summary)
                             .font(.system(size: 14))
                             .foregroundStyle(.secondary)
@@ -73,4 +78,3 @@ struct ApprovalSheet: View {
         .interactiveDismissDisabled()
     }
 }
-

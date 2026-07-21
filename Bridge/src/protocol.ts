@@ -16,7 +16,12 @@ export interface ClientServerResponseMessage {
   error?: JsonObject;
 }
 
-export type ClientMessage = ClientRpcMessage | ClientServerResponseMessage;
+export interface ClientRpcCancelMessage {
+  type: "rpcCancel";
+  id: string;
+}
+
+export type ClientMessage = ClientRpcMessage | ClientRpcCancelMessage | ClientServerResponseMessage;
 
 export function isAuthorized(header: string | undefined, token: string): boolean {
   if (!header?.startsWith("Bearer ")) return false;
@@ -52,10 +57,14 @@ export function parseClientMessage(raw: string): ClientMessage {
     return result;
   }
 
+  if (value.type === "rpcCancel") {
+    if (typeof value.id !== "string" || !value.id) throw new Error("Invalid rpc cancellation id.");
+    return { type: "rpcCancel", id: value.id };
+  }
+
   throw new Error(`Unsupported message type: ${value.type}`);
 }
 
 export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-

@@ -37,6 +37,7 @@ export interface TranscriptItem {
   cwd?: string;
   exitCode?: number;
   imagePaths?: string[];
+  goal?: string;
 }
 
 export interface TurnMetadata {
@@ -60,6 +61,14 @@ export interface ModelOption {
 
 export interface PlanStep { id: string; text: string; status: string }
 export interface Attachment { path: string; name: string; isImage: boolean }
+export interface QueuedPrompt {
+  id: string;
+  threadId: string;
+  clientUserMessageId: string;
+  text: string;
+  input: Array<{ type?: string; text?: string; name?: string; path?: string }>;
+  createdAt: number;
+}
 export type WorkspaceAccess = "readOnly" | "workspaceWrite" | "fullAccess";
 
 export interface ApprovalRequest {

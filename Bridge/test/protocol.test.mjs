@@ -28,3 +28,9 @@ test("rejects malformed messages", () => {
   assert.throws(() => parseClientMessage('{"type":"unknown"}'), /Unsupported/);
 });
 
+test("parses rpc cancellation messages", () => {
+  assert.deepEqual(parseClientMessage('{"type":"rpcCancel","id":"mobile-1"}'), {
+    type: "rpcCancel",
+    id: "mobile-1",
+  });
+});

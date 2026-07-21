@@ -24,6 +24,11 @@ struct ComposerView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            if let objective = store.currentGoal {
+                ActiveGoalPanel(objective: objective)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             if let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
                 ContextPressureNotice(
                     percentage: percentage,
@@ -477,7 +482,7 @@ struct ComposerView: View {
 
 private struct FollowUpQueuePanel: View {
     let items: [QueuedFollowUp]
-    let remove: (UUID) -> Void
+    let remove: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -522,6 +527,33 @@ private struct FollowUpQueuePanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(RelayTheme.hairline, lineWidth: 1)
+        }
+    }
+}
+
+private struct ActiveGoalPanel: View {
+    let objective: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "scope")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("进行中的目标")
+                .font(.system(size: 12, weight: .semibold))
+            Text(objective)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 40)
+        .background(RelayTheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(RelayTheme.hairline, lineWidth: 1)
         }
     }

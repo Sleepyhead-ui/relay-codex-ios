@@ -31,6 +31,7 @@ export class BridgeRpc {
     const promise = new Promise<any>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        void window.relayDesktop.send({ type: "rpcCancel", id }).catch(() => {});
         reject(new Error(`${method} 请求超时`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });

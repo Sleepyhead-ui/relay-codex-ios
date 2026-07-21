@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyUserMessagePlacements, bindUserPrompt, formatElapsed, mergeSnapshot, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, extractGoalContext, formatElapsed, mergeSnapshot, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("uses timestamps when an active turn carries a zero history duration", () => {
@@ -129,5 +129,16 @@ describe("desktop transcript", () => {
       { messageId: "user.2", threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 2 },
     ], "thread.1", "turn.1");
     expect(placed.map((item) => item.id)).toEqual(["user.1", "progress.1", "user.2", "progress.2"]);
+  });
+
+  it("extracts only the objective from internal goal context", () => {
+    const parsed = extractGoalContext(`before\n<codex_internal_context source="goal">\n<objective>完成第一、第二阶段</objective>\n<status>active</status>\nInternal continuation instructions\n</codex_internal_context>\nafter`);
+    expect(parsed.text).toBe("before\n\nafter");
+    expect(parsed.objective).toBe("完成第一、第二阶段");
+    const item = parseItem({
+      id: "goal.1", type: "userMessage", content: [{ type: "text", text: `<codex_internal_context source="goal"><objective>完成同步核心</objective><internal>do not show</internal></codex_internal_context>` }],
+    }, "turn.1");
+    expect(item?.text).toBe("");
+    expect(item?.goal).toBe("完成同步核心");
   });
 });

@@ -72,7 +72,10 @@ export class CodexAppServer {
         clearTimeout(timeout);
         resolve();
       };
-      const timeout = setTimeout(finish, 3_000);
+      const timeout = setTimeout(() => {
+        if (!child.killed) child.kill("SIGKILL");
+        finish();
+      }, 3_000);
       timeout.unref();
       child.once("exit", finish);
       if (!child.kill()) finish();
