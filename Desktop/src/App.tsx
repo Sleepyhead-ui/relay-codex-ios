@@ -234,7 +234,6 @@ export default function App() {
       setService(status);
       if (!status.connection) throw new Error("远程服务没有返回连接信息。");
       setConfig(status.connection);
-      await window.relayDesktop.connect(status.connection);
     } catch (reason) {
       setService({ state: "failed", message: errorText(reason) });
       setError(errorText(reason));

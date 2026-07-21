@@ -82,7 +82,11 @@ function bridgeRoot() {
 }
 
 function publishService() {
-  publish("relay:service", { state: serviceState, message: serviceMessage });
+  publish("relay:service", {
+    state: serviceState,
+    message: serviceMessage,
+    ...(connectionConfig ? { connection: connectionConfig } : {}),
+  });
 }
 
 function publishUpdate(patch) {
@@ -141,7 +145,7 @@ async function startRemoteService() {
       RELAY_HOST: url.hostname,
       RELAY_PORT: url.port || "8765",
       RELAY_ADVERTISE_URL: endpoint,
-      RELAY_DESKTOP_SYNC: "true",
+      RELAY_DESKTOP_SYNC: "false",
       RELAY_DESKTOP_CDP_PORT: "9223",
       CODEX_BIN: path.join(bridgeRoot(), "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
     },
@@ -172,6 +176,7 @@ function finalizeLocalConnection(endpoint, result) {
   saveConnectionConfig(connectionConfig);
   serviceState = result.state === "running" ? "running" : "starting";
   serviceMessage = serviceState === "running" ? "远程服务已启动" : "Codex 正在初始化";
+  openSocket(connectionConfig);
   publishService();
   return { ...result, state: serviceState, message: serviceMessage, connection: connectionConfig };
 }

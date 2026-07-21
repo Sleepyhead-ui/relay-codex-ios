@@ -161,7 +161,7 @@ export class DesktopSync {
 
   private async isCdpAvailable(port: number): Promise<boolean> {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(600) });
+      const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1_200) });
       return response.ok;
     } catch {
       return false;
