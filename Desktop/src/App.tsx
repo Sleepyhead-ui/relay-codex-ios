@@ -964,7 +964,20 @@ function TurnBlock({ items, metadata, live }: { items: TranscriptItem[]; metadat
   }
   flush();
   if (live && !segments.some((segment) => segment.type === "activity")) segments.push({ type: "activity", id: "pending", items: [] });
-  return <div className="turn-block">{segments.map((segment, index) => segment.type === "activity" ? <ActivityBlock key={`${segment.id}.${index}`} items={segment.items} metadata={metadata} live={live && index === segments.length - 1}/> : <MessageRow key={segment.item.id} item={segment.item}/>)}</div>;
+  const firstActivityIndex = segments.findIndex((segment) => segment.type === "activity");
+  const hasActivityContent = segments.some((segment) => segment.type === "activity" && segment.items.some((item) => item.kind !== "plan"));
+  const [activityExpanded, setActivityExpanded] = useState(live || !metadata);
+  useEffect(() => { setActivityExpanded(live || !metadata); }, [live, metadata]);
+  return <div className="turn-block">{segments.map((segment, index) => segment.type === "activity" ? <ActivityBlock
+    key={`${segment.id}.${index}`}
+    items={segment.items}
+    metadata={metadata}
+    live={live}
+    showHeader={Boolean(metadata) && index === firstActivityIndex}
+    canExpand={hasActivityContent}
+    expanded={activityExpanded}
+    onToggle={() => setActivityExpanded((value) => !value)}
+  /> : <MessageRow key={segment.item.id} item={segment.item}/>)}</div>;
 }
 
 function MessageRow({ item }: { item: TranscriptItem }) {
@@ -984,15 +997,14 @@ function LocalImage({ path }: { path: string }) {
   return <button className="user-image" title={path.split(/[\\/]/).at(-1)} onClick={() => void window.relayDesktop.showFile(path)}><img src={source} alt={path.split(/[\\/]/).at(-1) || "附件图片"}/></button>;
 }
 
-function ActivityBlock({ items, metadata, live }: { items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean }) {
-  const [expanded, setExpanded] = useState(live);
+function ActivityBlock({ items, metadata, live, showHeader, canExpand, expanded, onToggle }: { items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean; showHeader: boolean; canExpand: boolean; expanded: boolean; onToggle: () => void }) {
   const [, setTick] = useState(0);
-  useEffect(() => { if (!live) setExpanded(false); }, [live]);
-  useEffect(() => { if (!live) return; const timer = setInterval(() => setTick((value) => value + 1), 1000); return () => clearInterval(timer); }, [live]);
+  useEffect(() => { if (!live || !showHeader) return; const timer = setInterval(() => setTick((value) => value + 1), 1000); return () => clearInterval(timer); }, [live, showHeader]);
   const latestReasoning = [...items].reverse().find((item) => item.kind === "reasoning");
-  const duration = formatElapsed(metadata?.startedAt, metadata?.completedAt, metadata?.durationMs);
+  const hasDuration = (metadata?.durationMs || 0) > 0 || (metadata?.startedAt != null && (live || metadata.completedAt != null));
+  const duration = hasDuration ? formatElapsed(metadata?.startedAt, metadata?.completedAt, metadata?.durationMs) : undefined;
   const statusLabel = live ? "正在处理" : metadata?.status === "failed" ? "处理失败" : metadata?.status === "interrupted" ? "已停止" : "已处理";
-  const label = `${statusLabel} · ${duration}`;
+  const label = duration ? `${statusLabel} · ${duration}` : statusLabel;
   const visible = items.filter((item) => item.kind !== "plan" && (item.kind !== "reasoning" || item.id === latestReasoning?.id));
   const segments: ({ commentary?: TranscriptItem; reasoning?: TranscriptItem; execution?: TranscriptItem[]; id: string })[] = [];
   let execution: TranscriptItem[] = [];
@@ -1003,7 +1015,11 @@ function ActivityBlock({ items, metadata, live }: { items: TranscriptItem[]; met
     else execution.push(item);
   }
   flush();
-  return <div className={`activity-block ${live ? "live" : metadata?.status || ""}`}><button className="activity-header" onClick={() => setExpanded((value) => !value)}><span className="activity-status">{live ? <span className="spinner"/> : metadata?.status === "failed" ? <AlertCircle size={15}/> : metadata?.status === "interrupted" ? <CircleStop size={15}/> : <Check size={15}/>}</span><span className="activity-label">{label}</span>{segments.length > 0 && <ChevronDown size={14} className={expanded ? "rotated" : ""}/>}</button>{expanded && <div className="activity-content">{segments.map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : segment.reasoning ? <div className="reasoning-summary" key={segment.id}><Sparkles size={13}/><Markdown text={lastLine(segment.reasoning.text || segment.reasoning.detail || "思考")}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}</div>}</div>;
+  if (!showHeader && !expanded) return null;
+  return <div className={`activity-block ${!showHeader ? "continuation" : ""} ${live ? "live" : metadata?.status || ""}`}>
+    {showHeader && <button className="activity-header" onClick={() => canExpand && onToggle()}><span className="activity-status">{live ? <span className="spinner"/> : metadata?.status === "failed" ? <AlertCircle size={15}/> : metadata?.status === "interrupted" ? <CircleStop size={15}/> : <Check size={15}/>}</span><span className="activity-label">{label}</span>{canExpand && <ChevronDown size={14} className={expanded ? "rotated" : ""}/>}</button>}
+    {expanded && <div className="activity-content">{segments.map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : segment.reasoning ? <div className="reasoning-summary" key={segment.id}><Sparkles size={13}/><Markdown text={lastLine(segment.reasoning.text || segment.reasoning.detail || "思考")}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}</div>}
+  </div>;
 }
 
 function ExecutionGroup({ items }: { items: TranscriptItem[] }) {

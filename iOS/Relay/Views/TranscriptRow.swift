@@ -2,11 +2,20 @@ import SwiftUI
 
 struct TurnGroupView: View {
     let group: TranscriptGroup
+    @State private var activityExpanded: Bool
+
+    init(group: TranscriptGroup) {
+        self.group = group
+        _activityExpanded = State(initialValue: group.metadata.isRunning || group.turnId == nil)
+    }
 
     var body: some View {
         let timeline = timelineSegments
         let firstActivityIndex = timeline.firstIndex(where: \.isActivity)
-        let lastActivityIndex = timeline.lastIndex(where: \.isActivity)
+        let hasActivityContent = timeline.contains { segment in
+            guard case .activity(_, let items) = segment else { return false }
+            return items.contains { $0.kind != .plan }
+        }
 
         VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(timeline.enumerated()), id: \.element.id) { index, segment in
@@ -17,8 +26,10 @@ struct TurnGroupView: View {
                     RunActivityView(
                         items: items,
                         metadata: group.metadata,
-                        isLive: group.metadata.isRunning && index == lastActivityIndex,
-                        showsTurnDuration: index == firstActivityIndex
+                        isLive: group.metadata.isRunning,
+                        showsHeader: group.turnId != nil && index == firstActivityIndex,
+                        canExpand: hasActivityContent,
+                        expanded: $activityExpanded
                     )
                 case .item(let item):
                     TranscriptRow(item: item)
@@ -270,56 +281,51 @@ private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
     let isLive: Bool
-    let showsTurnDuration: Bool
-    @State private var expanded: Bool
-
-    init(items: [TranscriptItem], metadata: TurnMetadata, isLive: Bool, showsTurnDuration: Bool) {
-        self.items = items
-        self.metadata = metadata
-        self.isLive = isLive
-        self.showsTurnDuration = showsTurnDuration
-        _expanded = State(initialValue: isLive)
-    }
+    let showsHeader: Bool
+    let canExpand: Bool
+    @Binding var expanded: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Button {
-                guard !activitySections.isEmpty else { return }
-                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
-            } label: {
-                HStack(alignment: .center, spacing: 7) {
-                    Group {
-                        if isLive {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .tint(.secondary)
-                        } else {
-                            Image(systemName: statusIcon)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(statusColor)
+            if showsHeader {
+                Button {
+                    guard canExpand else { return }
+                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                } label: {
+                    HStack(alignment: .center, spacing: 7) {
+                        Group {
+                            if isLive {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.secondary)
+                            } else {
+                                Image(systemName: statusIcon)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(statusColor)
+                            }
+                        }
+                        .frame(width: 14, height: 16, alignment: .center)
+
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            Text(activityLabel)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 6)
+                        if canExpand {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(expanded ? 180 : 0))
+                                .frame(height: 16, alignment: .center)
                         }
                     }
-                    .frame(width: 14, height: 16, alignment: .center)
-
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text(activityLabel)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer(minLength: 6)
-                    if !activitySections.isEmpty {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 180 : 0))
-                            .frame(height: 16, alignment: .center)
-                    }
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 4)
                 }
-                .contentShape(Rectangle())
-                .padding(.vertical, 4)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             if expanded {
                 VStack(alignment: .leading, spacing: 7) {
@@ -355,7 +361,7 @@ private struct RunActivityView: View {
         }
         .animation(.easeOut(duration: 0.16), value: latestReasoningText)
         .onChange(of: isLive) { running in
-            if !running {
+            if showsHeader, !running {
                 withAnimation(.easeInOut(duration: 0.16)) { expanded = false }
             }
         }
@@ -409,11 +415,18 @@ private struct RunActivityView: View {
     }
 
     private var activityLabel: String {
-        let duration = formatDuration(milliseconds: elapsedMilliseconds)
-        if isLive { return "正在处理 · \(duration)" }
-        if metadata.status == "failed" { return showsTurnDuration ? "处理失败 · \(duration)" : "处理失败" }
-        if metadata.status == "interrupted" { return showsTurnDuration ? "已停止 · \(duration)" : "已停止" }
-        return showsTurnDuration ? "已处理 · \(duration)" : "已处理"
+        let label: String
+        if isLive { label = "正在处理" }
+        else if metadata.status == "failed" { label = "处理失败" }
+        else if metadata.status == "interrupted" { label = "已停止" }
+        else { label = "已处理" }
+        guard hasElapsedTiming else { return label }
+        return "\(label) · \(formatDuration(milliseconds: elapsedMilliseconds))"
+    }
+
+    private var hasElapsedTiming: Bool {
+        if let duration = metadata.durationMs, duration > 0 { return true }
+        return metadata.startedAt != nil && (isLive || metadata.completedAt != nil)
     }
 
     private var statusIcon: String {

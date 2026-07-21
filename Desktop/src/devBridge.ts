@@ -16,6 +16,7 @@ export function installDevBridge() {
     { id: "comment.1", type: "agentMessage", phase: "commentary", text: "我会先核对 Bridge 的事件转发与会话恢复路径，再验证双端是否接收同一组增量事件。" },
     { id: "command.1", type: "commandExecution", command: "npm test", aggregatedOutput: "18 tests passed", status: "completed", exitCode: 0, cwd: "C:\\Projects\\Relay" },
     { id: "file.1", type: "fileChange", status: "completed", changes: [{ path: "Desktop/src/App.tsx", diff: "--- a/Desktop/src/App.tsx\n+++ b/Desktop/src/App.tsx\n@@ -10,2 +10,3 @@\n-old line\n+new line\n context" }] },
+    { id: "user.followup", type: "userMessage", content: [{ type: "text", text: "继续检查重连后的显示顺序" }] },
     { id: "comment.2", type: "agentMessage", phase: "commentary", text: "实时通道已经连通。现在正在检查界面折叠、执行计划和断线恢复。" },
   ];
   const emit = (message: any) => messageListeners.forEach((listener) => listener(message));
