@@ -101,6 +101,7 @@ export class SessionActivityTracker {
       const itemIndexes = new Map<string, number>();
       const toolIndexes = new Map<string, number>();
       let lastUserIndex: number | undefined;
+      let responseIndex = 0;
 
       for (const line of contents.slice(lineStart).split(/\r?\n/)) {
         if (!line.trim()) continue;
@@ -130,7 +131,8 @@ export class SessionActivityTracker {
         }
 
         if (event.type !== "response_item" || !isObject(event.payload)) continue;
-        const item = responseItem(event.payload);
+        responseIndex += 1;
+        const item = responseItem(event.payload, `rollout.${turnId ?? "turn"}.${responseIndex}`);
         if (item) {
           const id = String(item.id);
           const existingIndex = itemIndexes.get(id);
@@ -240,13 +242,14 @@ export class SessionActivityTracker {
   }
 }
 
-function responseItem(payload: JsonObject): JsonObject | null {
+function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | null {
   const type = typeof payload.type === "string" ? payload.type : "";
-  const id = typeof payload.id === "string" ? payload.id : undefined;
-  if (!id) return null;
+  const payloadId = typeof payload.id === "string" ? payload.id : undefined;
 
   if (type === "message") {
     const role = typeof payload.role === "string" ? payload.role : "assistant";
+    const id = payloadId ?? (role === "user" ? fallbackId : undefined);
+    if (!id) return null;
     const content = Array.isArray(payload.content) ? payload.content : [];
     const text = content.flatMap((part) => {
       if (!isObject(part)) return [];
@@ -262,6 +265,9 @@ function responseItem(payload: JsonObject): JsonObject | null {
       phase: typeof payload.phase === "string" ? payload.phase : "commentary",
     };
   }
+
+  const id = payloadId;
+  if (!id) return null;
 
   if (type === "reasoning") {
     const summary = Array.isArray(payload.summary)

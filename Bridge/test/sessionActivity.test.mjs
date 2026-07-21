@@ -19,6 +19,16 @@ test("infers an active desktop turn from the rollout file after bridge restart",
         payload: { type: "task_started", turn_id: turnId, started_at: 1784477786 },
       },
       {
+        timestamp: "2026-07-19T16:16:27.000Z",
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect this task" }] },
+      },
+      {
+        timestamp: "2026-07-19T16:16:27.001Z",
+        type: "event_msg",
+        payload: { type: "user_message", client_id: "client.user.1", message: "Inspect this task" },
+      },
+      {
         timestamp: "2026-07-19T16:16:30.000Z",
         type: "response_item",
         payload: { type: "reasoning", id: "reasoning.1", summary: [{ type: "summary_text", text: "Inspecting state" }] },
@@ -57,12 +67,14 @@ test("infers an active desktop turn from the rollout file after bridge restart",
     assert.equal(active.activeTurnId, turnId);
     assert.equal(active.startedAt, 1784477786);
     const turn = await sessions.turnSnapshot(threadId);
-    assert.equal(turn.items.length, 3);
-    assert.deepEqual(turn.items.map((item) => item.type), ["reasoning", "agentMessage", "dynamicToolCall"]);
-    assert.equal(turn.items[2].tool, "exec");
-    assert.match(turn.items[2].arguments, /Get-ChildItem -Force/);
-    assert.equal(turn.items[2].result, "Exit code: 0");
-    assert.equal(turn.items[2].status, "completed");
+    assert.equal(turn.items.length, 4);
+    assert.deepEqual(turn.items.map((item) => item.type), ["userMessage", "reasoning", "agentMessage", "dynamicToolCall"]);
+    assert.equal(turn.items[0].clientId, "client.user.1");
+    assert.equal(turn.items[0].content[0].text, "Inspect this task");
+    assert.equal(turn.items[3].tool, "exec");
+    assert.match(turn.items[3].arguments, /Get-ChildItem -Force/);
+    assert.equal(turn.items[3].result, "Exit code: 0");
+    assert.equal(turn.items[3].status, "completed");
 
     await writeFile(sessionPath, `${JSON.stringify({
       timestamp: "2026-07-19T16:20:00.000Z",

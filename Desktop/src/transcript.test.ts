@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindUserPrompt, mergeSnapshot, parseItem } from "./transcript";
+import { applyUserMessagePlacements, bindUserPrompt, mergeSnapshot, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
   it("extracts the actual shell command from an exec wrapper", () => {
@@ -80,5 +80,46 @@ describe("desktop transcript", () => {
     const bound = bindUserPrompt(messages, "user.1", "turn.1");
     expect(bound.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
     expect(bound[0].turnId).toBe("turn.1");
+  });
+
+  it("keeps a start prompt ahead of activity after every incomplete snapshot", () => {
+    const existing = [
+      { id: "user.1", turnId: "turn.1", kind: "user" as const, text: "开始任务" },
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查" },
+    ];
+    const snapshot = [
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查" },
+      { id: "command.1", turnId: "turn.1", kind: "command" as const, text: "npm test" },
+    ];
+    const merged = mergeSnapshot(existing, snapshot, "turn.1");
+    expect(merged.map((item) => item.id)).toEqual(["progress.1", "command.1", "user.1"]);
+
+    const placed = applyUserMessagePlacements(merged, [{
+      messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1,
+    }], "thread.1", "turn.1");
+    expect(placed.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
+    const mergedAgain = mergeSnapshot(placed, snapshot, "turn.1");
+    const placedAgain = applyUserMessagePlacements(mergedAgain, [{
+      messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1,
+    }], "thread.1", "turn.1");
+    expect(placedAgain.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
+  });
+
+  it("keeps a steer prompt at its actual point in the activity timeline", () => {
+    const existing = [
+      { id: "user.1", turnId: "turn.1", kind: "user" as const, text: "开始任务" },
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "第一阶段" },
+      { id: "user.2", turnId: "turn.1", kind: "user" as const, text: "继续检查这里" },
+    ];
+    const snapshot = [
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "第一阶段" },
+      { id: "progress.2", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "第二阶段" },
+    ];
+    const merged = mergeSnapshot(existing, snapshot, "turn.1");
+    const placed = applyUserMessagePlacements(merged, [
+      { messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1 },
+      { messageId: "user.2", threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 2 },
+    ], "thread.1", "turn.1");
+    expect(placed.map((item) => item.id)).toEqual(["user.1", "progress.1", "user.2", "progress.2"]);
   });
 });

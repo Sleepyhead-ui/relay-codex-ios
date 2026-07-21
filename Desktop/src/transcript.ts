@@ -1,5 +1,13 @@
 import type { ApprovalRequest, ModelOption, ThreadSummary, TranscriptItem, TurnMetadata } from "./types";
 
+export interface UserMessagePlacement {
+  messageId: string;
+  threadId: string;
+  turnId?: string;
+  afterItemId?: string;
+  sequence: number;
+}
+
 export function parseThread(value: any): ThreadSummary | null {
   if (!value?.id) return null;
   const status = typeof value.status === "string" ? value.status : value.status?.type || "idle";
@@ -118,6 +126,34 @@ export function bindUserPrompt(items: TranscriptItem[], messageId: string, turnI
   const firstTurnItem = remaining.findIndex((item) => item.turnId === turnId);
   const insertion = firstTurnItem >= 0 ? firstTurnItem : Math.min(index, remaining.length);
   return [...remaining.slice(0, insertion), prompt, ...remaining.slice(insertion)];
+}
+
+export function applyUserMessagePlacements(
+  items: TranscriptItem[],
+  placements: Iterable<UserMessagePlacement>,
+  threadId: string,
+  turnId: string,
+) {
+  let ordered = items;
+  const matching = [...placements]
+    .filter((placement) => placement.threadId === threadId && placement.turnId === turnId)
+    .sort((left, right) => left.sequence - right.sequence);
+  for (const placement of matching) {
+    const index = ordered.findIndex((item) => item.id === placement.messageId && item.kind === "user");
+    if (index < 0) continue;
+    const prompt = { ...ordered[index], turnId };
+    const remaining = ordered.filter((_, itemIndex) => itemIndex !== index);
+    let insertion: number;
+    if (placement.afterItemId) {
+      const anchor = remaining.findIndex((item) => item.id === placement.afterItemId);
+      insertion = anchor >= 0 ? anchor + 1 : Math.min(index, remaining.length);
+    } else {
+      const firstTurnItem = remaining.findIndex((item) => item.turnId === turnId);
+      insertion = firstTurnItem >= 0 ? firstTurnItem : Math.min(index, remaining.length);
+    }
+    ordered = [...remaining.slice(0, insertion), prompt, ...remaining.slice(insertion)];
+  }
+  return ordered;
 }
 
 export function mergeSnapshot(existing: TranscriptItem[], snapshot: TranscriptItem[], turnId: string) {

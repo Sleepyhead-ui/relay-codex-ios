@@ -8,9 +8,10 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  bindUserPrompt, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  applyUserMessagePlacements, bindUserPrompt, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
+import type { UserMessagePlacement } from "./transcript";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, ModelOption,
   PlanStep, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
@@ -54,6 +55,10 @@ export default function App() {
   const activeTurnRef = useRef<string>();
   const profileSwitchingRef = useRef(false);
   const pendingStartMessageRef = useRef<string>();
+  const userMessagePlacementsRef = useRef(new Map<string, UserMessagePlacement>());
+  const placementSequenceRef = useRef(0);
+  const messagesRef = useRef<TranscriptItem[]>([]);
+  const threadMessageCacheRef = useRef(new Map<string, TranscriptItem[]>());
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -64,6 +69,7 @@ export default function App() {
   const selectedModelOption = models.find((model) => model.model === selectedModel || model.id === selectedModel);
   const activeCodexProfile = codexProfiles.find((profile) => profile.id === activeProfileId);
   const projects = useMemo(() => groupProjects(threads), [threads]);
+  messagesRef.current = messages;
 
   useEffect(() => { selectedRef.current = selectedThreadId; }, [selectedThreadId]);
   useEffect(() => { activeTurnRef.current = activeTurnId; }, [activeTurnId]);
@@ -141,6 +147,8 @@ export default function App() {
       selectedRef.current = undefined;
       setThreads([]);
       setMessages([]);
+      userMessagePlacementsRef.current.clear();
+      threadMessageCacheRef.current.clear();
       setTurns({});
       setModels([]);
     } else if (message.status === "ready" && profileSwitchingRef.current) {
@@ -188,11 +196,14 @@ export default function App() {
 
   async function selectThread(id: string) {
     const previous = selectedRef.current;
+    if (previous && previous !== id) threadMessageCacheRef.current.set(previous, messagesRef.current);
     selectedRef.current = id;
     setSelectedThreadId(id);
     localStorage.setItem("relay.desktop.thread", id);
     setLoadingThread(true);
-    setMessages([]);
+    const cachedMessages = threadMessageCacheRef.current.get(id) || [];
+    setMessages(cachedMessages);
+    messagesRef.current = cachedMessages;
     setTurns({});
     setPlan([]);
     setActiveTurnId(undefined);
@@ -218,11 +229,22 @@ export default function App() {
           if (item) loadedMessages.push(item);
         }
       }
-      setMessages(loadedMessages);
-      setTurns(loadedTurns);
       const active = [...rawTurns].reverse().find((turn: any) => isRunningStatus(turn.status));
       const threadActive = isRunningStatus(result.thread?.status?.type || result.thread?.status);
-      setActiveTurnId(active?.id || (threadActive ? rawTurns.at(-1)?.id : undefined));
+      const nextActiveTurnId = active?.id || (threadActive ? rawTurns.at(-1)?.id : undefined);
+      const loadedIds = new Set(loadedMessages.map((item) => item.id));
+      for (const item of cachedMessages) {
+        const placement = userMessagePlacementsRef.current.get(item.id);
+        if (placement?.threadId === id && !loadedIds.has(item.id)) loadedMessages.push(item);
+      }
+      const orderedMessages = nextActiveTurnId
+        ? applyUserMessagePlacements(loadedMessages, userMessagePlacementsRef.current.values(), id, nextActiveTurnId)
+        : loadedMessages;
+      setMessages(orderedMessages);
+      messagesRef.current = orderedMessages;
+      threadMessageCacheRef.current.set(id, orderedMessages);
+      setTurns(loadedTurns);
+      setActiveTurnId(nextActiveTurnId);
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
       try {
@@ -237,7 +259,12 @@ export default function App() {
     if (selectedRef.current !== threadId || !snapshot?.known || !snapshot.turnId) return;
     if (snapshot.isRunning) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
-    if (snapshotItems.length) setMessages((current) => mergeSnapshot(current, snapshotItems, snapshot.turnId));
+    if (snapshotItems.length) setMessages((current) => applyUserMessagePlacements(
+      mergeSnapshot(current, snapshotItems, snapshot.turnId),
+      userMessagePlacementsRef.current.values(),
+      threadId,
+      snapshot.turnId,
+    ));
     setTurns((current) => ({
       ...current,
       [snapshot.turnId]: {
@@ -357,9 +384,22 @@ export default function App() {
     if (connection !== "connected" || sending) return;
     setSending(true); setComposer("");
     const selectedAttachments = attachments; setAttachments([]);
+    let submittedMessageId: string | undefined;
     try {
       const threadId = selectedRef.current || await createThread(workspace);
       const clientId = crypto.randomUUID();
+      submittedMessageId = clientId;
+      const currentTurnId = activeTurnRef.current;
+      const afterItemId = currentTurnId
+        ? [...messagesRef.current].reverse().find((item) => item.turnId === currentTurnId)?.id
+        : undefined;
+      userMessagePlacementsRef.current.set(clientId, {
+        messageId: clientId,
+        threadId,
+        turnId: currentTurnId,
+        afterItemId,
+        sequence: ++placementSequenceRef.current,
+      });
       const imagePaths = selectedAttachments.filter((item) => item.isImage).map((item) => item.path);
       const display = [text, ...selectedAttachments.filter((item) => !item.isImage).map((item) => `附件 ${item.name}`)].filter(Boolean).join("\n\n");
       setMessages((current) => [...current, { id: clientId, kind: "user", text: display, imagePaths }]);
@@ -373,6 +413,8 @@ export default function App() {
       if (activeTurnRef.current) {
         const result = await rpc.rpc("turn/steer", { threadId, expectedTurnId: activeTurnRef.current, clientUserMessageId: clientId, input }, 120_000);
         const confirmed = result.turnId || activeTurnRef.current;
+        const placement = userMessagePlacementsRef.current.get(clientId);
+        if (placement && confirmed) userMessagePlacementsRef.current.set(clientId, { ...placement, turnId: confirmed });
         setMessages((current) => current.map((item) => item.id === clientId ? { ...item, turnId: confirmed } : item));
       } else {
         const result = await rpc.rpc("turn/start", {
@@ -388,7 +430,10 @@ export default function App() {
         }
       }
     } catch (reason) {
-      if (pendingStartMessageRef.current) pendingStartMessageRef.current = undefined;
+      if (submittedMessageId) userMessagePlacementsRef.current.delete(submittedMessageId);
+      if (pendingStartMessageRef.current) {
+        pendingStartMessageRef.current = undefined;
+      }
       setComposer(text); setAttachments(selectedAttachments); setError(errorText(reason));
     }
     finally { setSending(false); }
@@ -398,7 +443,14 @@ export default function App() {
     const messageId = pendingStartMessageRef.current;
     if (!messageId) return;
     pendingStartMessageRef.current = undefined;
-    setMessages((current) => bindUserPrompt(current, messageId, turnId));
+    const placement = userMessagePlacementsRef.current.get(messageId);
+    if (placement) userMessagePlacementsRef.current.set(messageId, { ...placement, turnId });
+    setMessages((current) => applyUserMessagePlacements(
+      bindUserPrompt(current, messageId, turnId),
+      userMessagePlacementsRef.current.values(),
+      selectedRef.current || placement?.threadId || "",
+      turnId,
+    ));
   }
 
   async function stopTurn() {

@@ -58,6 +58,8 @@ final class RelayStore: ObservableObject {
     private var workingDirectoryOverrides: [String: String] = [:]
     private var acceptedMessageIds = Set<String>()
     private var outboundDrafts: [String: OutboundDraft] = [:]
+    private var userMessagePlacements: [String: UserMessagePlacement] = [:]
+    private var nextUserMessageSequence = 0
     private var completedTurnIds = Set<String>()
     private var restorationTask: Task<Void, Never>?
     private var liveSessionSyncTask: Task<Void, Never>?
@@ -471,8 +473,18 @@ final class RelayStore: ObservableObject {
             let unresolvedMessages = messages.filter {
                 $0.deliveryState != nil && outboundDrafts[$0.id]?.threadId == id
             }
+            let placedMessages = messages.filter {
+                userMessagePlacements[$0.id]?.threadId == id
+            }
             let loadedIds = Set(loadedMessages.map(\.id))
-            for unresolved in unresolvedMessages where !loadedIds.contains(unresolved.id) {
+            let preservedMessages = (unresolvedMessages + placedMessages).reduce(into: [String: TranscriptItem]()) {
+                $0[$1.id] = $1
+            }.values.sorted {
+                let left = userMessagePlacements[$0.id]?.sequence ?? Int.max
+                let right = userMessagePlacements[$1.id]?.sequence ?? Int.max
+                return left < right
+            }
+            for unresolved in preservedMessages where !loadedIds.contains(unresolved.id) {
                 var preserved = unresolved
                 if preserved.deliveryState == .sending || preserved.deliveryState == .accepted {
                     preserved.deliveryState = .uncertain("连接恢复后仍在确认是否送达。")
@@ -492,6 +504,9 @@ final class RelayStore: ObservableObject {
             activeTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
             if activeTurnId == nil, threadIsActive {
                 activeTurnId = turns.last?["id"]?.stringValue
+            }
+            if let activeTurnId {
+                applyUserMessagePlacements(turnId: activeTurnId, threadId: id)
             }
             isRunning = threadIsActive || activeTurnId != nil
             if let runtime = try? await socket.rpc(
@@ -626,6 +641,13 @@ final class RelayStore: ObservableObject {
 
     private func startTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
         let clientMessageId = UUID().uuidString
+        nextUserMessageSequence += 1
+        userMessagePlacements[clientMessageId] = UserMessagePlacement(
+            threadId: threadId,
+            turnId: nil,
+            afterItemId: nil,
+            sequence: nextUserMessageSequence
+        )
         outboundDrafts[clientMessageId] = OutboundDraft(
             threadId: threadId,
             text: text,
@@ -677,7 +699,7 @@ final class RelayStore: ObservableObject {
                 }
                 if selectedThreadId == threadId,
                    messages.contains(where: { $0.id == clientMessageId }) {
-                    bindPendingUserPrompt(to: confirmedTurnId, threadId: threadId)
+                    bindUserPrompt(clientMessageId, to: confirmedTurnId, threadId: threadId)
                 }
                 if selectedThreadId == threadId, !alreadyCompleted {
                     turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
@@ -721,6 +743,14 @@ final class RelayStore: ObservableObject {
             return
         }
         let clientMessageId = UUID().uuidString
+        let afterItemId = messages.last(where: { $0.turnId == expectedTurnId })?.id
+        nextUserMessageSequence += 1
+        userMessagePlacements[clientMessageId] = UserMessagePlacement(
+            threadId: threadId,
+            turnId: expectedTurnId,
+            afterItemId: afterItemId,
+            sequence: nextUserMessageSequence
+        )
         outboundDrafts[clientMessageId] = OutboundDraft(
             threadId: threadId,
             text: text,
@@ -799,6 +829,7 @@ final class RelayStore: ObservableObject {
         composerText = draft.text
         attachments = draft.attachments
         messages.removeAll { $0.id == id }
+        userMessagePlacements.removeValue(forKey: id)
         outboundDrafts.removeValue(forKey: id)
         acceptedMessageIds.remove(id)
     }
@@ -1512,6 +1543,8 @@ final class RelayStore: ObservableObject {
         olderTurnsCursorByThread = [:]
         acceptedMessageIds = []
         outboundDrafts = [:]
+        userMessagePlacements = [:]
+        nextUserMessageSequence = 0
         completedTurnIds = []
         activeTurnId = nil
         isRunning = false
@@ -1631,17 +1664,23 @@ final class RelayStore: ObservableObject {
     }
 
     private func bindPendingUserPrompt(to turnId: String, threadId: String) {
+        guard selectedThreadId == threadId else { return }
+        guard let messageId = userMessagePlacements
+            .filter { entry in
+                let (messageId, placement) = entry
+                guard placement.threadId == threadId, placement.turnId == nil,
+                      let message = messages.first(where: { $0.id == messageId }) else { return false }
+                return message.deliveryState == .sending || message.deliveryState == .accepted
+            }
+            .max(by: { $0.value.sequence < $1.value.sequence })?.key else { return }
+        bindUserPrompt(messageId, to: turnId, threadId: threadId)
+    }
+
+    private func bindUserPrompt(_ messageId: String, to turnId: String, threadId: String) {
         guard selectedThreadId == threadId,
-              let index = messages.lastIndex(where: { item in
-                  item.role == .user
-                      && item.turnId == nil
-                      && outboundDrafts[item.id]?.threadId == threadId
-              }) else { return }
-        var prompt = messages.remove(at: index)
-        prompt.turnId = turnId
-        let insertion = messages.firstIndex(where: { $0.turnId == turnId })
-            ?? min(index, messages.endIndex)
-        messages.insert(prompt, at: insertion)
+              userMessagePlacements[messageId]?.threadId == threadId else { return }
+        userMessagePlacements[messageId]?.turnId = turnId
+        applyUserMessagePlacements(turnId: turnId, threadId: threadId)
     }
 
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
@@ -1667,9 +1706,35 @@ final class RelayStore: ObservableObject {
             return item
         }
         merged.append(contentsOf: existing.filter { !consumedExistingIds.contains($0.id) })
-        guard merged != existing else { return }
-        messages.removeAll { $0.turnId == turnId }
-        messages.insert(contentsOf: merged, at: min(firstIndex, messages.endIndex))
+        if merged != existing {
+            messages.removeAll { $0.turnId == turnId }
+            messages.insert(contentsOf: merged, at: min(firstIndex, messages.endIndex))
+        }
+        applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
+    }
+
+    private func applyUserMessagePlacements(turnId: String, threadId: String) {
+        let placements = userMessagePlacements
+            .filter { $0.value.threadId == threadId && $0.value.turnId == turnId }
+            .sorted { $0.value.sequence < $1.value.sequence }
+        for (messageId, placement) in placements {
+            guard let index = messages.firstIndex(where: {
+                $0.id == messageId && $0.role == .user
+            }) else { continue }
+            var prompt = messages.remove(at: index)
+            prompt.turnId = turnId
+            let insertion: Int
+            if let afterItemId = placement.afterItemId,
+               let anchorIndex = messages.firstIndex(where: { $0.id == afterItemId }) {
+                insertion = anchorIndex + 1
+            } else if placement.afterItemId == nil {
+                insertion = messages.firstIndex(where: { $0.turnId == turnId })
+                    ?? min(index, messages.endIndex)
+            } else {
+                insertion = min(index, messages.endIndex)
+            }
+            messages.insert(prompt, at: insertion)
+        }
     }
 
     private func semanticallyMatches(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
@@ -1765,4 +1830,11 @@ private struct OutboundDraft {
     let threadId: String
     let text: String
     let attachments: [PendingAttachment]
+}
+
+private struct UserMessagePlacement {
+    let threadId: String
+    var turnId: String?
+    let afterItemId: String?
+    let sequence: Int
 }
