@@ -1665,14 +1665,18 @@ final class RelayStore: ObservableObject {
 
     private func bindPendingUserPrompt(to turnId: String, threadId: String) {
         guard selectedThreadId == threadId else { return }
-        guard let messageId = userMessagePlacements
-            .filter { entry in
-                let (messageId, placement) = entry
-                guard placement.threadId == threadId, placement.turnId == nil,
-                      let message = messages.first(where: { $0.id == messageId }) else { return false }
-                return message.deliveryState == .sending || message.deliveryState == .accepted
+        var pending: (messageId: String, sequence: Int)?
+        for (messageId, placement) in userMessagePlacements {
+            guard placement.threadId == threadId, placement.turnId == nil,
+                  let message = messages.first(where: { $0.id == messageId }),
+                  (message.deliveryState == .sending || message.deliveryState == .accepted) else { continue }
+            if let current = pending, current.sequence >= placement.sequence {
+                continue
+            } else {
+                pending = (messageId, placement.sequence)
             }
-            .max(by: { $0.value.sequence < $1.value.sequence })?.key else { return }
+        }
+        guard let messageId = pending?.messageId else { return }
         bindUserPrompt(messageId, to: turnId, threadId: threadId)
     }
 
