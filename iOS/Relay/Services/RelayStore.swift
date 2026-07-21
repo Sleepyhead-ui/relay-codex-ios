@@ -39,6 +39,9 @@ final class RelayStore: ObservableObject {
     @Published private(set) var isSwitchingCodexProfile = false
     @Published private(set) var pinnedThreadIds = Set<String>()
     @Published private(set) var showingArchivedThreads = false
+    @Published var showingDiagnostics = false
+    @Published private(set) var diagnosticsReport: DiagnosticsReport?
+    @Published private(set) var notificationsEnabled = false
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -50,6 +53,10 @@ final class RelayStore: ObservableObject {
     private let threadCacheDefaultsKey = "relay.cachedThreads"
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
+    private let notificationsDefaultsKey = "relay.notifications.enabled"
+    private let notificationCoordinator = NotificationCoordinator()
+    private var applicationIsActive = true
+    private var notifiedCompletionTurnIds = Set<String>()
     private var threadLoadGeneration = UUID()
     private var reconcilingThreadId: String?
     private var queuedEvents: [(method: String, params: JSONValue)] = []
@@ -183,6 +190,7 @@ final class RelayStore: ObservableObject {
            let behavior = FollowUpBehavior(rawValue: storedFollowUp) {
             followUpBehavior = behavior
         }
+        notificationsEnabled = UserDefaults.standard.bool(forKey: notificationsDefaultsKey)
 
         socket.onConnected = { [weak self] in
             self?.scheduleRestoration()
@@ -217,10 +225,45 @@ final class RelayStore: ObservableObject {
     func disconnect() { socket.disconnect() }
 
     func applicationBecameActive() {
+        applicationIsActive = true
         if socket.state == .connected {
             scheduleRestoration()
         } else {
             socket.reconnectIfNeeded()
+        }
+    }
+
+    func applicationEnteredBackground() {
+        applicationIsActive = false
+    }
+
+    func setNotificationsEnabled(_ enabled: Bool) async {
+        let allowed = enabled ? await notificationCoordinator.requestAuthorization() : false
+        notificationsEnabled = enabled && allowed
+        UserDefaults.standard.set(notificationsEnabled, forKey: notificationsDefaultsKey)
+        if enabled && !allowed { errorMessage = "系统未授予 Relay 通知权限。" }
+    }
+
+    func refreshDiagnostics() async {
+        guard socket.state == .connected else { return }
+        do {
+            let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
+            diagnosticsReport = DiagnosticsReport(json: result)
+        } catch {
+            report(error)
+        }
+    }
+
+    func exportDiagnostics() {
+        guard let raw = diagnosticsReport?.raw.rawValue,
+              JSONSerialization.isValidJSONObject(raw),
+              let data = try? JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys]) else { return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Relay-Diagnostics-\(Int(Date().timeIntervalSince1970)).json")
+        do {
+            try data.write(to: url, options: .atomic)
+            sharedFile = SharedFile(url: url)
+        } catch {
+            report(error)
         }
     }
 
@@ -1251,6 +1294,28 @@ final class RelayStore: ObservableObject {
         } else {
             pendingApprovals.append(approval)
         }
+        if notificationsEnabled, !applicationIsActive || approval.threadId != selectedThreadId {
+            notificationCoordinator.schedule(
+                identifier: "relay.approval.\(approval.id)",
+                title: "Relay 等待确认",
+                body: approval.summary,
+                threadId: approval.threadId
+            )
+        }
+    }
+
+    private func notifyTaskCompleted(threadId: String, turnId: String?, failed: Bool) {
+        guard notificationsEnabled,
+              let turnId,
+              notifiedCompletionTurnIds.insert(turnId).inserted,
+              !applicationIsActive || threadId != selectedThreadId else { return }
+        let title = threads.first(where: { $0.id == threadId })?.title ?? "Codex 任务"
+        notificationCoordinator.schedule(
+            identifier: "relay.turn.\(turnId)",
+            title: failed ? "任务执行失败" : "任务已完成",
+            body: title,
+            threadId: threadId
+        )
     }
 
     private func applyThreadSettings(showErrors: Bool) async {
@@ -1421,6 +1486,9 @@ final class RelayStore: ObservableObject {
                 liveSessionSyncTask = nil
             }
             Task { await refreshThreads(showErrors: false) }
+            if let selectedThreadId {
+                notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: method == "turn/failed")
+            }
             scheduleCompletionReconciliation(threadId: selectedThreadId)
         case "item/started", "item/completed":
             guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
@@ -1494,6 +1562,7 @@ final class RelayStore: ObservableObject {
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
             }
             Task { await refreshThreads(showErrors: false) }
+            notifyTaskCompleted(threadId: threadId, turnId: turnId, failed: method == "turn/failed")
         case "error":
             if params["willRetry"]?.boolValue == false {
                 if let turnId { completedTurnIds.insert(turnId) }

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
-  AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop,
-  FileCode2, Folder, FolderOpen, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, Search, Target,
+  Activity, AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Copy,
+  FileCode2, Folder, FolderOpen, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Target,
   Power, RotateCcw, Server, Settings, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
@@ -14,7 +14,7 @@ import {
 import type { UserMessagePlacement } from "./transcript";
 import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
 import type {
-  ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, ModelOption,
+  ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DiagnosticReport, ModelOption,
   PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
@@ -60,6 +60,10 @@ export default function App() {
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState("");
   const [profileSwitching, setProfileSwitching] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticReport>();
+  const [preferences, setPreferences] = useState<DesktopPreferences>({ autoStart: false, notifications: true });
   const selectedRef = useRef<string>();
   const activeTurnRef = useRef<string>();
   const profileSwitchingRef = useRef(false);
@@ -68,6 +72,7 @@ export default function App() {
   const placementSequenceRef = useRef(0);
   const messagesRef = useRef<TranscriptItem[]>([]);
   const threadMessageCacheRef = useRef(new Map<string, TranscriptItem[]>());
+  const notifiedTurnIdsRef = useRef(new Set<string>());
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -124,6 +129,7 @@ export default function App() {
       setConfig(bootstrap.connection);
       setVersion(bootstrap.version);
       setService(bootstrap.service);
+      setPreferences(bootstrap.preferences || { autoStart: false, notifications: true });
       if (bootstrap.connection.token && ["running", "starting"].includes(bootstrap.service.state)) void window.relayDesktop.connect(bootstrap.connection).catch((reason) => setError(String(reason)));
     });
     return () => { offMessage(); offState(); offService(); offRpc(); };
@@ -146,6 +152,7 @@ export default function App() {
       setApprovals((current) => current.some((item) => String(item.id) === String(incoming.id))
         ? current.map((item) => String(item.id) === String(incoming.id) ? incoming : item)
         : [...current, incoming]);
+      void window.relayDesktop.notify({ title: "Relay 等待确认", body: incoming.summary });
     }
     else if (message?.type === "serverRequestResolved") setApprovals((current) => current.filter((item) => String(item.id) !== String(message.id)));
     else if (message?.type === "promptQueueUpdated") {
@@ -501,6 +508,11 @@ export default function App() {
           phase: method === "turn/failed" ? "failed" : method === "turn/completed" ? "completed" : "interrupted",
           completedAt: params.turn?.completedAt,
         });
+        if (turnId && !notifiedTurnIdsRef.current.has(turnId)) {
+          notifiedTurnIdsRef.current.add(turnId);
+          const taskTitle = threads.find((thread) => thread.id === threadId)?.title || "Codex 任务";
+          void window.relayDesktop.notify({ title: method === "turn/failed" ? "任务执行失败" : "任务已完成", body: taskTitle });
+        }
       } else if (method === "turn/plan/updated" && turnId) {
         updateTaskState(threadId, {
           type: "plan",
@@ -726,6 +738,27 @@ export default function App() {
     catch (reason) { setError(errorText(reason)); }
   }
 
+  async function refreshDiagnostics() {
+    setDiagnosticsLoading(true);
+    try {
+      setDiagnostics(await rpc.rpc("relay/diagnostics/report", {}, 12_000) as DiagnosticReport);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }
+
+  function openDiagnostics() {
+    setDiagnosticsOpen(true);
+    void refreshDiagnostics();
+  }
+
+  async function updatePreferences(patch: Partial<DesktopPreferences>) {
+    try { setPreferences(await window.relayDesktop.setPreferences(patch)); }
+    catch (reason) { setError(errorText(reason)); }
+  }
+
   const serviceAvailable = service.state === "running" || service.state === "starting";
   const connectionLabel = !serviceAvailable ? "远程服务未启动" : profileSwitching ? "正在切换实例" : upstreamRetrying ? "Codex 上游重连中" : connection === "connected" ? "实时同步" : connection === "reconnecting" ? `正在重连 · ${connectionAttempt}` : connection === "handshaking" ? "正在初始化" : "未连接";
 
@@ -768,9 +801,9 @@ export default function App() {
           <header className="thread-header">
             <button className="icon-button sidebar-toggle" onClick={() => setSidebarOpen((value) => !value)}><Menu size={18}/></button>
             <div className="thread-identity"><strong>{selectedThread?.title || (archivedView ? "已归档任务" : "新任务")}</strong><span>{archivedView ? "只读历史" : selectedThread?.cwd || workspace || "未指定工作目录"}</span></div>
-            <div className={`live-badge ${serviceAvailable && upstreamRetrying ? "retrying" : serviceAvailable && connection === "connected" ? "connected" : "offline"}`}>
+            <button title="打开诊断中心" onClick={openDiagnostics} className={`live-badge ${serviceAvailable && upstreamRetrying ? "retrying" : serviceAvailable && connection === "connected" ? "connected" : "offline"}`}>
               {serviceAvailable && connection === "connected" ? <Wifi size={12}/> : <WifiOff size={12}/>}<span>{connectionLabel}</span>
-            </div>
+            </button>
             <button className="icon-button" onClick={() => setSettingsOpen(true)}><Settings size={17}/></button>
           </header>
 
@@ -827,11 +860,12 @@ export default function App() {
         </main>
       </div>
 
-      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
+      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} onPreferences={updatePreferences} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
       {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}
       {approval && <Modal title={approval.title} closable={false} onClose={() => {}}>{approvalQueue.length > 1 && <div className="approval-queue-count">当前任务审批 1 / {approvalQueue.length}</div>}{approval.threadId && <div className="approval-task">{threads.find((thread) => thread.id === approval.threadId)?.title || approval.threadId}</div>}<p className="approval-summary">{approval.summary}</p>{approval.detail && <pre className="approval-detail">{approval.detail}</pre>}<div className="modal-actions"><button onClick={() => void resolveApproval(false)}>拒绝</button><button className="accent" onClick={() => void resolveApproval(true)}>允许</button></div></Modal>}
+      {diagnosticsOpen && <DiagnosticsPanel report={diagnostics} loading={diagnosticsLoading} onRefresh={refreshDiagnostics} onClose={() => setDiagnosticsOpen(false)}/>}
       {error && <div className="toast"><AlertCircle size={16}/><span>{error}</span><button onClick={() => setError(undefined)}><X size={14}/></button></div>}
     </div>
   );
@@ -963,11 +997,12 @@ function queuedPromptLabel(item: QueuedPrompt) {
   return item.input.filter((input) => input.type !== "text").map((input) => input.name || input.path?.split(/[\\/]/).at(-1)).filter(Boolean).join("、") || "附件";
 }
 
-function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, onClose, onSave }: {
+function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, onPreferences, onDiagnostics, onClose, onSave }: {
   config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; workspace: string; setWorkspace: (value: string) => void;
   access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; activeProfileId: string;
   switching: boolean; switchDisabled: boolean; onSwitch: (id: string) => Promise<void>; onStartService: () => Promise<void>;
-  service: ServiceStatus; onClose: () => void; onSave: () => Promise<void>;
+  service: ServiceStatus; preferences: DesktopPreferences; onPreferences: (patch: Partial<DesktopPreferences>) => Promise<void>;
+  onDiagnostics: () => void; onClose: () => void; onSave: () => Promise<void>;
 }) {
   const [selectedProfileId, setSelectedProfileId] = useState(activeProfileId);
   useEffect(() => { setSelectedProfileId(activeProfileId); }, [activeProfileId]);
@@ -988,8 +1023,38 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
         </> : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void onStartService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
       </div>
       <div className="settings-section"><h3>默认工作区</h3><label className="field"><span>目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>访问权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
+      <div className="settings-section"><h3>运行与通知</h3><label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后自动运行 Relay 与 Bridge</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label><label className="toggle-row"><span><strong>任务与审批通知</strong><small>窗口不在前台时显示系统通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button></div>
       <details className="advanced-settings"><summary>高级连接</summary><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>Token</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label></details>
       <div className="drawer-actions"><button onClick={onClose}>关闭</button><button className="accent" onClick={() => void onSave()}>保存高级连接</button></div>
+    </aside>
+  </div>;
+}
+
+function DiagnosticsPanel({ report, loading, onRefresh, onClose }: {
+  report?: DiagnosticReport; loading: boolean; onRefresh: () => Promise<void>; onClose: () => void;
+}) {
+  const summaryLabel = report?.summary === "ok" ? "运行正常" : report?.summary === "error" ? "需要处理" : "需要留意";
+  return <div className="drawer-backdrop" onMouseDown={onClose}>
+    <aside className="diagnostics-drawer" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="drawer-heading">
+        <div><strong>诊断中心</strong><span>{report ? `${summaryLabel} · ${new Date(report.generatedAt).toLocaleTimeString()}` : "正在读取 Bridge 状态"}</span></div>
+        <div className="drawer-tools">
+          <button className="icon-button" title="导出诊断 JSON" disabled={!report} onClick={() => report && void window.relayDesktop.exportDiagnostics(report)}><Copy size={15}/></button>
+          <button className="icon-button" title="刷新" disabled={loading} onClick={() => void onRefresh()}>{loading ? <span className="spinner small"/> : <RefreshCw size={15}/>}</button>
+          <button className="icon-button" title="关闭" onClick={onClose}><X size={17}/></button>
+        </div>
+      </div>
+      {!report ? <div className="diagnostics-loading"><span className="spinner"/><span>正在读取诊断信息</span></div> : <>
+        <div className={`diagnostics-summary ${report.summary}`}><Activity size={16}/><strong>{summaryLabel}</strong><span>{report.metrics.activeTurns} 个任务运行中 · {report.metrics.queuedPromptCount} 条排队消息</span></div>
+        <section className="diagnostic-section">
+          <h3>系统检查</h3>
+          <div className="diagnostic-checks">{report.checks.map((check) => <div className="diagnostic-check" key={check.id}><span className={`diagnostic-dot ${check.level}`}/><div><strong>{check.title}</strong><span>{check.detail}</span></div></div>)}</div>
+        </section>
+        <section className="diagnostic-section events">
+          <h3>最近事件</h3>
+          {!report.events.length ? <p>暂无异常事件</p> : report.events.slice(0, 40).map((event) => <div className="diagnostic-event" key={event.id}><span className={`diagnostic-dot ${event.level}`}/><div><strong>{event.message}</strong><span>{event.category} · {new Date(event.at).toLocaleTimeString()}</span></div></div>)}
+        </section>
+      </>}
     </aside>
   </div>;
 }

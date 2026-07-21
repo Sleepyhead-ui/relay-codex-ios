@@ -3,7 +3,8 @@ export type ConnectionState = "disconnected" | "connecting" | "handshaking" | "r
 export interface ConnectionConfig { endpoint: string; token: string }
 export type ServiceState = "stopped" | "starting" | "running" | "failed";
 export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig }
-export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus }
+export interface DesktopPreferences { autoStart: boolean; notifications: boolean }
+export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
 
 export interface CodexProfile {
   id: string;
@@ -82,12 +83,47 @@ export interface ApprovalRequest {
   detail?: string;
 }
 
+export interface DiagnosticCheck {
+  id: string;
+  level: "ok" | "warning" | "error";
+  title: string;
+  detail: string;
+}
+
+export interface DiagnosticEvent {
+  id: number;
+  at: string;
+  level: "info" | "warning" | "error";
+  category: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface DiagnosticReport {
+  generatedAt: string;
+  summary: "ok" | "warning" | "error";
+  checks: DiagnosticCheck[];
+  metrics: {
+    clients: number;
+    activeTurns: number;
+    pendingRpcCount: number;
+    pendingApprovalCount: number;
+    queuedPromptCount: number;
+    uptimeSeconds: number;
+  };
+  events: DiagnosticEvent[];
+  [key: string]: unknown;
+}
+
 declare global {
   interface Window {
     relayDesktop: {
       bootstrap(): Promise<Bootstrap>;
       serviceStatus(): Promise<ServiceStatus>;
       startService(): Promise<ServiceStatus>;
+      setPreferences(patch: Partial<DesktopPreferences>): Promise<DesktopPreferences>;
+      notify(payload: { title: string; body: string }): Promise<boolean>;
+      exportDiagnostics(report: DiagnosticReport): Promise<boolean>;
       connect(config: ConnectionConfig): Promise<boolean>;
       disconnect(): Promise<void>;
       send(message: unknown): Promise<boolean>;

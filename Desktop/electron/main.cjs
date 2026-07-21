@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Notification, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
@@ -15,8 +15,31 @@ let connectionConfig;
 let intentionalClose = false;
 let serviceState = "stopped";
 let serviceMessage = "";
+let autoServiceTimer;
 
 const configPath = () => path.join(app.getPath("userData"), "connection.json");
+const preferencesPath = () => path.join(app.getPath("userData"), "preferences.json");
+
+function readPreferences() {
+  try { return { autoStart: false, notifications: true, ...JSON.parse(fs.readFileSync(preferencesPath(), "utf8")) }; }
+  catch { return { autoStart: false, notifications: true }; }
+}
+
+function writePreferences(value) {
+  fs.mkdirSync(path.dirname(preferencesPath()), { recursive: true });
+  fs.writeFileSync(preferencesPath(), JSON.stringify(value, null, 2), "utf8");
+}
+
+function scheduleAutomaticServiceStart() {
+  if (autoServiceTimer) clearInterval(autoServiceTimer);
+  const attempt = async () => {
+    if (!readPreferences().autoStart || serviceState === "running" || serviceState === "starting") return;
+    try { await startRemoteService(); } catch {}
+  };
+  setTimeout(() => void attempt(), 1_500).unref();
+  autoServiceTimer = setInterval(() => void attempt(), 15_000);
+  autoServiceTimer.unref();
+}
 
 function defaultEndpoint() {
   for (const addresses of Object.values(os.networkInterfaces())) {
@@ -230,7 +253,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  const preferences = readPreferences();
+  app.setLoginItemSettings({ openAtLogin: Boolean(preferences.autoStart), path: process.execPath });
   createWindow();
+  if (preferences.autoStart) scheduleAutomaticServiceStart();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
@@ -243,7 +269,29 @@ ipcMain.handle("relay:bootstrap", async () => {
   if (service.health && service.endpoint) {
     try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
   }
-  return { connection, version: app.getVersion(), service };
+  return { connection, version: app.getVersion(), service, preferences: readPreferences() };
+});
+ipcMain.handle("relay:set-preferences", (_event, patch) => {
+  const preferences = { ...readPreferences(), ...(patch || {}) };
+  writePreferences(preferences);
+  app.setLoginItemSettings({ openAtLogin: Boolean(preferences.autoStart), path: process.execPath });
+  if (preferences.autoStart) scheduleAutomaticServiceStart();
+  else if (autoServiceTimer) { clearInterval(autoServiceTimer); autoServiceTimer = undefined; }
+  return preferences;
+});
+ipcMain.handle("relay:notify", (_event, payload) => {
+  if (!readPreferences().notifications || mainWindow?.isFocused() || !Notification.isSupported()) return false;
+  new Notification({ title: String(payload?.title || "Relay"), body: String(payload?.body || "") }).show();
+  return true;
+});
+ipcMain.handle("relay:export-diagnostics", async (_event, report) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `Relay-Diagnostics-${Date.now()}.json`,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return false;
+  fs.writeFileSync(result.filePath, JSON.stringify(report, null, 2), "utf8");
+  return true;
 });
 ipcMain.handle("relay:service-status", () => inspectRemoteService());
 ipcMain.handle("relay:start-service", () => startRemoteService());

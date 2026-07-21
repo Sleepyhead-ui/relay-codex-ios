@@ -18,6 +18,7 @@ struct RelayApp: App {
                 }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active { store.applicationBecameActive() }
+                    else if phase == .background { store.applicationEnteredBackground() }
                 }
         }
     }

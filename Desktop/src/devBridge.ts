@@ -7,6 +7,7 @@ export function installDevBridge() {
   const threadId = "preview.thread";
   const turnId = "preview.turn";
   const now = Date.now() / 1000;
+  let preferences = { autoStart: false, notifications: true };
   const items = [
     { id: "goal.1", type: "userMessage", content: [{ type: "text", text: "<codex_internal_context source=\"goal\"><objective>完成第二、第三和第四阶段</objective></codex_internal_context>" }] },
     { id: "user.1", type: "userMessage", content: [{ type: "text", text: "检查这个项目，并让桌面端与手机端保持实时同步" }] },
@@ -18,13 +19,16 @@ export function installDevBridge() {
   const emit = (message: any) => messageListeners.forEach((listener) => listener(message));
   const rpcResult = (request: any, result: any) => setTimeout(() => emit({ type: "rpcResult", id: request.id, result }), 15);
   window.relayDesktop = {
-    bootstrap: async () => ({ connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" }, version: "preview", service: previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" } }),
+    bootstrap: async () => ({ connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" }, version: "preview", service: previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" }, preferences }),
     serviceStatus: async () => previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" },
     startService: async () => {
       const status = { state: "running" as const, message: "远程服务已启动", connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" } };
       serviceListeners.forEach((listener) => listener(status));
       return status;
     },
+    setPreferences: async (patch) => (preferences = { ...preferences, ...patch }),
+    notify: async () => true,
+    exportDiagnostics: async () => true,
     connect: async () => { setTimeout(() => stateListeners.forEach((listener) => listener({ state: "connected" })), 10); return true; },
     disconnect: async () => {},
     send: async (message: any) => {
@@ -43,6 +47,16 @@ export function installDevBridge() {
         { id: "preview.older.answer", type: "agentMessage", phase: "final_answer", text: "已完成基础链路审计，并记录了断线恢复缺口。" },
       ] }] });
       else if (message.method === "relay/thread/session/subscribe") rpcResult(message, { known: true, isRunning: true, turnId, startedAt: now - 67, items });
+      else if (message.method === "relay/diagnostics/report") rpcResult(message, { generatedAt: new Date().toISOString(), summary: "warning", checks: [
+        { id: "bridge", level: "ok", title: "Relay Bridge", detail: "已运行 2 小时 14 分钟" },
+        { id: "codex", level: "ok", title: "Codex App Server", detail: "已就绪" },
+        { id: "client", level: "ok", title: "远程客户端", detail: "2 台设备已连接" },
+        { id: "rpc", level: "ok", title: "请求队列", detail: "没有积压请求" },
+        { id: "approval", level: "warning", title: "待处理审批", detail: "1 项操作等待确认" },
+      ], metrics: { clients: 2, activeTurns: 1, pendingRpcCount: 0, pendingApprovalCount: 1, queuedPromptCount: 0, uptimeSeconds: 8040 }, events: [
+        { id: 2, at: new Date().toISOString(), level: "warning", category: "approval", message: "Codex is waiting for approval." },
+        { id: 1, at: new Date(now * 1000 - 64_000).toISOString(), level: "info", category: "socket", message: "Remote client connected." },
+      ] });
       else if (message.method === "relay/codex/profiles/list") rpcResult(message, { activeProfileId: "cockpit:user2", profiles: [
         { id: "cockpit:user2", name: "user2", codexHome: "C:\\Users\\preview\\user2", source: "cockpit", active: true, running: true },
         { id: "default", name: "默认 Codex", codexHome: "C:\\Users\\preview\\.codex", source: "default", active: false, running: true },

@@ -33,6 +33,7 @@ struct RootView: View {
             ConnectionView(canDismiss: !store.needsConnection)
         }
         .sheet(isPresented: $store.showingSettings) { SettingsView() }
+        .sheet(isPresented: $store.showingDiagnostics) { DiagnosticsView() }
         .sheet(isPresented: $store.showingNewTask) {
             NewTaskView()
                 .presentationDetents([.medium, .large])

@@ -104,6 +104,19 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("运行与通知") {
+                    Toggle("任务完成和审批通知", isOn: Binding(
+                        get: { store.notificationsEnabled },
+                        set: { enabled in Task { await store.setNotificationsEnabled(enabled) } }
+                    ))
+                    Button {
+                        dismiss()
+                        store.showingDiagnostics = true
+                    } label: {
+                        Label("打开诊断中心", systemImage: "stethoscope")
+                    }
+                }
+
                 Section {
                     Button("Forget this host", role: .destructive) { store.forgetHost() }
                 }
