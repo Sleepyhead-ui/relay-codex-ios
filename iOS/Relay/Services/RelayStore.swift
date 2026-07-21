@@ -912,6 +912,7 @@ final class RelayStore: ObservableObject {
             isRunning: snapshot.isRunning,
             activeTurnId: snapshot.activeTurnId,
             activePlan: snapshot.activePlan,
+            activePlanTurnId: snapshot.activePlanTurnId,
             modelId: snapshot.modelId,
             effort: snapshot.effort,
             cachedAt: Date()
@@ -1052,6 +1053,7 @@ final class RelayStore: ObservableObject {
     }
 
     private func markSelectedThreadStopped(threadId: String) {
+        let stoppedTurnId = activeTurnId ?? activeTurnIdsByThread[threadId]
         if let turnId = activeTurnId, var metadata = turnMetadata[turnId] {
             metadata.status = "interrupted"
             metadata.completedAt = metadata.completedAt ?? Date()
@@ -1063,6 +1065,7 @@ final class RelayStore: ObservableObject {
         activeTurnIdsByThread.removeValue(forKey: threadId)
         upstreamRetryingByThread.removeValue(forKey: threadId)
         activePlan = []
+        applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: stoppedTurnId, phase: .interrupted, completedAt: Date()))
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
@@ -1311,7 +1314,7 @@ final class RelayStore: ObservableObject {
             guard let turnId = eventTurnId else { break }
             guard !completedTurnIds.contains(turnId) else { break }
             let steps = params["plan"]?.arrayValue ?? []
-            let parsedSteps = steps.enumerated().compactMap { index, step in
+            let parsedSteps: [ExecutionPlanStep] = steps.enumerated().compactMap { index, step -> ExecutionPlanStep? in
                 guard let text = step["step"]?.stringValue, !text.isEmpty else { return nil }
                 return ExecutionPlanStep(
                     id: "\(turnId).\(index)",
@@ -1445,9 +1448,15 @@ final class RelayStore: ObservableObject {
         let runtimeError = runtime["upstreamError"]?.stringValue
         if let selectedThreadId {
             if runtime["upstreamRetrying"]?.boolValue == true {
-                upstreamRetryingByThread[selectedThreadId] = runtimeError ?? "Codex is reconnecting to the upstream service."
+                applyTaskRunEvent(
+                    threadId: selectedThreadId,
+                    event: .retrying(
+                        turnId: runtime["activeTurnId"]?.stringValue,
+                        message: runtimeError ?? "Codex is reconnecting to the upstream service."
+                    )
+                )
             } else {
-                upstreamRetryingByThread.removeValue(forKey: selectedThreadId)
+                applyTaskRunEvent(threadId: selectedThreadId, event: .clearRetry)
             }
         }
         if runtime["isRunning"]?.boolValue == true {
@@ -1467,6 +1476,16 @@ final class RelayStore: ObservableObject {
             }
             activeTurnId = nil
             activePlan = []
+            if let selectedThreadId {
+                applyTaskRunEvent(
+                    threadId: selectedThreadId,
+                    event: .terminal(
+                        turnId: runtime["activeTurnId"]?.stringValue,
+                        phase: runtimeError == nil ? .completed : .failed,
+                        completedAt: Date()
+                    )
+                )
+            }
         }
     }
 
@@ -1489,6 +1508,7 @@ final class RelayStore: ObservableObject {
         activeTurnIdsByThread.removeValue(forKey: threadId)
         upstreamRetryingByThread.removeValue(forKey: threadId)
         activePlan = []
+        applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: failedTurnId, phase: .failed, completedAt: Date()))
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
@@ -1529,6 +1549,7 @@ final class RelayStore: ObservableObject {
             isRunning: isRunning,
             activeTurnId: activeTurnId,
             activePlan: isRunning ? snapshot.activePlan : [],
+            activePlanTurnId: isRunning ? snapshot.activePlanTurnId : nil,
             modelId: snapshot.modelId,
             effort: snapshot.effort,
             cachedAt: Date()
@@ -1594,7 +1615,7 @@ final class RelayStore: ObservableObject {
         } else if let index = messages.firstIndex(where: { semanticallyMatches($0, item) }) {
             messages[index] = mergeTranscriptItem(existing: messages[index], incoming: item)
         } else if item.role != .user || !messages.contains(where: {
-            $0.role == .user && $0.text == item.text && $0.imagePaths == item.imagePaths
+            $0.role == .user && $0.text == item.text && $0.imagePaths == item.imagePaths && $0.goal == item.goal
         }) {
             messages.append(item)
         }
@@ -1616,6 +1637,7 @@ final class RelayStore: ObservableObject {
         if merged.errorMessage == nil { merged.errorMessage = existing.errorMessage }
         if merged.deliveryState == nil { merged.deliveryState = existing.deliveryState }
         if merged.imagePaths.isEmpty { merged.imagePaths = existing.imagePaths }
+        if merged.goal == nil { merged.goal = existing.goal }
         return merged
     }
 
@@ -1686,6 +1708,7 @@ final class RelayStore: ObservableObject {
         tokenUsageByThread = [:]
         activeTurnIdsByThread = [:]
         upstreamRetryingByThread = [:]
+        taskRunStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
@@ -1793,6 +1816,7 @@ final class RelayStore: ObservableObject {
             activeTurnId = turnId
             activeTurnIdsByThread[threadId] = turnId
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
+            applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: metadata.startedAt))
         } else {
             metadata.status = snapshotIsStale ? "interrupted" : "completed"
             if snapshotIsStale { metadata.durationMs = nil }
@@ -1812,6 +1836,14 @@ final class RelayStore: ObservableObject {
                 liveSessionSyncTask?.cancel()
                 liveSessionSyncTask = nil
             }
+            applyTaskRunEvent(
+                threadId: threadId,
+                event: .terminal(
+                    turnId: turnId,
+                    phase: snapshotIsStale ? .interrupted : .completed,
+                    completedAt: metadata.completedAt
+                )
+            )
         }
         cacheCurrentThread()
     }
@@ -1932,6 +1964,7 @@ final class RelayStore: ObservableObject {
             isRunning: isRunning,
             activeTurnId: activeTurnId,
             activePlan: activePlan,
+            activePlanTurnId: taskRunStates[selectedThreadId]?.planTurnId,
             modelId: selectedModelId,
             effort: selectedEffort,
             cachedAt: Date()
@@ -1952,7 +1985,18 @@ final class RelayStore: ObservableObject {
         turnMetadata = snapshot.turnMetadata
         isRunning = snapshot.isRunning
         activeTurnId = snapshot.activeTurnId
-        activePlan = snapshot.activePlan
+        activePlan = snapshot.activePlanTurnId == snapshot.activeTurnId ? snapshot.activePlan : []
+        applyTaskRunEvent(
+            threadId: threadId,
+            event: .hydrate(
+                running: snapshot.isRunning,
+                turnId: snapshot.activeTurnId,
+                startedAt: snapshot.activeTurnId.flatMap { snapshot.turnMetadata[$0]?.startedAt }
+            )
+        )
+        if let turnId = snapshot.activeTurnId, snapshot.activePlanTurnId == turnId {
+            applyTaskRunEvent(threadId: threadId, event: .plan(turnId: turnId, steps: snapshot.activePlan))
+        }
         selectedModelId = snapshot.modelId
         selectedEffort = snapshot.effort
         return true
@@ -1978,6 +2022,7 @@ private struct ThreadSnapshot {
     let isRunning: Bool
     let activeTurnId: String?
     let activePlan: [ExecutionPlanStep]
+    let activePlanTurnId: String?
     let modelId: String
     let effort: String
     let cachedAt: Date

@@ -183,6 +183,7 @@ export default function App() {
       threadMessageCacheRef.current.clear();
       setTurns({});
       setModels([]);
+      setTaskStates({});
     } else if (message.status === "ready" && profileSwitchingRef.current) {
       profileSwitchingRef.current = false;
       setProfileSwitching(false);
