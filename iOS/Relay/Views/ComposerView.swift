@@ -24,8 +24,8 @@ struct ComposerView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if let objective = store.currentGoal {
-                ActiveGoalPanel(objective: objective)
+            if let goal = store.currentGoal, goal.status != .complete {
+                ActiveGoalPanel(goal: goal, isRunning: store.isRunning)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -533,20 +533,31 @@ private struct FollowUpQueuePanel: View {
 }
 
 private struct ActiveGoalPanel: View {
-    let objective: String
+    let goal: GoalState
+    let isRunning: Bool
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "scope")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("进行中的目标")
-                .font(.system(size: 12, weight: .semibold))
-            Text(objective)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 0)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 7) {
+                Image(systemName: "scope")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(statusColor)
+                Text(goal.status.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(goal.objective)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("·")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Text(elapsedText(at: context.date))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         }
         .padding(.horizontal, 11)
         .frame(height: 40)
@@ -556,6 +567,28 @@ private struct ActiveGoalPanel: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(RelayTheme.hairline, lineWidth: 1)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(goal.status.label)，\(goal.objective)")
+    }
+
+    private var statusColor: Color {
+        switch goal.status {
+        case .blocked, .usageLimited, .budgetLimited: return .orange
+        default: return .secondary
+        }
+    }
+
+    private func elapsedText(at date: Date) -> String {
+        let live = goal.status == .active && isRunning
+            ? max(0, Int(date.timeIntervalSince(goal.updatedAt)))
+            : 0
+        let seconds = max(0, goal.timeUsedSeconds + live)
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainder = seconds % 60
+        if hours > 0 { return "\(hours)h \(minutes)m \(remainder)s" }
+        if minutes > 0 { return "\(minutes)m \(remainder)s" }
+        return "\(remainder)s"
     }
 }
 

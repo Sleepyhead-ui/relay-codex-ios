@@ -1,4 +1,5 @@
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -6,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 
 const latestReleaseUrl = "https://api.github.com/repos/Sleepyhead-ui/relay-codex-ios/releases/latest";
 const maximumIPABytes = 100 * 1024 * 1024;
+const maximumDigestBytes = 512;
 
 export interface ReleaseAsset {
   name: string;
@@ -44,6 +46,9 @@ export class UpdateManager {
     const asset = selectIPAAsset(release.assets);
     if (!asset) throw new Error("The latest release does not include Relay.ipa.");
     if (asset.size <= 0 || asset.size > maximumIPABytes) throw new Error("The IPA asset size is invalid.");
+    const digestAsset = selectDigestAsset(release.assets);
+    if (!digestAsset) throw new Error("The latest release does not include Relay.ipa.sha256.");
+    const expectedDigest = await fetchExpectedDigest(digestAsset);
 
     const directory = path.join(this.filesRoot, "updates");
     const version = normalizeVersion(release.tag_name);
@@ -51,7 +56,7 @@ export class UpdateManager {
     const partial = `${destination}.partial`;
     await mkdir(directory, { recursive: true });
     const existing = await stat(destination).catch(() => undefined);
-    if (existing?.isFile() && existing.size === asset.size) {
+    if (existing?.isFile() && existing.size === asset.size && await sha256(destination) === expectedDigest) {
       return { path: destination, name: path.basename(destination), size: existing.size, version };
     }
 
@@ -65,6 +70,7 @@ export class UpdateManager {
       await pipeline(Readable.fromWeb(response.body as never), createWriteStream(partial, { flags: "wx" }));
       const info = await stat(partial);
       if (info.size !== asset.size || info.size > maximumIPABytes) throw new Error("The downloaded IPA size did not match the release asset.");
+      if (await sha256(partial) !== expectedDigest) throw new Error("The downloaded IPA failed SHA-256 verification.");
       await rename(partial, destination);
       return { path: destination, name: path.basename(destination), size: info.size, version };
     } catch (error) {
@@ -85,6 +91,30 @@ export function compareVersions(left: string, right: string): number {
 
 export function selectIPAAsset(assets: ReleaseAsset[]): ReleaseAsset | undefined {
   return assets.find((asset) => asset.name === "Relay.ipa" && /^https:\/\/github\.com\/Sleepyhead-ui\/relay-codex-ios\/releases\/download\//i.test(asset.browser_download_url));
+}
+
+export function selectDigestAsset(assets: ReleaseAsset[]): ReleaseAsset | undefined {
+  return assets.find((asset) => asset.name === "Relay.ipa.sha256" && asset.size > 0 && asset.size <= maximumDigestBytes
+    && /^https:\/\/github\.com\/Sleepyhead-ui\/relay-codex-ios\/releases\/download\//i.test(asset.browser_download_url));
+}
+
+async function fetchExpectedDigest(asset: ReleaseAsset): Promise<string> {
+  const response = await fetch(asset.browser_download_url, {
+    headers: { Accept: "text/plain", "User-Agent": "Relay-Codex-Bridge" },
+    redirect: "follow",
+  });
+  if (!response.ok) throw new Error(`Could not download Relay.ipa.sha256 (HTTP ${response.status}).`);
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > maximumDigestBytes) throw new Error("The IPA digest asset is invalid.");
+  const match = /^([a-f0-9]{64})(?:\s+\*?Relay\.ipa)?\s*$/i.exec(text);
+  if (!match?.[1]) throw new Error("The IPA digest asset is invalid.");
+  return match[1].toLowerCase();
+}
+
+async function sha256(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
 }
 
 function normalizeVersion(value: string): string {

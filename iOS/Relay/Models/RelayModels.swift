@@ -26,6 +26,55 @@ struct CodexProfile: Identifiable, Equatable {
     }
 }
 
+enum GoalStatus: String, Equatable {
+    case active
+    case paused
+    case blocked
+    case usageLimited = "usage_limited"
+    case budgetLimited = "budget_limited"
+    case complete
+
+    var label: String {
+        switch self {
+        case .active: return "进行中的目标"
+        case .paused: return "已暂停的目标"
+        case .blocked: return "目标已阻塞"
+        case .usageLimited: return "目标已达用量限制"
+        case .budgetLimited: return "目标已达预算"
+        case .complete: return "目标已完成"
+        }
+    }
+}
+
+struct GoalState: Identifiable, Equatable {
+    let id: String
+    let threadId: String
+    let objective: String
+    let status: GoalStatus
+    let tokenBudget: Int?
+    let tokensUsed: Int
+    let timeUsedSeconds: Int
+    let createdAt: Date
+    let updatedAt: Date
+
+    init?(json: JSONValue) {
+        guard let id = json["id"]?.stringValue,
+              let threadId = json["threadId"]?.stringValue,
+              let objective = json["objective"]?.stringValue,
+              let rawStatus = json["status"]?.stringValue,
+              let status = GoalStatus(rawValue: rawStatus) else { return nil }
+        self.id = id
+        self.threadId = threadId
+        self.objective = objective
+        self.status = status
+        tokenBudget = json["tokenBudget"]?.intValue
+        tokensUsed = json["tokensUsed"]?.intValue ?? 0
+        timeUsedSeconds = json["timeUsedSeconds"]?.intValue ?? 0
+        createdAt = Date(timeIntervalSince1970: json["createdAt"]?.doubleValue ?? 0)
+        updatedAt = Date(timeIntervalSince1970: json["updatedAt"]?.doubleValue ?? 0)
+    }
+}
+
 enum WorkspaceAccessMode: String, Codable, CaseIterable, Identifiable {
     case readOnly
     case workspaceWrite

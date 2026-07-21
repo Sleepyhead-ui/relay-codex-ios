@@ -25,6 +25,19 @@ export interface ThreadSummary {
   status: string;
 }
 
+export type GoalStatus = "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+export interface GoalState {
+  threadId: string;
+  id: string;
+  objective: string;
+  status: GoalStatus;
+  tokenBudget: number | null;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export type ItemKind = "user" | "assistant" | "reasoning" | "command" | "file" | "tool" | "plan" | "compaction" | "other";
 
 export interface TranscriptItem {

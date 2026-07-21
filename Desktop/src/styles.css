@@ -200,10 +200,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .prompt-queue-row { border-top: 1px solid rgba(255,255,255,.055); color: #8f938b; font-size: 10px; }
 .prompt-queue-row > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prompt-queue-row .icon-button { width: 24px; height: 24px; flex: 0 0 24px; }
-.goal-panel { min-height: 43px; display: flex; align-items: center; gap: 7px; margin: 0 10px 7px; padding: 0 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(35,36,33,.96); color: #8f938b; font-size: 11px; box-shadow: 0 8px 26px rgba(0,0,0,.14); }
+.goal-panel { min-height: 42px; display: flex; align-items: center; gap: 7px; margin: 0 10px 7px; padding: 0 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(35,36,33,.96); color: #8f938b; font-size: 11px; box-shadow: 0 8px 26px rgba(0,0,0,.14); }
 .goal-panel svg { flex: 0 0 auto; color: #8d9288; }
 .goal-panel strong { flex: 0 0 auto; color: #e1e3de; font-size: 12px; letter-spacing: 0; }
-.goal-panel span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-panel .goal-objective { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-panel .goal-separator { flex: 0 0 auto; color: #686c65; }
+.goal-panel time { flex: 0 0 auto; color: #777b74; font-variant-numeric: tabular-nums; }
+.goal-panel.blocked svg, .goal-panel.budget_limited svg, .goal-panel.usage_limited svg { color: #d18a55; }
 .jump-bottom { position: absolute; right: 26px; bottom: 133px; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: rgba(40,41,38,.92); color: #c6c8c2; box-shadow: 0 8px 24px rgba(0,0,0,.22); z-index: 5; }
 .archived-bar { width: min(860px, calc(100% - 26px)); min-height: 48px; margin: 0 auto 12px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-top: 1px solid var(--line); color: #858981; font-size: 11px; }
 .archived-bar button { margin-left: auto; height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border-radius: 7px; background: rgba(255,255,255,.055); color: #c5c8c1; font-size: 10px; }

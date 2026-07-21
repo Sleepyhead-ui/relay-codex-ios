@@ -18,7 +18,7 @@ esbuild.buildSync({
   bundle: true,
   platform: "node",
   format: "cjs",
-  target: "node20",
+  target: "node22",
   sourcemap: false,
   logOverride: { "empty-import-meta": "silent" },
 });

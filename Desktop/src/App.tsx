@@ -15,7 +15,7 @@ import type { UserMessagePlacement } from "./transcript";
 import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
-  PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
+  GoalState, PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
 const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"]);
@@ -38,6 +38,7 @@ export default function App() {
   const [messages, setMessages] = useState<TranscriptItem[]>([]);
   const [turns, setTurns] = useState<Record<string, TurnMetadata>>({});
   const [taskStates, setTaskStates] = useState<Record<string, TaskRunState>>({});
+  const [goals, setGoals] = useState<Record<string, GoalState>>({});
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [followUpBehavior, setFollowUpBehavior] = useState<"steer" | "queue">(() => localStorage.getItem("relay.desktop.followUp") === "queue" ? "queue" : "steer");
@@ -95,7 +96,7 @@ export default function App() {
   const approvalThreadIds = useMemo(() => new Set(approvals.flatMap((item) => item.threadId ? [item.threadId] : [])), [approvals]);
   const projects = useMemo(() => groupProjects(sortPinnedThreads(filterThreads(threads, threadSearch), pinnedThreadIds)), [threads, threadSearch, pinnedThreadIds]);
   const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
-  const currentGoal = [...messages].reverse().find((item) => item.goal)?.goal;
+  const currentGoal = selectedThreadId ? goals[selectedThreadId] : undefined;
   messagesRef.current = messages;
 
   function updateTaskState(threadId: string, event: TaskRunEvent) {
@@ -217,6 +218,7 @@ export default function App() {
       setTurns({});
       setModels([]);
       setTaskStates({});
+      setGoals({});
       setArchivedView(false);
     } else if (message.status === "ready" && profileSwitchingRef.current) {
       profileSwitchingRef.current = false;
@@ -349,17 +351,22 @@ export default function App() {
     updateTaskState(id, { type: "reset" });
     try {
       if (previous && previous !== id) void rpc.rpc("relay/thread/session/unsubscribe", { threadId: previous }, 5_000).catch(() => {});
-      const result = readingArchived
+      const conversationPromise = readingArchived
         ? await Promise.all([
             rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
             rpc.rpc("thread/turns/list", { threadId: id, limit: 12, sortDirection: "desc", itemsView: "full" }, 120_000),
           ]).then(([summary, page]) => ({ ...summary, initialTurnsPage: page }))
-        : await rpc.rpc("thread/resume", {
+        : rpc.rpc("thread/resume", {
             threadId: id,
             excludeTurns: true,
             initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
           }, 30_000);
+      const [result, goalResult] = await Promise.all([
+        conversationPromise,
+        rpc.rpc("relay/thread/goal", { threadId: id }, 8_000).catch(() => ({ goal: null })),
+      ]);
       if (selectedRef.current !== id) return;
+      setGoalState(id, goalResult.goal);
       const page = result.initialTurnsPage?.data || [];
       setOlderTurnsCursor(result.initialTurnsPage?.nextCursor || undefined);
       const rawTurns = page.length ? [...page].reverse() : result.thread?.turns || [];
@@ -403,6 +410,23 @@ export default function App() {
       } catch {}
     } catch (reason) { setError(errorText(reason)); }
     finally { if (selectedRef.current === id) setLoadingThread(false); }
+  }
+
+  async function refreshGoal(threadId: string) {
+    try {
+      const result = await rpc.rpc("relay/thread/goal", { threadId }, 8_000);
+      setGoalState(threadId, result.goal);
+    } catch {}
+  }
+
+  function setGoalState(threadId: string, goal: GoalState | null | undefined) {
+    setGoals((current) => {
+      if (goal) return { ...current, [threadId]: goal };
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
   }
 
   async function loadOlderTurns() {
@@ -516,6 +540,7 @@ export default function App() {
           const taskTitle = threads.find((thread) => thread.id === threadId)?.title || "Codex 任务";
           void window.relayDesktop.notify({ title: method === "turn/failed" ? "任务执行失败" : "任务已完成", body: taskTitle });
         }
+        void refreshGoal(threadId);
       } else if (method === "turn/plan/updated" && turnId) {
         updateTaskState(threadId, {
           type: "plan",
@@ -847,7 +872,7 @@ export default function App() {
             }
             {currentQueuedPrompts.length > 0 && <PromptQueuePanel items={currentQueuedPrompts} onRemove={removeQueuedPrompt}/>
             }
-            {currentGoal && <GoalPanel objective={currentGoal}/>
+            {currentGoal && currentGoal.status !== "complete" && <GoalPanel goal={currentGoal} running={running}/>
             }
             <div className={`composer ${!serviceAvailable || connection !== "connected" ? "offline" : ""}`}>
               {attachments.length > 0 && <div className="attachments">{attachments.map((item) => <span key={item.path}><FileCode2 size={12}/>{item.name}<button onClick={() => setAttachments((current) => current.filter((value) => value.path !== item.path))}><X size={11}/></button></span>)}</div>}
@@ -1007,8 +1032,29 @@ function DiffView({ source }: { source: string }) {
 
 function PlanPanel({ steps }: { steps: PlanStep[] }) { return <div className="plan-panel"><div className="plan-title"><Sparkles size={14}/><span>执行计划</span></div>{steps.map((step) => <div className="plan-step" key={step.id}>{/complete/i.test(step.status) ? <Check size={13}/> : /progress|running|active/i.test(step.status) ? <span className="spinner small"/> : <span className="plan-dot"/>}<span>{step.text}</span></div>)}</div>; }
 
-function GoalPanel({ objective }: { objective: string }) {
-  return <div className="goal-panel"><Target size={15}/><strong>进行中的目标</strong><span>{objective}</span></div>;
+function GoalPanel({ goal, running }: { goal: GoalState; running: boolean }) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    if (!running || goal.status !== "active") return;
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 1_000);
+    return () => window.clearInterval(timer);
+  }, [goal.status, running]);
+  const liveSeconds = running && goal.status === "active" ? Math.max(0, now - goal.updatedAt) : 0;
+  const label = goal.status === "active" ? "进行中的目标"
+    : goal.status === "blocked" ? "目标已阻塞"
+      : goal.status === "budget_limited" ? "目标已达预算"
+        : goal.status === "usage_limited" ? "目标已达用量限制" : "已暂停的目标";
+  return <div className={`goal-panel ${goal.status}`} role="status" aria-label={`${label}，${goal.objective}`}>
+    <Target size={15}/><strong>{label}</strong><span className="goal-objective" title={goal.objective}>{goal.objective}</span><span className="goal-separator">·</span><time>{formatGoalDuration(goal.timeUsedSeconds + liveSeconds)}</time>
+  </div>;
+}
+
+function formatGoalDuration(value: number) {
+  const seconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return [hours ? `${hours}h` : "", hours || minutes ? `${minutes}m` : "", `${remainder}s`].filter(Boolean).join(" ");
 }
 
 function PromptQueuePanel({ items, onRemove }: { items: QueuedPrompt[]; onRemove: (id: string) => Promise<void> }) {

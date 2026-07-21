@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
+import { GoalStore } from "./goalStore.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
@@ -243,8 +244,17 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
           ? await updateManager.check(typeof message.params.currentVersion === "string" ? message.params.currentVersion : "0.0.0")
           : await updateManager.downloadIOS();
         send(socket, { type: "rpcResult", id: message.id, result });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+        rpcDiagnostics.lastError = null;
       } catch (error) {
-        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: error instanceof Error ? error.message : String(error) } });
+        const detail = error instanceof Error ? error.message : String(error);
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+        rpcDiagnostics.lastErrorAt = rpcDiagnostics.lastCompletedAt;
+        rpcDiagnostics.lastError = detail;
+        diagnostics.record("error", "update", detail, { method: message.method });
+        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: detail } });
       }
       return;
     }
@@ -255,6 +265,23 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       send(socket, { type: "rpcResult", id: message.id, result });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
+    if (message.method === "relay/thread/goal") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      try {
+        const goal = await new GoalStore(codexProfiles.activeCodexHome).read(message.params.threadId);
+        send(socket, { type: "rpcResult", id: message.id, result: { goal: goal ?? null } });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Could not read the Goal state.";
+        rpcDiagnostics.lastErrorAt = new Date().toISOString();
+        rpcDiagnostics.lastError = detail;
+        diagnostics.record("error", "goal", detail, { threadId: message.params.threadId });
+        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: detail } });
+      }
       return;
     }
     if (message.method === "relay/codex/profiles/list") {

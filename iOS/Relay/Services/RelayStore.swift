@@ -32,6 +32,7 @@ final class RelayStore: ObservableObject {
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published private(set) var taskRunStates: [String: TaskRunState] = [:]
+    @Published private(set) var goalStates: [String: GoalState] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
     @Published private(set) var isPreparingPrompt = false
     @Published private(set) var codexProfiles: [CodexProfile] = []
@@ -119,8 +120,9 @@ final class RelayStore: ObservableObject {
         guard let selectedThreadId else { return [] }
         return queuedFollowUps.filter { $0.threadId == selectedThreadId }
     }
-    var currentGoal: String? {
-        messages.reversed().compactMap(\.goal).first
+    var currentGoal: GoalState? {
+        guard let selectedThreadId else { return nil }
+        return goalStates[selectedThreadId]
     }
     var currentWorkingDirectory: String {
         if let cwd = selectedThread?.cwd.nonEmpty { return cwd }
@@ -398,6 +400,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        goalStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
@@ -856,6 +859,7 @@ final class RelayStore: ObservableObject {
             if let effort = result["reasoningEffort"]?.stringValue { selectedEffort = effort }
             normalizeEffortForSelectedModel()
             persistGenerationSettings()
+            await refreshGoal(threadId: id)
             cacheCurrentThread()
             if isRunning {
                 ensureLiveSessionSync()
@@ -908,6 +912,26 @@ final class RelayStore: ObservableObject {
             cacheCurrentThread()
         } catch {
             errorMessage = "加载更早对话失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func refreshGoal(threadId: String) async {
+        guard socket.state == .connected else { return }
+        do {
+            let result = try await socket.rpc(
+                method: "relay/thread/goal",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 8,
+                reconnectOnTimeout: false
+            )
+            guard selectedThreadId == threadId || threads.contains(where: { $0.id == threadId }) else { return }
+            if let goalJSON = result["goal"], let goal = GoalState(json: goalJSON) {
+                goalStates[threadId] = goal
+            } else {
+                goalStates.removeValue(forKey: threadId)
+            }
+        } catch {
+            // Goal mode is optional on older Bridge versions; transcript loading must still succeed.
         }
     }
 
@@ -1490,6 +1514,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        goalStates = [:]
         queuedFollowUps = []
         pendingApprovals = []
         threadSnapshots.removeAll()
@@ -1639,7 +1664,10 @@ final class RelayStore: ObservableObject {
                 liveSessionSyncTask?.cancel()
                 liveSessionSyncTask = nil
             }
-            Task { await refreshThreads(showErrors: false) }
+            Task {
+                await refreshThreads(showErrors: false)
+                if let selectedThreadId { await refreshGoal(threadId: selectedThreadId) }
+            }
             if let selectedThreadId {
                 notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: method == "turn/failed")
             }
@@ -1715,7 +1743,10 @@ final class RelayStore: ObservableObject {
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
             }
-            Task { await refreshThreads(showErrors: false) }
+            Task {
+                await refreshThreads(showErrors: false)
+                await refreshGoal(threadId: threadId)
+            }
             notifyTaskCompleted(threadId: threadId, turnId: turnId, failed: method == "turn/failed")
         case "error":
             if params["willRetry"]?.boolValue == false {
@@ -1975,6 +2006,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        goalStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []

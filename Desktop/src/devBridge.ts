@@ -53,6 +53,7 @@ export function installDevBridge() {
         { id: "preview.older.answer", type: "agentMessage", phase: "final_answer", text: "已完成基础链路审计，并记录了断线恢复缺口。" },
       ] }] });
       else if (message.method === "relay/thread/session/subscribe") rpcResult(message, { known: true, isRunning: true, turnId, startedAt: now - 67, items });
+      else if (message.method === "relay/thread/goal") rpcResult(message, { goal: { threadId, id: "preview.goal", objective: "完成第二、第三和第四阶段", status: "active", tokenBudget: null, tokensUsed: 2381362, timeUsedSeconds: 4156, createdAt: now - 4900, updatedAt: now - 67 } });
       else if (message.method === "relay/diagnostics/report") rpcResult(message, { generatedAt: new Date().toISOString(), summary: "warning", checks: [
         { id: "bridge", level: "ok", title: "Relay Bridge", detail: "已运行 2 小时 14 分钟" },
         { id: "codex", level: "ok", title: "Codex App Server", detail: "已就绪" },

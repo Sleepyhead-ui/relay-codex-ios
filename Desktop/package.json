@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "prepare:bridge": "node scripts/prepare-bridge.cjs",
-    "dist": "npm run build && npm run prepare:bridge && electron-builder --win nsis portable"
+    "dist": "npm run build && npm run prepare:bridge && electron-builder --win nsis portable --publish never"
   },
   "dependencies": {
     "dompurify": "3.4.12",

@@ -73,16 +73,21 @@ jobs:
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/Relay.app Payload/
           ditto -c -k --sequesterRsrc --keepParent Payload Relay.ipa
+          shasum -a 256 Relay.ipa | awk '{print $1 "  Relay.ipa"}' > Relay.ipa.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Relay-unsigned-IPA
-          path: iOS/Relay.ipa
+          path: |
+            iOS/Relay.ipa
+            iOS/Relay.ipa.sha256
           if-no-files-found: error
       - name: Attach IPA to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: iOS/Relay.ipa
+          files: |
+            iOS/Relay.ipa
+            iOS/Relay.ipa.sha256
           generate_release_notes: true
 
   desktop:
