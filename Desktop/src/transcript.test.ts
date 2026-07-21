@@ -6,6 +6,10 @@ describe("desktop transcript", () => {
     expect(formatElapsed(Date.now() / 1000 - 65, undefined, 0)).toBe("1 分 5 秒");
   });
 
+  it("uses completed timestamps when a stopped history turn carries a zero duration", () => {
+    expect(formatElapsed(1_000, 1_171, 0)).toBe("2 分 51 秒");
+  });
+
   it("extracts the actual shell command from an exec wrapper", () => {
     const item = parseItem({
       id: "tool.1",

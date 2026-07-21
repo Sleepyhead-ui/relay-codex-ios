@@ -287,7 +287,7 @@ private struct RunActivityView: View {
                 guard !activitySections.isEmpty else { return }
                 withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
-                HStack(alignment: .top, spacing: 7) {
+                HStack(alignment: .center, spacing: 7) {
                     Group {
                         if isLive {
                             ProgressView()
@@ -301,27 +301,13 @@ private struct RunActivityView: View {
                     }
                     .frame(width: 14, height: 16, alignment: .center)
 
-                    if isLive, let latestReasoningText {
-                        CompactMarkdownText(source: latestReasoningText, size: 12, weight: .medium)
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(activityLabel)
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .id(latestReasoningText)
-                            .transition(.opacity)
-                    } else {
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text(activityLabel)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
                     }
 
                     Spacer(minLength: 6)
-                    if isLive, metadata.startedAt != nil {
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text(formatDuration(milliseconds: elapsedMilliseconds))
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
                     if !activitySections.isEmpty {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
@@ -348,6 +334,16 @@ private struct RunActivityView: View {
                             )
                             .foregroundStyle(Color.primary.opacity(0.9))
                             .fixedSize(horizontal: false, vertical: true)
+                        case .reasoning(let id, let text):
+                            HStack(alignment: .top, spacing: 7) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 14, height: 16)
+                                CompactMarkdownText(source: text, size: 12, weight: .regular)
+                                    .foregroundStyle(.secondary)
+                                    .id(id)
+                            }
                         case .execution(_, let executionItems):
                             ExecutionGroupView(items: executionItems)
                         }
@@ -388,8 +384,12 @@ private struct RunActivityView: View {
         }
 
         for item in items {
-            if item.kind == .reasoning || item.kind == .plan { continue }
-            if item.isCommentary {
+            if item.kind == .plan { continue }
+            if item.kind == .reasoning {
+                guard item.id == reasoningItems.last?.id, let latestReasoningText else { continue }
+                flushExecution()
+                sections.append(.reasoning(id: item.id, text: latestReasoningText))
+            } else if item.isCommentary {
                 flushExecution()
                 sections.append(.commentary(item))
             } else {
@@ -401,7 +401,7 @@ private struct RunActivityView: View {
     }
 
     private var elapsedMilliseconds: Int {
-        if let duration = metadata.durationMs { return duration }
+        if let duration = metadata.durationMs, duration > 0 { return duration }
         guard let startedAt = metadata.startedAt else { return 0 }
         guard metadata.isRunning || metadata.completedAt != nil else { return 0 }
         let end = metadata.isRunning ? Date() : (metadata.completedAt ?? startedAt)
@@ -410,12 +410,10 @@ private struct RunActivityView: View {
 
     private var activityLabel: String {
         let duration = formatDuration(milliseconds: elapsedMilliseconds)
-        if isLive { return elapsedMilliseconds > 0 ? "正在处理 · \(duration)" : "正在处理" }
-        if metadata.isRunning { return "已完成上一阶段" }
-        if metadata.status == "failed" { return showsTurnDuration ? "处理失败 · \(duration)" : "后续处理失败" }
-        if metadata.status == "interrupted" { return showsTurnDuration ? "已停止 · \(duration)" : "后续处理已停止" }
-        if !showsTurnDuration { return "继续处理" }
-        return elapsedMilliseconds > 0 ? "已处理 · \(duration)" : "处理过程"
+        if isLive { return "正在处理 · \(duration)" }
+        if metadata.status == "failed" { return showsTurnDuration ? "处理失败 · \(duration)" : "处理失败" }
+        if metadata.status == "interrupted" { return showsTurnDuration ? "已停止 · \(duration)" : "已停止" }
+        return showsTurnDuration ? "已处理 · \(duration)" : "已处理"
     }
 
     private var statusIcon: String {
@@ -429,11 +427,13 @@ private struct RunActivityView: View {
 
 private enum ActivitySection: Identifiable {
     case commentary(TranscriptItem)
+    case reasoning(id: String, text: String)
     case execution(id: String, items: [TranscriptItem])
 
     var id: String {
         switch self {
         case .commentary(let item): return "commentary.\(item.id)"
+        case .reasoning(let id, _): return "reasoning.\(id)"
         case .execution(let id, _): return id
         }
     }

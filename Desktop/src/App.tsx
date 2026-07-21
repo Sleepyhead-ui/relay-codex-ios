@@ -634,19 +634,20 @@ function ActivityBlock({ items, metadata, live }: { items: TranscriptItem[]; met
   useEffect(() => { if (!live) setExpanded(false); }, [live]);
   useEffect(() => { if (!live) return; const timer = setInterval(() => setTick((value) => value + 1), 1000); return () => clearInterval(timer); }, [live]);
   const latestReasoning = [...items].reverse().find((item) => item.kind === "reasoning");
-  const reasoningText = latestReasoning ? lastLine(latestReasoning.text || latestReasoning.detail || "") : "";
   const duration = formatElapsed(metadata?.startedAt, metadata?.completedAt, metadata?.durationMs);
-  const label = live && reasoningText ? reasoningText : live ? "正在处理" : metadata?.status === "failed" ? "处理失败" : metadata?.status === "interrupted" ? "已停止" : "已处理";
-  const visible = items.filter((item) => item.kind !== "reasoning" && item.kind !== "plan");
-  const segments: ({ commentary?: TranscriptItem; execution?: TranscriptItem[]; id: string })[] = [];
+  const statusLabel = live ? "正在处理" : metadata?.status === "failed" ? "处理失败" : metadata?.status === "interrupted" ? "已停止" : "已处理";
+  const label = `${statusLabel} · ${duration}`;
+  const visible = items.filter((item) => item.kind !== "plan" && (item.kind !== "reasoning" || item.id === latestReasoning?.id));
+  const segments: ({ commentary?: TranscriptItem; reasoning?: TranscriptItem; execution?: TranscriptItem[]; id: string })[] = [];
   let execution: TranscriptItem[] = [];
   const flush = () => { if (execution.length) { segments.push({ execution, id: `exec.${execution[0].id}` }); execution = []; } };
   for (const item of visible) {
     if (item.kind === "assistant" && item.phase === "commentary") { flush(); segments.push({ commentary: item, id: `comment.${item.id}` }); }
+    else if (item.kind === "reasoning") { flush(); segments.push({ reasoning: item, id: `reasoning.${item.id}` }); }
     else execution.push(item);
   }
   flush();
-  return <div className={`activity-block ${live ? "live" : ""}`}><button className="activity-header" onClick={() => setExpanded((value) => !value)}><span className="activity-status">{live ? <span className="spinner"/> : metadata?.status === "failed" ? <AlertCircle size={15}/> : <Check size={15}/>}</span><span className="activity-label">{label}</span><span className="activity-duration">{duration}</span>{segments.length > 0 && <ChevronDown size={14} className={expanded ? "rotated" : ""}/>}</button>{expanded && <div className="activity-content">{segments.map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}</div>}</div>;
+  return <div className={`activity-block ${live ? "live" : metadata?.status || ""}`}><button className="activity-header" onClick={() => setExpanded((value) => !value)}><span className="activity-status">{live ? <span className="spinner"/> : metadata?.status === "failed" ? <AlertCircle size={15}/> : metadata?.status === "interrupted" ? <CircleStop size={15}/> : <Check size={15}/>}</span><span className="activity-label">{label}</span>{segments.length > 0 && <ChevronDown size={14} className={expanded ? "rotated" : ""}/>}</button>{expanded && <div className="activity-content">{segments.map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : segment.reasoning ? <div className="reasoning-summary" key={segment.id}><Sparkles size={13}/><Markdown text={lastLine(segment.reasoning.text || segment.reasoning.detail || "思考")}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}</div>}</div>;
 }
 
 function ExecutionGroup({ items }: { items: TranscriptItem[] }) {

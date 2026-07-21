@@ -115,13 +115,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .markdown a:hover { text-decoration: underline; }
 
 .activity-block { color: #b2b5ae; }
-.activity-header { width: 100%; display: grid; grid-template-columns: 18px minmax(0,1fr) auto 15px; align-items: center; gap: 7px; padding: 3px 0; background: transparent; text-align: left; color: inherit; }
+.activity-header { width: 100%; display: grid; grid-template-columns: 18px minmax(0,1fr) 15px; align-items: center; gap: 7px; padding: 3px 0; background: transparent; text-align: left; color: inherit; }
 .activity-status { width: 16px; height: 18px; display: flex; align-items: center; justify-content: center; color: var(--accent); }
 .activity-block.live .activity-status { color: #a5a9a1; }
+.activity-block.interrupted .activity-status { color: #7d817a; }
 .activity-label { min-width: 0; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.activity-duration { color: #62665f; font-size: 10px; }
 .activity-content { margin: 7px 0 0 25px; display: flex; flex-direction: column; gap: 8px; }
 .progress-copy { color: #d6d8d2; font-size: 13px; line-height: 1.55; }
+.reasoning-summary { display: flex; align-items: flex-start; gap: 7px; color: #8e928a; font-size: 12px; line-height: 1.45; }
+.reasoning-summary > svg { flex: 0 0 auto; margin-top: 2px; }
 .execution-group > button, .tool-row > button { width: 100%; display: flex; align-items: center; gap: 8px; min-height: 29px; padding: 3px 1px; background: transparent; color: #a7aaa3; text-align: left; }
 .execution-group > button span:nth-child(2) { font-size: 12px; font-weight: 600; }
 .execution-state { margin-left: auto; display: flex; color: var(--accent); }
