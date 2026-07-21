@@ -85,7 +85,8 @@ struct SidebarView: View {
                                 ThreadRow(
                                     thread: thread,
                                     selected: thread.id == store.selectedThreadId,
-                                    running: store.isThreadRunning(thread.id)
+                                    running: store.isThreadRunning(thread.id),
+                                    needsApproval: store.hasPendingApproval(threadId: thread.id)
                                 ) {
                                     Task { await store.selectThread(thread.id) }
                                 }
@@ -212,6 +213,7 @@ private struct ThreadRow: View {
     let thread: ThreadSummary
     let selected: Bool
     let running: Bool
+    let needsApproval: Bool
     let action: () -> Void
 
     var body: some View {
@@ -223,6 +225,12 @@ private struct ThreadRow: View {
                         .tint(RelayTheme.accent)
                         .frame(width: 13, height: 13)
                         .transition(.scale.combined(with: .opacity))
+                }
+                if needsApproval {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .frame(width: 13, height: 13)
                 }
                 Text(thread.title)
                     .font(.system(size: 14, weight: selected ? .semibold : .regular))
@@ -240,7 +248,8 @@ private struct ThreadRow: View {
         }
         .buttonStyle(.plain)
         .animation(.easeOut(duration: 0.18), value: running)
-        .accessibilityValue(running ? "正在运行" : relativeDate)
+        .animation(.easeOut(duration: 0.18), value: needsApproval)
+        .accessibilityValue(needsApproval ? "等待审批" : running ? "正在运行" : relativeDate)
     }
 
     private var relativeDate: String {

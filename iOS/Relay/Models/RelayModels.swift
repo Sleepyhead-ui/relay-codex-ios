@@ -732,6 +732,8 @@ struct ApprovalRequest: Identifiable, Equatable {
     let id: String
     let rpcId: JSONValue
     let method: String
+    let threadId: String?
+    let turnId: String?
     let requestedPermissions: JSONValue?
     let title: String
     let summary: String
@@ -743,6 +745,11 @@ struct ApprovalRequest: Identifiable, Equatable {
         self.rpcId = rpcId
         self.method = method
         let params = message["params"] ?? .object([:])
+        threadId = params["threadId"]?.stringValue
+            ?? params["thread"]?["id"]?.stringValue
+            ?? params["conversationId"]?.stringValue
+        turnId = params["turnId"]?.stringValue
+            ?? params["turn"]?["id"]?.stringValue
         requestedPermissions = params["permissions"]
 
         if method.contains("commandExecution") {

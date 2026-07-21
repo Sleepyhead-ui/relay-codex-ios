@@ -2,6 +2,7 @@ import Foundation
 
 enum TaskRunPhase: Equatable {
     case idle
+    case starting
     case running
     case retrying
     case completed
@@ -19,20 +20,30 @@ struct TaskRunState: Equatable {
     var planTurnId: String?
     var plan: [ExecutionPlanStep] = []
 
-    var isRunning: Bool { phase == .running || phase == .retrying }
+    var isRunning: Bool { phase == .starting || phase == .running || phase == .retrying }
 
     mutating func apply(_ event: TaskRunEvent) {
         switch event {
         case .reset:
             self = TaskRunState(threadId: threadId)
+        case .starting(let startedAt):
+            self = TaskRunState(threadId: threadId, phase: .starting, startedAt: startedAt ?? Date())
         case .hydrate(let running, let turnId, let startedAt):
-            self = running && turnId != nil
-                ? TaskRunState(threadId: threadId, phase: .running, turnId: turnId, startedAt: startedAt)
-                : TaskRunState(threadId: threadId)
+            if running {
+                self = TaskRunState(
+                    threadId: threadId,
+                    phase: turnId == nil ? .starting : .running,
+                    turnId: turnId,
+                    startedAt: startedAt ?? Date()
+                )
+            } else {
+                self = TaskRunState(threadId: threadId)
+            }
         case .started(let turnId, let startedAt):
             self = TaskRunState(threadId: threadId, phase: .running, turnId: turnId, startedAt: startedAt ?? Date())
         case .progress(let turnId, let startedAt):
-            guard self.turnId == nil || self.turnId == turnId || phase == .idle else { return }
+            let canAdoptTurn = self.turnId == nil && (phase == .idle || phase == .starting || phase == .retrying)
+            guard self.turnId == turnId || canAdoptTurn else { return }
             if self.turnId != turnId {
                 plan = []
                 planTurnId = nil
@@ -50,10 +61,10 @@ struct TaskRunState: Equatable {
             plan = steps
         case .retrying(let turnId, let message):
             guard turnId == nil || self.turnId == nil || self.turnId == turnId else { return }
-            if self.turnId != nil { phase = .retrying }
+            if isRunning { phase = .retrying }
             retryMessage = message
         case .clearRetry:
-            if phase == .retrying { phase = .running }
+            if phase == .retrying { phase = turnId == nil ? .starting : .running }
             retryMessage = nil
         case .terminal(let turnId, let terminalPhase, let completedAt):
             guard turnId == nil || self.turnId == nil || self.turnId == turnId else { return }
@@ -69,6 +80,7 @@ struct TaskRunState: Equatable {
 
 enum TaskRunEvent {
     case reset
+    case starting(startedAt: Date?)
     case hydrate(running: Bool, turnId: String?, startedAt: Date?)
     case started(turnId: String, startedAt: Date?)
     case progress(turnId: String, startedAt: Date?)

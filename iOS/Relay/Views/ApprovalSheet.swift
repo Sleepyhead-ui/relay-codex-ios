@@ -20,10 +20,17 @@ struct ApprovalSheet: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(approval.title)
                             .font(.system(size: 20, weight: .semibold))
-                        if store.pendingApprovals.count > 1 {
-                            Text("待处理审批 1 / \(store.pendingApprovals.count)")
+                        if store.currentPendingApprovals.count > 1 {
+                            Text("当前任务审批 1 / \(store.currentPendingApprovals.count)")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.orange)
+                        }
+                        if let threadId = approval.threadId,
+                           let thread = store.threads.first(where: { $0.id == threadId }) {
+                            Text(thread.title)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Text(approval.summary)
                             .font(.system(size: 14))

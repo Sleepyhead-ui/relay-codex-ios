@@ -8,7 +8,6 @@ final class RelayStore: ObservableObject {
     @Published var selectedThreadId: String?
     @Published var messages: [TranscriptItem] = []
     @Published var composerText = ""
-    @Published var isRunning = false
     @Published var sidebarOpen = false
     @Published var showingConnection = false
     @Published var showingSettings = false
@@ -30,11 +29,8 @@ final class RelayStore: ObservableObject {
     @Published var downloadingPath: String?
     @Published private(set) var imagePreviewURLs: [String: URL] = [:]
     @Published private(set) var loadingImagePaths = Set<String>()
-    @Published var activePlan: [ExecutionPlanStep] = []
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
-    @Published private(set) var activeTurnIdsByThread: [String: String] = [:]
-    @Published private(set) var upstreamRetryingByThread: [String: String] = [:]
     @Published private(set) var taskRunStates: [String: TaskRunState] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
     @Published private(set) var isPreparingPrompt = false
@@ -50,7 +46,6 @@ final class RelayStore: ObservableObject {
     private let lastThreadDefaultsKey = "relay.lastThreadId"
     private let threadCacheDefaultsKey = "relay.cachedThreads"
     private let followUpDefaultsKey = "relay.followUpBehavior"
-    private var activeTurnId: String?
     private var threadLoadGeneration = UUID()
     private var reconcilingThreadId: String?
     private var queuedEvents: [(method: String, params: JSONValue)] = []
@@ -75,9 +70,31 @@ final class RelayStore: ObservableObject {
     }
     var isSelectedThreadUpstreamRetrying: Bool {
         guard let selectedThreadId else { return false }
-        return upstreamRetryingByThread[selectedThreadId] != nil
+        return taskRunStates[selectedThreadId]?.phase == .retrying
     }
-    var pendingApproval: ApprovalRequest? { pendingApprovals.first }
+    var isRunning: Bool {
+        guard let selectedThreadId else { return false }
+        return taskRunStates[selectedThreadId]?.isRunning == true
+    }
+    var activePlan: [ExecutionPlanStep] {
+        guard let selectedThreadId,
+              let state = taskRunStates[selectedThreadId],
+              state.planTurnId == state.turnId else { return [] }
+        return state.plan
+    }
+    private var activeTurnId: String? {
+        guard let selectedThreadId else { return nil }
+        return taskRunStates[selectedThreadId]?.turnId
+    }
+    var currentPendingApprovals: [ApprovalRequest] {
+        guard let selectedThreadId else { return pendingApprovals }
+        let matching = pendingApprovals.filter { $0.threadId == selectedThreadId || $0.threadId == nil }
+        return matching.isEmpty ? pendingApprovals : matching
+    }
+    var pendingApproval: ApprovalRequest? { currentPendingApprovals.first }
+    func hasPendingApproval(threadId: String) -> Bool {
+        pendingApprovals.contains { $0.threadId == threadId }
+    }
     var currentQueuedFollowUps: [QueuedFollowUp] {
         guard let selectedThreadId else { return [] }
         return queuedFollowUps.filter { $0.threadId == selectedThreadId }
@@ -213,8 +230,6 @@ final class RelayStore: ObservableObject {
         messages = []
         turnMetadata = [:]
         tokenUsageByThread = [:]
-        activeTurnIdsByThread = [:]
-        upstreamRetryingByThread = [:]
         taskRunStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
@@ -316,7 +331,7 @@ final class RelayStore: ObservableObject {
             if fetched.isEmpty, !threads.isEmpty {
                 return
             }
-            for index in fetched.indices where activeTurnIdsByThread[fetched[index].id] != nil {
+            for index in fetched.indices where taskRunStates[fetched[index].id]?.isRunning == true {
                 fetched[index].status = "active"
             }
             threads = fetched
@@ -333,7 +348,6 @@ final class RelayStore: ObservableObject {
             return false
         }
         do {
-            activePlan = []
             let projectDirectory = (workingDirectory ?? host.workingDirectory)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             var params: [String: JSONValue] = [
@@ -362,8 +376,7 @@ final class RelayStore: ObservableObject {
             if !projectDirectory.isEmpty { workingDirectoryOverrides[id] = projectDirectory }
             messages = []
             turnMetadata = [:]
-            isRunning = false
-            activeTurnId = nil
+            applyTaskRunEvent(threadId: id, event: .reset)
             sidebarOpen = false
             if let model = result["model"]?.stringValue { selectedModelId = model }
             await applyThreadSettings(showErrors: false)
@@ -394,7 +407,6 @@ final class RelayStore: ObservableObject {
 
     func isThreadRunning(_ threadId: String) -> Bool {
         taskRunStates[threadId]?.isRunning == true
-            || activeTurnIdsByThread[threadId] != nil
             || threads.first(where: { $0.id == threadId })?.isRunning == true
     }
 
@@ -450,9 +462,7 @@ final class RelayStore: ObservableObject {
         if switchingThreads && !restoredFromCache {
             messages = []
             turnMetadata = [:]
-            isRunning = false
-            activeTurnId = nil
-            activePlan = []
+            applyTaskRunEvent(threadId: id, event: .reset)
         }
         if closeSidebar { sidebarOpen = false }
         isLoadingThread = switchingThreads && !restoredFromCache
@@ -530,14 +540,21 @@ final class RelayStore: ObservableObject {
                 ?? result["thread"]?["status"]?.stringValue
                 ?? "idle"
             let threadIsActive = isActiveStatus(status)
-            activeTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
-            if activeTurnId == nil, threadIsActive {
-                activeTurnId = turns.last?["id"]?.stringValue
+            var loadedActiveTurnId = turns.last(where: { self.isActiveStatus($0["status"]?.stringValue) })?["id"]?.stringValue
+            if loadedActiveTurnId == nil, threadIsActive {
+                loadedActiveTurnId = turns.last?["id"]?.stringValue
             }
-            if let activeTurnId {
-                applyUserMessagePlacements(turnId: activeTurnId, threadId: id)
+            if let loadedActiveTurnId {
+                applyUserMessagePlacements(turnId: loadedActiveTurnId, threadId: id)
             }
-            isRunning = threadIsActive || activeTurnId != nil
+            applyTaskRunEvent(
+                threadId: id,
+                event: .hydrate(
+                    running: threadIsActive || loadedActiveTurnId != nil,
+                    turnId: loadedActiveTurnId,
+                    startedAt: loadedActiveTurnId.flatMap { turnMetadata[$0]?.startedAt }
+                )
+            )
             if let runtime = try? await socket.rpc(
                 method: "relay/thread/runtime",
                 params: ["threadId": .string(id)]
@@ -545,17 +562,8 @@ final class RelayStore: ObservableObject {
                 guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
                 reconcileRuntimeState(runtime)
             }
-            applyTaskRunEvent(
-                threadId: id,
-                event: .hydrate(
-                    running: isRunning,
-                    turnId: activeTurnId,
-                    startedAt: activeTurnId.flatMap { turnMetadata[$0]?.startedAt }
-                )
-            )
             if isRunning {
                 if let activeTurnId {
-                    activeTurnIdsByThread[id] = activeTurnId
                     var activeMetadata = turnMetadata[activeTurnId] ?? TurnMetadata()
                     activeMetadata.status = "inProgress"
                     activeMetadata.completedAt = nil
@@ -565,7 +573,6 @@ final class RelayStore: ObservableObject {
                 }
                 setThreadStatus(id, status: "active", touchUpdatedAt: false)
             } else {
-                activeTurnIdsByThread.removeValue(forKey: id)
                 setThreadStatus(id, status: "idle", touchUpdatedAt: false)
             }
             if let model = result["model"]?.stringValue { selectedModelId = model }
@@ -680,9 +687,8 @@ final class RelayStore: ObservableObject {
             text: text,
             attachments: readyAttachments
         )
-        activePlan = []
         sendingThreadIds.insert(threadId)
-        isRunning = true
+        applyTaskRunEvent(threadId: threadId, event: .starting(startedAt: Date()))
         setThreadStatus(threadId, status: "active")
         let attachmentSummary = readyAttachments.filter { !$0.isImage }.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -721,8 +727,6 @@ final class RelayStore: ObservableObject {
                 let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
                     || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
                 if !alreadyCompleted {
-                    activeTurnIdsByThread[threadId] = confirmedTurnId
-                    if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
                     applyTaskRunEvent(
                         threadId: threadId,
                         event: .started(turnId: confirmedTurnId, startedAt: turnMetadata[confirmedTurnId]?.startedAt)
@@ -757,10 +761,9 @@ final class RelayStore: ObservableObject {
                 threadId: threadId
             )
             if !uncertain || !wasAccepted {
-                activeTurnIdsByThread.removeValue(forKey: threadId)
+                applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: nil, phase: .failed, completedAt: Date()))
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
-                if selectedThreadId == threadId { isRunning = false }
             }
             errorMessage = uncertain
                 ? "消息已保留在对话中，Relay 将在重连后确认是否送达。"
@@ -769,7 +772,7 @@ final class RelayStore: ObservableObject {
     }
 
     private func steerActiveTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
-        guard let expectedTurnId = activeTurnId ?? activeTurnIdsByThread[threadId] else {
+        guard let expectedTurnId = taskRunStates[threadId]?.turnId else {
             errorMessage = "Relay 尚未取得当前任务的运行编号，请稍后重试。"
             return
         }
@@ -823,8 +826,6 @@ final class RelayStore: ObservableObject {
             let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
                 || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
             if !alreadyCompleted {
-                activeTurnIdsByThread[threadId] = confirmedTurnId
-                if selectedThreadId == threadId { activeTurnId = confirmedTurnId }
                 applyTaskRunEvent(threadId: threadId, event: .progress(turnId: confirmedTurnId, startedAt: nil))
                 setThreadStatus(threadId, status: "active")
             }
@@ -1023,11 +1024,11 @@ final class RelayStore: ObservableObject {
 
     func stopTurn() async {
         guard let threadId = selectedThreadId else { return }
-        var turnId = activeTurnId ?? activeTurnIdsByThread[threadId]
+        var turnId = taskRunStates[threadId]?.turnId
         if turnId == nil, socket.state == .connected,
            let runtime = try? await socket.rpc(method: "relay/thread/runtime", params: ["threadId": .string(threadId)]) {
             reconcileRuntimeState(runtime)
-            turnId = activeTurnId ?? activeTurnIdsByThread[threadId]
+            turnId = taskRunStates[threadId]?.turnId
         }
         guard let turnId else {
             markSelectedThreadStopped(threadId: threadId)
@@ -1053,18 +1054,13 @@ final class RelayStore: ObservableObject {
     }
 
     private func markSelectedThreadStopped(threadId: String) {
-        let stoppedTurnId = activeTurnId ?? activeTurnIdsByThread[threadId]
+        let stoppedTurnId = taskRunStates[threadId]?.turnId
         if let turnId = activeTurnId, var metadata = turnMetadata[turnId] {
             metadata.status = "interrupted"
             metadata.completedAt = metadata.completedAt ?? Date()
             metadata.durationMs = metadata.durationMs ?? Int(max(0, Date().timeIntervalSince(metadata.startedAt ?? Date()) * 1000))
             turnMetadata[turnId] = metadata
         }
-        isRunning = false
-        activeTurnId = nil
-        activeTurnIdsByThread.removeValue(forKey: threadId)
-        upstreamRetryingByThread.removeValue(forKey: threadId)
-        activePlan = []
         applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: stoppedTurnId, phase: .interrupted, completedAt: Date()))
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
@@ -1198,21 +1194,6 @@ final class RelayStore: ObservableObject {
         var state = taskRunStates[threadId] ?? TaskRunState(threadId: threadId)
         state.apply(event)
         taskRunStates[threadId] = state
-
-        if let turnId = state.turnId {
-            activeTurnIdsByThread[threadId] = turnId
-        } else {
-            activeTurnIdsByThread.removeValue(forKey: threadId)
-        }
-        if state.phase == .retrying, let message = state.retryMessage {
-            upstreamRetryingByThread[threadId] = message
-        } else {
-            upstreamRetryingByThread.removeValue(forKey: threadId)
-        }
-        guard selectedThreadId == threadId else { return }
-        isRunning = state.isRunning
-        activeTurnId = state.turnId
-        activePlan = state.planTurnId == state.turnId ? state.plan : []
     }
 
     private func acceptsTurnEvent(threadId: String, turnId: String?) -> Bool {
@@ -1242,7 +1223,7 @@ final class RelayStore: ObservableObject {
             return
         }
         if let threadId = params["threadId"]?.stringValue, isTurnProgressNotification(method) {
-            upstreamRetryingByThread.removeValue(forKey: threadId)
+            applyTaskRunEvent(threadId: threadId, event: .clearRetry)
         }
         switch method {
         case "turn/started":
@@ -1274,13 +1255,8 @@ final class RelayStore: ObservableObject {
             let completedActiveTurn = activeTurnId == nil || turnId == activeTurnId
             if completedActiveTurn {
                 if let selectedThreadId {
-                    activeTurnIdsByThread.removeValue(forKey: selectedThreadId)
-                    upstreamRetryingByThread.removeValue(forKey: selectedThreadId)
                     setThreadStatus(selectedThreadId, status: "idle")
                 }
-                isRunning = false
-                activeTurnId = nil
-                activePlan = []
                 liveSessionSyncTask?.cancel()
                 liveSessionSyncTask = nil
             }
@@ -1346,7 +1322,7 @@ final class RelayStore: ObservableObject {
             if params["willRetry"]?.boolValue == true, let threadId {
                 applyTaskRunEvent(threadId: threadId, event: .retrying(turnId: eventTurnId, message: message))
             } else {
-                if let threadId { upstreamRetryingByThread.removeValue(forKey: threadId) }
+                if let threadId { applyTaskRunEvent(threadId: threadId, event: .clearRetry) }
                 errorMessage = message
                 if params["willRetry"]?.boolValue == false, let threadId {
                     markSelectedThreadFailed(threadId: threadId, turnId: eventTurnId, message: message)
@@ -1362,7 +1338,7 @@ final class RelayStore: ObservableObject {
         let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
         if method != "turn/started", !acceptsTurnEvent(threadId: threadId, turnId: turnId) { return }
         if isTurnProgressNotification(method) {
-            upstreamRetryingByThread.removeValue(forKey: threadId)
+            applyTaskRunEvent(threadId: threadId, event: .clearRetry)
         }
         switch method {
         case "turn/started", "item/started", "item/completed", "item/agentMessage/delta",
@@ -1370,7 +1346,6 @@ final class RelayStore: ObservableObject {
              "item/reasoning/textDelta", "item/commandExecution/outputDelta", "turn/plan/updated":
             let wasRunning = isThreadRunning(threadId)
             if method == "turn/started", let turnId { completedTurnIds.remove(turnId) }
-            if let turnId { activeTurnIdsByThread[threadId] = turnId }
             if let turnId {
                 applyTaskRunEvent(
                     threadId: threadId,
@@ -1383,12 +1358,10 @@ final class RelayStore: ObservableObject {
             updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: turnId)
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
             if let turnId { completedTurnIds.insert(turnId) }
-            let completesKnownTurn = activeTurnIdsByThread[threadId] == nil
+            let completesKnownTurn = taskRunStates[threadId]?.turnId == nil
                 || turnId == nil
-                || activeTurnIdsByThread[threadId] == turnId
+                || taskRunStates[threadId]?.turnId == turnId
             if completesKnownTurn {
-                activeTurnIdsByThread.removeValue(forKey: threadId)
-                upstreamRetryingByThread.removeValue(forKey: threadId)
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
                 let phase: TaskRunPhase = method == "turn/failed" ? .failed : (method == "turn/completed" ? .completed : .interrupted)
@@ -1402,9 +1375,7 @@ final class RelayStore: ObservableObject {
             if params["willRetry"]?.boolValue == true {
                 applyTaskRunEvent(threadId: threadId, event: .retrying(turnId: turnId, message: message))
             } else if params["willRetry"]?.boolValue == false {
-                upstreamRetryingByThread.removeValue(forKey: threadId)
                 if let turnId { completedTurnIds.insert(turnId) }
-                activeTurnIdsByThread.removeValue(forKey: threadId)
                 setThreadStatus(threadId, status: "idle")
                 updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
                 applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: turnId, phase: .failed, completedAt: Date()))
@@ -1424,13 +1395,10 @@ final class RelayStore: ObservableObject {
             applyTaskRunEvent(threadId: selectedThreadId, event: .progress(turnId: turnId, startedAt: startedAt))
         }
         let wasRunning = selectedThreadId.map { isThreadRunning($0) } ?? false
-        isRunning = true
         if let selectedThreadId {
-            if let turnId { activeTurnIdsByThread[selectedThreadId] = turnId }
             if !wasRunning { setThreadStatus(selectedThreadId, status: "active") }
         }
         guard let turnId else { return }
-        activeTurnId = turnId
         if let selectedThreadId {
             bindPendingUserPrompt(to: turnId, threadId: selectedThreadId)
         }
@@ -1469,13 +1437,9 @@ final class RelayStore: ObservableObject {
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 turnMetadata[staleTurnId] = metadata
             }
-            isRunning = false
             if let selectedThreadId {
-                activeTurnIdsByThread.removeValue(forKey: selectedThreadId)
                 setThreadStatus(selectedThreadId, status: "idle", touchUpdatedAt: false)
             }
-            activeTurnId = nil
-            activePlan = []
             if let selectedThreadId {
                 applyTaskRunEvent(
                     threadId: selectedThreadId,
@@ -1491,7 +1455,7 @@ final class RelayStore: ObservableObject {
 
     private func markSelectedThreadFailed(threadId: String, turnId: String?, message: String) {
         guard selectedThreadId == threadId else { return }
-        let failedTurnId = turnId ?? activeTurnId ?? activeTurnIdsByThread[threadId]
+        let failedTurnId = turnId ?? taskRunStates[threadId]?.turnId
         if let failedTurnId {
             completedTurnIds.insert(failedTurnId)
             var metadata = turnMetadata[failedTurnId] ?? TurnMetadata()
@@ -1503,11 +1467,6 @@ final class RelayStore: ObservableObject {
             }
             turnMetadata[failedTurnId] = metadata
         }
-        isRunning = false
-        activeTurnId = nil
-        activeTurnIdsByThread.removeValue(forKey: threadId)
-        upstreamRetryingByThread.removeValue(forKey: threadId)
-        activePlan = []
         applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: failedTurnId, phase: .failed, completedAt: Date()))
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
@@ -1706,13 +1665,10 @@ final class RelayStore: ObservableObject {
         messages = []
         turnMetadata = [:]
         tokenUsageByThread = [:]
-        activeTurnIdsByThread = [:]
-        upstreamRetryingByThread = [:]
         taskRunStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
-        activePlan = []
         threadSnapshots = [:]
         olderTurnsCursorByThread = [:]
         acceptedMessageIds = []
@@ -1720,8 +1676,6 @@ final class RelayStore: ObservableObject {
         userMessagePlacements = [:]
         nextUserMessageSequence = 0
         completedTurnIds = []
-        activeTurnId = nil
-        isRunning = false
         isLoadingThread = false
         setSelectedThread(nil)
         UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
@@ -1812,9 +1766,6 @@ final class RelayStore: ObservableObject {
             metadata.completedAt = nil
             metadata.durationMs = nil
             turnMetadata[turnId] = metadata
-            isRunning = true
-            activeTurnId = turnId
-            activeTurnIdsByThread[threadId] = turnId
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
             applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: metadata.startedAt))
         } else {
@@ -1828,11 +1779,7 @@ final class RelayStore: ObservableObject {
             turnMetadata[turnId] = metadata
             if activeTurnId == nil || activeTurnId == turnId {
                 completedTurnIds.insert(turnId)
-                isRunning = false
-                activeTurnId = nil
-                activeTurnIdsByThread.removeValue(forKey: threadId)
                 setThreadStatus(threadId, status: "idle")
-                activePlan = []
                 liveSessionSyncTask?.cancel()
                 liveSessionSyncTask = nil
             }
@@ -1983,9 +1930,6 @@ final class RelayStore: ObservableObject {
         guard let snapshot = threadSnapshots[threadId] else { return false }
         messages = snapshot.messages
         turnMetadata = snapshot.turnMetadata
-        isRunning = snapshot.isRunning
-        activeTurnId = snapshot.activeTurnId
-        activePlan = snapshot.activePlanTurnId == snapshot.activeTurnId ? snapshot.activePlan : []
         applyTaskRunEvent(
             threadId: threadId,
             event: .hydrate(

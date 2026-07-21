@@ -2,6 +2,39 @@ import XCTest
 @testable import Relay
 
 final class TaskRunStateTests: XCTestCase {
+    func testStartingStateIsRunningBeforeTurnIdArrives() {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.starting(startedAt: nil))
+        XCTAssertTrue(state.isRunning)
+        XCTAssertNil(state.turnId)
+        state.apply(.progress(turnId: "turn.1", startedAt: nil))
+        XCTAssertEqual(state.phase, .running)
+        XCTAssertEqual(state.turnId, "turn.1")
+    }
+
+    func testRetryBeforeTurnConfirmationReturnsToStarting() {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.starting(startedAt: nil))
+        state.apply(.retrying(turnId: nil, message: "upstream unavailable"))
+        XCTAssertEqual(state.phase, .retrying)
+        XCTAssertTrue(state.isRunning)
+
+        state.apply(.clearRetry)
+        XCTAssertEqual(state.phase, .starting)
+        XCTAssertNil(state.turnId)
+    }
+
+    func testLateProgressCannotReviveCompletedTurn() {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.started(turnId: "turn.1", startedAt: nil))
+        state.apply(.terminal(turnId: "turn.1", phase: .completed, completedAt: nil))
+        state.apply(.progress(turnId: "turn.1", startedAt: nil))
+
+        XCTAssertEqual(state.phase, .completed)
+        XCTAssertNil(state.turnId)
+        XCTAssertFalse(state.isRunning)
+    }
+
     func testStalePlanCannotReplaceCurrentTurnPlan() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.started(turnId: "turn.2", startedAt: nil))
