@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem, TranscriptGroupIndex, windowTranscriptGroups } from "./transcript";
 import type { TranscriptItem } from "./types";
 
 describe("desktop transcript", () => {
@@ -231,5 +231,36 @@ describe("desktop transcript", () => {
     );
     expect(messages.filter((item) => item.id === "command.live")).toHaveLength(1);
     expect(messages.at(-1)?.detail?.length).toBe(10_000_000);
+  });
+
+  it("windows one thousand transcript turns without changing visible order", () => {
+    const messages: TranscriptItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `message.${index}`, turnId: `turn.${index}`, kind: "assistant", text: `${index}`,
+    }));
+    const window = windowTranscriptGroups(messages, 40);
+    expect(window.hasEarlierGroups).toBe(true);
+    expect(window.groups).toHaveLength(40);
+    expect(window.groups[0]?.id).toBe("turn.turn.960");
+    expect(window.groups.at(-1)?.id).toBe("turn.turn.999");
+  });
+
+  it("updates one live turn incrementally across one hundred frames", () => {
+    let messages: TranscriptItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `message.${index}`, turnId: `turn.${index}`, kind: "assistant", text: `${index}`,
+    }));
+    const index = new TranscriptGroupIndex();
+    const first = index.window(messages, 40);
+    const stableItems = first.groups[0]!.items;
+    for (let frame = 0; frame < 100; frame += 1) {
+      messages = applyDeltaBatch(messages, [{
+        id: "message.999", turnId: "turn.999", kind: "assistant", text: ".", detail: "",
+      }]);
+      index.window(messages, 40);
+    }
+    const last = index.window(messages, 40);
+    expect(index.fullRebuildCount).toBe(1);
+    expect(index.incrementalUpdateCount).toBe(100);
+    expect(last.groups[0]!.items).toBe(stableItems);
+    expect(last.groups.at(-1)?.items[0]?.text.endsWith(".".repeat(100))).toBe(true);
   });
 });

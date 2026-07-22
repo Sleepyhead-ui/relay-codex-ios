@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -9,12 +9,14 @@ import {
 import { BridgeRpc } from "./bridge";
 import {
   applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSessionPatch, mergeSnapshot, parseApproval,
-  parseItem, parseModel, parseThread, parseTurn, upsert,
+  parseItem, parseModel, parseThread, parseTurn, TranscriptGroupIndex, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
 import { createTaskStateCore, decodeTaskRunEvents, isTaskRunning, reduceTaskStateCore, type TaskRunEvent } from "./taskState";
 import { DesktopPerformanceMetrics } from "./performanceMetrics";
 import { SessionRevisionTracker } from "./sessionRevision";
+import { splitMarkdownChunks } from "./markdownChunks";
+import { previewTechnicalText } from "./technicalText";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
   GoalState, PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
@@ -84,6 +86,7 @@ export default function App() {
   const performanceMetricsRef = useRef(new DesktopPerformanceMetrics());
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number>();
   const [atBottom, setAtBottom] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -124,6 +127,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem("relay.desktop.followUp", followUpBehavior); }, [followUpBehavior]);
   useEffect(() => () => {
     if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
+    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -443,13 +447,11 @@ export default function App() {
     });
   }
 
-  async function loadOlderTurns() {
+  async function loadOlderTurns(): Promise<number> {
     const threadId = selectedRef.current;
     const cursor = olderTurnsCursor;
-    if (!threadId || !cursor || loadingOlderTurns) return;
+    if (!threadId || !cursor || loadingOlderTurns) return 0;
     setLoadingOlderTurns(true);
-    const scroll = scrollRef.current;
-    const previousHeight = scroll?.scrollHeight || 0;
     try {
       const result = await rpc.rpc("thread/turns/list", {
         threadId,
@@ -458,7 +460,7 @@ export default function App() {
         sortDirection: "desc",
         itemsView: "full",
       }, 120_000);
-      if (selectedRef.current !== threadId) return;
+      if (selectedRef.current !== threadId) return 0;
       const page = [...(result.data || [])].reverse();
       const olderMessages: TranscriptItem[] = [];
       const olderTurns: Record<string, TurnMetadata> = {};
@@ -480,11 +482,10 @@ export default function App() {
         return next;
       });
       setOlderTurnsCursor(result.nextCursor || undefined);
-      requestAnimationFrame(() => {
-        if (scroll) scroll.scrollTop += scroll.scrollHeight - previousHeight;
-      });
+      return page.length;
     } catch (reason) {
       setError(`加载更早对话失败：${errorText(reason)}`);
+      return 0;
     } finally {
       setLoadingOlderTurns(false);
     }
@@ -951,10 +952,14 @@ export default function App() {
           </header>
 
           <div className="transcript" ref={scrollRef} onScroll={(event) => {
-            const element = event.currentTarget; setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight < 80);
+            const element = event.currentTarget;
+            if (scrollFrameRef.current !== undefined) return;
+            scrollFrameRef.current = requestAnimationFrame(() => {
+              scrollFrameRef.current = undefined;
+              setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight < 80);
+            });
           }}>
             <div className="transcript-inner">
-              {!loadingThread && olderTurnsCursor && <button className="load-older" disabled={loadingOlderTurns} onClick={() => void loadOlderTurns()}>{loadingOlderTurns ? <span className="spinner small"/> : <ChevronDown size={13}/>}<span>{loadingOlderTurns ? "正在加载" : "加载更早对话"}</span></button>}
               {service.state !== "running"
                 ? <ServiceState status={service} onStart={startRemoteService}/>
                 : profileSwitching
@@ -962,7 +967,7 @@ export default function App() {
                   : loadingThread
                     ? <LoadingState/>
                     : messages.length
-                      ? <Transcript items={messages} turns={turns} activeTurnId={activeTurnId}/>
+                      ? <Transcript key={selectedThreadId} items={messages} turns={turns} activeTurnId={activeTurnId} olderAvailable={Boolean(olderTurnsCursor)} loadingOlder={loadingOlderTurns} onLoadOlder={loadOlderTurns}/>
                       : <EmptyState cwd={selectedThread?.cwd || workspace}/>
               }
               <div ref={transcriptEndRef}/>
@@ -1045,19 +1050,35 @@ function ThreadRow({ thread, selected, needsApproval, pinned, archived, onSelect
   </div>;
 }
 
-function Transcript({ items, turns, activeTurnId }: { items: TranscriptItem[]; turns: Record<string, TurnMetadata>; activeTurnId?: string }) {
-  const groups: { id: string; items: TranscriptItem[] }[] = [];
-  const indexes = new Map<string, number>();
-  for (const item of items) {
-    const key = item.turnId ? `turn.${item.turnId}` : `item.${item.id}`;
-    const index = indexes.get(key);
-    if (index == null) { indexes.set(key, groups.length); groups.push({ id: key, items: [item] }); }
-    else groups[index].items.push(item);
-  }
-  return <>{groups.map((group) => <TurnBlock key={group.id} items={group.items} metadata={group.items[0]?.turnId ? turns[group.items[0].turnId!] : undefined} live={group.items[0]?.turnId === activeTurnId}/>)}</>;
+function Transcript({ items, turns, activeTurnId, olderAvailable, loadingOlder, onLoadOlder }: {
+  items: TranscriptItem[]; turns: Record<string, TurnMetadata>; activeTurnId?: string;
+  olderAvailable: boolean; loadingOlder: boolean; onLoadOlder: () => Promise<number>;
+}) {
+  const [visibleGroupLimit, setVisibleGroupLimit] = useState(40);
+  const groupIndex = useRef(new TranscriptGroupIndex()).current;
+  const window = useMemo(() => groupIndex.window(items, visibleGroupLimit), [groupIndex, items, visibleGroupLimit]);
+  const revealEarlier = async () => {
+    const anchorId = window.groups[0]?.id;
+    const anchor = anchorId ? document.getElementById(transcriptGroupDOMId(anchorId)) : null;
+    const scroll = anchor?.closest(".transcript") as HTMLElement | null;
+    const previousTop = anchor?.getBoundingClientRect().top;
+    if (window.hasEarlierGroups) {
+      setVisibleGroupLimit((current) => current + 40);
+    } else {
+      const loaded = await onLoadOlder();
+      if (loaded > 0) setVisibleGroupLimit((current) => current + loaded);
+    }
+    if (anchorId && scroll && previousTop !== undefined) requestAnimationFrame(() => {
+      const restored = document.getElementById(transcriptGroupDOMId(anchorId));
+      if (restored) scroll.scrollTop += restored.getBoundingClientRect().top - previousTop;
+    });
+  };
+  return <>
+    {(window.hasEarlierGroups || olderAvailable) && <button className="load-older" disabled={loadingOlder} onClick={() => void revealEarlier()}>{loadingOlder ? <span className="spinner small"/> : <ChevronDown size={13}/>}<span>{loadingOlder ? "正在加载" : window.hasEarlierGroups ? "显示更早的对话" : "加载更早对话"}</span></button>}
+    {window.groups.map((group) => <TurnBlock key={group.id} groupId={group.id} items={group.items} metadata={group.items[0]?.turnId ? turns[group.items[0].turnId!] : undefined} live={group.items[0]?.turnId === activeTurnId}/>)}</>;
 }
 
-function TurnBlock({ items, metadata, live }: { items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean }) {
+const TurnBlock = memo(function TurnBlock({ groupId, items, metadata, live }: { groupId: string; items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean }) {
   const segments: ({ type: "item"; item: TranscriptItem } | { type: "activity"; id: string; items: TranscriptItem[] })[] = [];
   let activity: TranscriptItem[] = [];
   const flush = () => { if (activity.length) { segments.push({ type: "activity", id: activity[0].id, items: activity }); activity = []; } };
@@ -1071,7 +1092,7 @@ function TurnBlock({ items, metadata, live }: { items: TranscriptItem[]; metadat
   const hasActivityContent = segments.some((segment) => segment.type === "activity" && segment.items.some((item) => item.kind !== "plan"));
   const [activityExpanded, setActivityExpanded] = useState(live || !metadata);
   useEffect(() => { setActivityExpanded(live || !metadata); }, [live, metadata]);
-  return <div className="turn-block">{segments.map((segment, index) => segment.type === "activity" ? <ActivityBlock
+  return <div id={transcriptGroupDOMId(groupId)} className={`turn-block ${live ? "live" : ""}`}>{segments.map((segment, index) => segment.type === "activity" ? <ActivityBlock
     key={`${segment.id}.${index}`}
     items={segment.items}
     metadata={metadata}
@@ -1081,7 +1102,17 @@ function TurnBlock({ items, metadata, live }: { items: TranscriptItem[]; metadat
     expanded={activityExpanded}
     onToggle={() => setActivityExpanded((value) => !value)}
   /> : <MessageRow key={segment.item.id} item={segment.item}/>)}</div>;
+}, sameTurnBlock);
+
+function sameTurnBlock(previous: { groupId: string; items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean }, next: { groupId: string; items: TranscriptItem[]; metadata?: TurnMetadata; live: boolean }) {
+  return previous.groupId === next.groupId
+    && previous.live === next.live
+    && previous.metadata === next.metadata
+    && previous.items.length === next.items.length
+    && previous.items.every((item, index) => item === next.items[index]);
 }
+
+function transcriptGroupDOMId(groupId: string) { return `relay-transcript-${encodeURIComponent(groupId)}`; }
 
 function MessageRow({ item }: { item: TranscriptItem }) {
   if (item.kind === "user") return (item.text || item.imagePaths?.length) ? <div className="user-row"><div className="user-message">{Boolean(item.imagePaths?.length) && <div className={`user-images ${item.imagePaths!.length > 1 ? "multiple" : ""}`}>{item.imagePaths!.map((path) => <LocalImage key={path} path={path}/>)}</div>}{item.text && <div className="user-bubble"><Markdown text={item.text}/></div>}</div></div> : null;
@@ -1146,15 +1177,21 @@ function ExecutionGroup({ items }: { items: TranscriptItem[] }) {
 function ToolRow({ item }: { item: TranscriptItem }) {
   const [expanded, setExpanded] = useState(false);
   const icon = item.kind === "file" ? <FileCode2 size={14}/> : item.kind === "compaction" ? <Sparkles size={14}/> : <Terminal size={14}/>;
-  return <div className={`tool-row ${item.exitCode ? "failed" : ""}`}><button onClick={() => item.detail && setExpanded((value) => !value)}>{icon}<span className="tool-title">{item.kind === "command" ? firstLine(item.text) : item.title || item.text}</span>{item.cwd && <small>{item.cwd}</small>}{item.exitCode != null && item.exitCode !== 0 && <em>exit {item.exitCode}</em>}{isRunningStatus(item.status) ? <span className="spinner small"/> : <Check size={12}/>} {item.detail && <ChevronDown size={12} className={expanded ? "rotated" : ""}/>}</button>{expanded && item.detail && (item.kind === "file" ? <DiffView source={item.detail}/> : <pre>{item.detail}</pre>)}</div>;
+  return <div className={`tool-row ${item.exitCode ? "failed" : ""}`}><button onClick={() => item.detail && setExpanded((value) => !value)}>{icon}<span className="tool-title">{item.kind === "command" ? firstLine(item.text) : item.title || item.text}</span>{item.cwd && <small>{item.cwd}</small>}{item.exitCode != null && item.exitCode !== 0 && <em>exit {item.exitCode}</em>}{isRunningStatus(item.status) ? <span className="spinner small"/> : <Check size={12}/>} {item.detail && <ChevronDown size={12} className={expanded ? "rotated" : ""}/>}</button>{expanded && item.detail && (item.kind === "file" ? <DiffView source={item.detail}/> : <TechnicalDetail source={item.detail}/>)}</div>;
 }
 
 function DiffView({ source }: { source: string }) {
-  return <div className="diff-view" aria-label="文件差异">{source.split(/\r?\n/).map((line, index) => {
+  const preview = useMemo(() => previewTechnicalText(source, 96_000, 2_000), [source]);
+  return <div className="diff-view" aria-label="文件差异">{preview.text.split(/\r?\n/).map((line, index) => {
     const kind = diffLineKind(line);
     const content = kind === "added" || kind === "removed" ? line.slice(1) : line;
     return <div className={`diff-line ${kind}`} key={`${index}.${line}`}><span>{kind === "added" ? "+" : kind === "removed" ? "-" : ""}</span><code>{content || " "}</code></div>;
   })}</div>;
+}
+
+function TechnicalDetail({ source }: { source: string }) {
+  const preview = useMemo(() => previewTechnicalText(source), [source]);
+  return <pre>{preview.text}</pre>;
 }
 
 function PlanPanel({ steps }: { steps: PlanStep[] }) { return <div className="plan-panel"><div className="plan-title"><Sparkles size={14}/><span>执行计划</span></div>{steps.map((step) => <div className="plan-step" key={step.id}>{/complete/i.test(step.status) ? <Check size={13}/> : /progress|running|active/i.test(step.status) ? <span className="spinner small"/> : <span className="plan-dot"/>}<span>{step.text}</span></div>)}</div>; }
@@ -1273,7 +1310,15 @@ function formatMilliseconds(value = 0) { return value < 10 ? `${value.toFixed(1)
 function formatPercent(value = 0) { return `${(value * 100).toFixed(1)}%`; }
 
 function Modal({ title, children, onClose, closable = true }: { title: string; children: ReactNode; onClose: () => void; closable?: boolean }) { return <div className="modal-backdrop"><div className="modal"><div className="modal-heading"><strong>{title}</strong>{closable && <button className="icon-button" onClick={onClose}><X size={16}/></button>}</div>{children}</div></div>; }
-function Markdown({ text }: { text: string }) { const html = useMemo(() => DOMPurify.sanitize(marked.parse(text || "", { breaks: true, gfm: true }) as string), [text]); return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }}/>; }
+function Markdown({ text }: { text: string }) {
+  const chunks = useMemo(() => splitMarkdownChunks(text || ""), [text]);
+  return <div className="markdown">{chunks.map((source, index) => <MarkdownChunk key={index} source={source}/>)}</div>;
+}
+
+const MarkdownChunk = memo(function MarkdownChunk({ source }: { source: string }) {
+  const html = useMemo(() => DOMPurify.sanitize(marked.parse(source, { breaks: true, gfm: true }) as string), [source]);
+  return <div className="markdown-chunk" dangerouslySetInnerHTML={{ __html: html }}/>;
+});
 function LoadingState({ label = "正在加载对话" }: { label?: string }) { return <div className="center-state"><span className="spinner large"/><span>{label}</span></div>; }
 function ServiceState({ status, onStart }: { status: ServiceStatus; onStart: () => Promise<void> }) { return <div className="center-state service-start"><Server size={28}/><span>{status.message}</span>{status.state !== "starting" && <button onClick={() => void onStart()}><Power size={15}/>启动远程服务</button>}</div>; }
 function EmptyState({ cwd }: { cwd?: string }) { return <div className="empty-state"><div className="relay-mark"><Sparkles size={24}/></div><h1>Codex 要处理什么？</h1><p>{cwd || "选择项目目录后开始任务"}</p></div>; }

@@ -1,4 +1,19 @@
 import type { ApprovalRequest, ModelOption, ThreadSummary, TranscriptItem, TurnMetadata } from "./types";
+import { markTranscriptUpserts, windowTranscriptGroups } from "./transcriptGroups";
+export { TranscriptGroupIndex, windowTranscriptGroups } from "./transcriptGroups";
+
+const transcriptItemIndexes = new WeakMap<TranscriptItem[], Map<string, number>>();
+
+function indexesFor(items: TranscriptItem[]) {
+  const cached = transcriptItemIndexes.get(items);
+  if (cached) return cached;
+  const indexes = new Map<string, number>();
+  for (let index = 0; index < items.length; index += 1) {
+    if (!indexes.has(items[index]!.id)) indexes.set(items[index]!.id, index);
+  }
+  transcriptItemIndexes.set(items, indexes);
+  return indexes;
+}
 
 export interface UserMessagePlacement {
   messageId: string;
@@ -125,12 +140,20 @@ export function mergeItem(existing: TranscriptItem | undefined, incoming: Transc
 }
 
 export function upsert(items: TranscriptItem[], incoming: TranscriptItem) {
-  let index = items.findIndex((item) => item.id === incoming.id);
+  const indexes = indexesFor(items);
+  let index = indexes.get(incoming.id) ?? -1;
   if (index < 0) index = items.findIndex((item) => semanticMatch(item, incoming));
-  if (index < 0) return [...items, incoming];
+  if (index < 0) {
+    const next = [...items, incoming];
+    const nextIndexes = new Map(indexes);
+    nextIndexes.set(incoming.id, items.length);
+    transcriptItemIndexes.set(next, nextIndexes);
+    return markTranscriptUpserts(items, next, [incoming.id]);
+  }
   const next = [...items];
   next[index] = mergeItem(next[index], incoming);
-  return next;
+  transcriptItemIndexes.set(next, indexes);
+  return markTranscriptUpserts(items, next, [next[index]!.id]);
 }
 
 export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta[]) {
@@ -150,16 +173,18 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
     }
   }
   const next = [...items];
-  const indexes = new Map(next.map((item, index) => [item.id, index]));
+  const currentIndexes = indexesFor(items);
+  let nextIndexes = currentIndexes;
   for (const groupedValue of grouped.values()) {
     const value = {
       ...groupedValue.value,
       text: groupedValue.text.join(""),
       detail: groupedValue.detail.join(""),
     };
-    const index = indexes.get(value.id);
+    const index = nextIndexes.get(value.id);
     if (index === undefined) {
-      indexes.set(value.id, next.length);
+      if (nextIndexes === currentIndexes) nextIndexes = new Map(currentIndexes);
+      nextIndexes.set(value.id, next.length);
       next.push({
         id: value.id,
         turnId: value.turnId,
@@ -180,7 +205,8 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
       detail: value.detail ? (item.detail || "") + value.detail : item.detail,
     };
   }
-  return next;
+  transcriptItemIndexes.set(next, nextIndexes);
+  return markTranscriptUpserts(items, next, grouped.keys());
 }
 
 export function bindUserPrompt(items: TranscriptItem[], messageId: string, turnId: string) {

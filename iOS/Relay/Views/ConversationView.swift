@@ -6,6 +6,7 @@ struct ConversationView: View {
     @State private var isAtBottom = true
     @State private var isUserScrolling = false
     @State private var autoScrollScheduled = false
+    @State private var visibleGroupLimit = 24
 
     private let bottomAnchor = "relay-conversation-bottom"
 
@@ -116,12 +117,13 @@ struct ConversationView: View {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
+                let window = store.transcriptWindow(limit: visibleGroupLimit)
                 ZStack(alignment: .bottom) {
                     ScrollView {
                         LazyVStack(spacing: 30) {
-                            if store.hasOlderTurns {
+                            if window.hasEarlierGroups || store.hasOlderTurns {
                                 Button {
-                                    Task { await store.loadOlderTurns() }
+                                    revealEarlier(window: window, proxy: proxy)
                                 } label: {
                                     HStack(spacing: 7) {
                                         if store.isLoadingOlderTurns {
@@ -130,7 +132,7 @@ struct ConversationView: View {
                                             Image(systemName: "clock.arrow.circlepath")
                                                 .font(.system(size: 12, weight: .medium))
                                         }
-                                        Text(store.isLoadingOlderTurns ? "正在加载更早对话" : "加载更早对话")
+                                        Text(earlierButtonLabel(window: window))
                                             .font(.system(size: 12, weight: .semibold))
                                     }
                                     .foregroundStyle(.secondary)
@@ -141,10 +143,10 @@ struct ConversationView: View {
                                 .disabled(store.isLoadingOlderTurns)
                             }
 
-                            ForEach(store.transcriptGroups) { group in
+                            ForEach(window.groups) { group in
                                 TurnGroupView(group: group, isLive: group.turnId == store.activeTurnId)
+                                    .equatable()
                                     .id(group.id)
-                                    .transition(.opacity)
                             }
 
                             Color.clear
@@ -195,6 +197,7 @@ struct ConversationView: View {
                 .onAppear { scrollToBottom(proxy, animated: false) }
                 .onChange(of: store.selectedThreadId) { _ in
                     isAtBottom = true
+                    visibleGroupLimit = 24
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         scrollToBottom(proxy, animated: false)
                     }
@@ -205,7 +208,7 @@ struct ConversationView: View {
                         scrollToBottom(proxy, animated: false)
                     }
                 }
-                .onChange(of: transcriptUpdateKey) { _ in
+                .onChange(of: store.transcriptRevision) { _ in
                     guard isAtBottom, !isUserScrolling, !autoScrollScheduled else { return }
                     autoScrollScheduled = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -216,11 +219,6 @@ struct ConversationView: View {
                 }
             }
         }
-    }
-
-    private var transcriptUpdateKey: String {
-        guard let item = store.messages.last else { return "0" }
-        return "\(store.messages.count)|\(item.id)|\(item.text.utf8.count)|\(item.detail?.utf8.count ?? 0)"
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -235,6 +233,34 @@ struct ConversationView: View {
 
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func earlierButtonLabel(window: TranscriptWindow) -> String {
+        if store.isLoadingOlderTurns { return "正在加载更早对话" }
+        return window.hasEarlierGroups ? "显示更早的对话" : "加载更早对话"
+    }
+
+    private func revealEarlier(window: TranscriptWindow, proxy: ScrollViewProxy) {
+        let anchor = window.groups.first?.id
+        if window.hasEarlierGroups {
+            visibleGroupLimit += 24
+            restore(anchor: anchor, proxy: proxy)
+            return
+        }
+        Task { @MainActor in
+            await store.loadOlderTurns()
+            visibleGroupLimit += 12
+            restore(anchor: anchor, proxy: proxy)
+        }
+    }
+
+    private func restore(anchor: String?, proxy: ScrollViewProxy) {
+        guard let anchor else { return }
+        DispatchQueue.main.async {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { proxy.scrollTo(anchor, anchor: .top) }
+        }
     }
 
     private var connectionColor: Color {

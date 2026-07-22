@@ -6,15 +6,17 @@ struct MarkdownContentView: View {
     let baseFontSize: CGFloat
     let blockSpacing: CGFloat
     let lineSpacing: CGFloat
+    @State private var document: IncrementalMarkdownDocument
 
     init(source: String, baseFontSize: CGFloat = 16, blockSpacing: CGFloat = 13, lineSpacing: CGFloat = 4) {
         self.source = source
         self.baseFontSize = baseFontSize
         self.blockSpacing = blockSpacing
         self.lineSpacing = lineSpacing
+        _document = State(initialValue: IncrementalMarkdownDocument(source: source))
     }
 
-    private var blocks: [MarkdownBlock] { MarkdownParser.parse(source) }
+    private var blocks: [MarkdownBlock] { document.blocks(for: source) }
 
     private var numberedBlocks: [(block: MarkdownBlock, orderedStart: Int?)] {
         var nextOrderedNumber = 1
@@ -234,7 +236,7 @@ private struct MarkdownTable: View {
     }
 }
 
-private enum MarkdownBlock {
+enum MarkdownBlock: Equatable {
     case paragraph(String)
     case heading(Int, String)
     case code(String, String)
@@ -245,7 +247,7 @@ private enum MarkdownBlock {
     case table([String], [[String]])
 }
 
-private enum MarkdownParser {
+enum MarkdownParser {
     static func parse(_ source: String) -> [MarkdownBlock] {
         let key = source as NSString
         if let cached = cache.object(forKey: key) { return cached.blocks }
@@ -261,7 +263,7 @@ private enum MarkdownParser {
         return cache
     }()
 
-    private static func parseUncached(_ source: String) -> [MarkdownBlock] {
+    static func parseUncached(_ source: String) -> [MarkdownBlock] {
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var index = 0
@@ -393,6 +395,70 @@ private enum MarkdownParser {
         return value.split(separator: "|", omittingEmptySubsequences: false).map {
             String($0).trimmingCharacters(in: .whitespaces)
         }
+    }
+}
+
+final class IncrementalMarkdownDocument {
+    private(set) var source = ""
+    private(set) var stablePrefix = ""
+    private(set) var stableBlocks: [MarkdownBlock] = []
+    private(set) var blocks: [MarkdownBlock] = []
+
+    init(source: String) {
+        update(source: source)
+    }
+
+    @discardableResult
+    func update(source newSource: String) -> [MarkdownBlock] {
+        let normalized = newSource.replacingOccurrences(of: "\r\n", with: "\n")
+        guard normalized.hasPrefix(source) else {
+            reset(source: normalized)
+            return blocks
+        }
+
+        let nextStablePrefix = Self.safeStablePrefix(in: normalized)
+        if nextStablePrefix.hasPrefix(stablePrefix) {
+            let promoted = String(nextStablePrefix.dropFirst(stablePrefix.count))
+            if !promoted.isEmpty { stableBlocks.append(contentsOf: MarkdownParser.parseUncached(promoted)) }
+        } else {
+            stableBlocks = MarkdownParser.parseUncached(nextStablePrefix)
+        }
+        stablePrefix = nextStablePrefix
+        let tail = String(normalized.dropFirst(stablePrefix.count))
+        blocks = stableBlocks + MarkdownParser.parseUncached(tail)
+        source = normalized
+        return blocks
+    }
+
+    func blocks(for source: String) -> [MarkdownBlock] {
+        update(source: source)
+    }
+
+    private func reset(source: String) {
+        self.source = ""
+        stablePrefix = ""
+        stableBlocks = []
+        blocks = []
+        update(source: source)
+    }
+
+    static func safeStablePrefix(in source: String) -> String {
+        var lineStart = source.startIndex
+        var stableEnd = source.startIndex
+        var insideCodeFence = false
+
+        while lineStart < source.endIndex {
+            let newline = source[lineStart...].firstIndex(of: "\n")
+            let lineEnd = newline ?? source.endIndex
+            let line = source[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") { insideCodeFence.toggle() }
+            if line.isEmpty, !insideCodeFence, let newline {
+                stableEnd = source.index(after: newline)
+            }
+            guard let newline else { break }
+            lineStart = source.index(after: newline)
+        }
+        return String(source[..<stableEnd])
     }
 }
 

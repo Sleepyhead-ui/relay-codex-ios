@@ -104,6 +104,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .load-older:hover { background: rgba(255,255,255,.045); color: #b4b7b0; }
 .load-older:disabled { opacity: .65; cursor: default; }
 .turn-block { display: flex; flex-direction: column; gap: 15px; margin-bottom: 28px; }
+.turn-block:not(.live) { content-visibility: auto; contain-intrinsic-size: auto 240px; }
 .user-row { display: flex; justify-content: flex-end; padding-left: 110px; }
 .user-message { max-width: 72%; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .user-bubble { max-width: 72%; padding: 10px 14px; border-radius: 16px; background: #292a27; color: #e9eae6; }
@@ -119,8 +120,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .user-bubble .markdown h4, .user-bubble .markdown h5, .user-bubble .markdown h6 { margin: .35em 0; font-size: 1em; line-height: inherit; }
 .assistant-answer { color: #e6e7e3; font-size: 14px; line-height: 1.72; }
 .markdown { min-width: 0; overflow-wrap: anywhere; }
-.markdown > :first-child { margin-top: 0; }
-.markdown > :last-child { margin-bottom: 0; }
+.markdown > :first-child, .markdown-chunk > :first-child { margin-top: 0; }
+.markdown > :last-child, .markdown-chunk > :last-child { margin-bottom: 0; }
+.markdown-chunk:empty { display: none; }
 .markdown p { margin: 0 0 .68em; }
 .markdown ul, .markdown ol { margin: .45em 0 .75em; padding-left: 1.55em; }
 .markdown li { margin: .25em 0; }

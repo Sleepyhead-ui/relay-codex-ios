@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct TurnGroupView: View {
+struct TurnGroupView: View, Equatable {
     let group: TranscriptGroup
     let isLive: Bool
     @State private var activityExpanded: Bool
@@ -11,6 +11,10 @@ struct TurnGroupView: View {
         self.isLive = isLive
         _activityExpanded = State(initialValue: isLive || group.turnId == nil)
         _renderedActivitySectionCount = State(initialValue: isLive || group.turnId == nil ? 8 : 0)
+    }
+
+    static func == (lhs: TurnGroupView, rhs: TurnGroupView) -> Bool {
+        lhs.group == rhs.group && lhs.isLive == rhs.isLive
     }
 
     var body: some View {

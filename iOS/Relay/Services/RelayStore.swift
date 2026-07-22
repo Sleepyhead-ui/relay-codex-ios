@@ -6,7 +6,14 @@ final class RelayStore: ObservableObject {
     @Published var token = ""
     @Published var threads: [ThreadSummary] = []
     @Published var selectedThreadId: String?
-    @Published var messages: [TranscriptItem] = []
+    @Published var messages: [TranscriptItem] = [] {
+        didSet {
+            transcriptRevision &+= 1
+            if !isApplyingIndexedTranscriptMutation {
+                transcriptIndex.rebuild(messages: messages)
+            }
+        }
+    }
     @Published var composerText = ""
     @Published var sidebarOpen = false
     @Published var showingConnection = false
@@ -91,6 +98,9 @@ final class RelayStore: ObservableObject {
     private var pendingTextDeltas: [String: PendingTextDelta] = [:]
     private var pendingDeltaOrder: [String] = []
     private var deltaFlushTask: Task<Void, Never>?
+    private var transcriptIndex = TranscriptIndex()
+    private var isApplyingIndexedTranscriptMutation = false
+    private(set) var transcriptRevision = 0
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -164,24 +174,8 @@ final class RelayStore: ObservableObject {
         guard let selectedThreadId else { return nil }
         return tokenUsageByThread[selectedThreadId]
     }
-    var transcriptGroups: [TranscriptGroup] {
-        var groups: [TranscriptGroup] = []
-        var indexes: [String: Int] = [:]
-        for item in messages {
-            let key = item.turnId.map { "turn.\($0)" } ?? "item.\(item.id)"
-            if let index = indexes[key] {
-                groups[index].items.append(item)
-            } else {
-                indexes[key] = groups.count
-                groups.append(TranscriptGroup(
-                    id: key,
-                    turnId: item.turnId,
-                    items: [item],
-                    metadata: item.turnId.flatMap { turnMetadata[$0] } ?? TurnMetadata()
-                ))
-            }
-        }
-        return groups
+    func transcriptWindow(limit: Int) -> TranscriptWindow {
+        transcriptIndex.window(messages: messages, metadata: turnMetadata, limit: limit)
     }
 
     init() {
@@ -1758,8 +1752,9 @@ final class RelayStore: ObservableObject {
             }
             return nil
         }
-        let updated = TranscriptReconciler.applyDeltaBatch(updates, to: messages)
-        if updated != messages { messages = updated }
+        isApplyingIndexedTranscriptMutation = true
+        _ = transcriptIndex.applyDeltaBatch(updates, to: &messages)
+        isApplyingIndexedTranscriptMutation = false
         socket.performanceMetrics.recordDeltaFlush(
             items: updatedItemCount,
             milliseconds: ClientPerformanceClock.milliseconds(since: startedAt)
