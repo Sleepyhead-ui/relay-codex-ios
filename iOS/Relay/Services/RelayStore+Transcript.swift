@@ -196,7 +196,7 @@ extension RelayStore {
         bindUserPrompt(messageId, to: turnId, threadId: threadId)
     }
 
-    private func bindUserPrompt(_ messageId: String, to turnId: String, threadId: String) {
+    func bindUserPrompt(_ messageId: String, to turnId: String, threadId: String) {
         guard selectedThreadId == threadId, userMessagePlacements[messageId]?.threadId == threadId else { return }
         userMessagePlacements[messageId]?.turnId = turnId
         applyUserMessagePlacements(turnId: turnId, threadId: threadId)
@@ -209,7 +209,7 @@ extension RelayStore {
         applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
     }
 
-    private func applyUserMessagePlacements(turnId: String, threadId: String) {
+    func applyUserMessagePlacements(turnId: String, threadId: String) {
         messages = TranscriptReconciler.applyUserMessagePlacements(userMessagePlacements, turnId: turnId, threadId: threadId, to: messages)
     }
 
