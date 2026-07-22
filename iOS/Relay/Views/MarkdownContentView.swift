@@ -127,14 +127,12 @@ private struct InlineMarkdownText: View {
                 .font(.system(size: size, weight: weight))
                 .lineSpacing(lineSpacing)
                 .tint(RelayTheme.accent)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             Text(text)
                 .font(.system(size: size, weight: weight))
                 .lineSpacing(lineSpacing)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -188,7 +186,6 @@ private struct CodeBlockView: View {
                 Text(code)
                     .font(.system(size: 13, design: .monospaced))
                     .lineSpacing(3)
-                    .textSelection(.enabled)
                     .padding(12)
             }
         }

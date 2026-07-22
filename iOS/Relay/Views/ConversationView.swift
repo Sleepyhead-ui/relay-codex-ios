@@ -141,7 +141,7 @@ struct ConversationView: View {
                             }
 
                             ForEach(store.transcriptGroups) { group in
-                                TurnGroupView(group: group)
+                                TurnGroupView(group: group, isLive: group.turnId == store.activeTurnId)
                                     .id(group.id)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
@@ -162,8 +162,8 @@ struct ConversationView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 4)
                             .onChanged { _ in
-                                isUserScrolling = true
-                                isAtBottom = false
+                                if !isUserScrolling { isUserScrolling = true }
+                                if isAtBottom { isAtBottom = false }
                             }
                             .onEnded { _ in
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {

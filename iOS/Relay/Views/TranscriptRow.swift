@@ -2,34 +2,40 @@ import SwiftUI
 
 struct TurnGroupView: View {
     let group: TranscriptGroup
+    let isLive: Bool
     @State private var activityExpanded: Bool
+    @State private var renderedActivitySectionCount = 0
 
-    init(group: TranscriptGroup) {
+    init(group: TranscriptGroup, isLive: Bool) {
         self.group = group
-        _activityExpanded = State(initialValue: group.metadata.isRunning || group.turnId == nil)
+        self.isLive = isLive
+        _activityExpanded = State(initialValue: isLive || group.turnId == nil)
+        _renderedActivitySectionCount = State(initialValue: isLive || group.turnId == nil ? 8 : 0)
     }
 
     var body: some View {
         let timeline = timelineSegments
         let firstActivityIndex = timeline.firstIndex(where: \.isActivity)
-        let hasActivityContent = timeline.contains { segment in
-            guard case .activity(_, let items) = segment else { return false }
-            return items.contains { $0.kind != .plan }
-        }
+        let totalActivitySectionCount = timeline.reduce(0) { $0 + $1.activitySectionCount }
+        let activityOffsets = activityOffsets(for: timeline)
 
         VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(timeline.enumerated()), id: \.element.id) { index, segment in
                 switch segment {
                 case .user(let item, let isFollowUp):
                     TranscriptRow(item: item, isFollowUp: isFollowUp)
-                case .activity(_, let items):
+                case .activity(let id, let items, let sectionCount):
+                    let visibleCount = max(0, min(sectionCount, renderedActivitySectionCount - (activityOffsets[id] ?? 0)))
                     RunActivityView(
                         items: items,
                         metadata: group.metadata,
-                        isLive: group.metadata.isRunning,
+                        isLive: isLive,
                         showsHeader: group.turnId != nil && index == firstActivityIndex,
-                        canExpand: hasActivityContent,
-                        expanded: $activityExpanded
+                        canExpand: totalActivitySectionCount > 0,
+                        visibleSectionCount: visibleCount,
+                        remainingSectionCount: index == firstActivityIndex ? max(0, totalActivitySectionCount - renderedActivitySectionCount) : 0,
+                        expanded: $activityExpanded,
+                        onShowMore: { renderedActivitySectionCount = min(renderedActivitySectionCount + 8, totalActivitySectionCount) }
                     )
                 case .item(let item):
                     TranscriptRow(item: item)
@@ -43,6 +49,18 @@ struct TurnGroupView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: activityExpanded) { expanded in
+            renderedActivitySectionCount = expanded ? min(max(renderedActivitySectionCount, 8), totalActivitySectionCount) : 0
+        }
+        .onChange(of: isLive) { running in
+            if running {
+                activityExpanded = true
+                renderedActivitySectionCount = min(max(renderedActivitySectionCount, 8), totalActivitySectionCount)
+            } else {
+                activityExpanded = false
+                renderedActivitySectionCount = 0
+            }
+        }
     }
 
     private var timelineSegments: [TurnTimelineSegment] {
@@ -52,7 +70,8 @@ struct TurnGroupView: View {
 
         func flushActivity() {
             guard let first = pendingActivity.first else { return }
-            result.append(.activity(id: "activity.\(first.id)", items: pendingActivity))
+            let sectionCount = makeActivitySectionPage(items: pendingActivity, limit: 0).totalCount
+            result.append(.activity(id: "activity.\(first.id)", items: pendingActivity, sectionCount: sectionCount))
             pendingActivity = []
         }
 
@@ -71,8 +90,19 @@ struct TurnGroupView: View {
         }
         flushActivity()
 
-        if group.metadata.isRunning, !result.contains(where: \.isActivity) {
-            result.append(.activity(id: "activity.pending.\(group.id)", items: []))
+        if isLive, !result.contains(where: \.isActivity) {
+            result.append(.activity(id: "activity.pending.\(group.id)", items: [], sectionCount: 0))
+        }
+        return result
+    }
+
+    private func activityOffsets(for timeline: [TurnTimelineSegment]) -> [String: Int] {
+        var result: [String: Int] = [:]
+        var offset = 0
+        for segment in timeline {
+            guard case .activity(let id, _, let sectionCount) = segment else { continue }
+            result[id] = offset
+            offset += sectionCount
         }
         return result
     }
@@ -80,13 +110,13 @@ struct TurnGroupView: View {
 
 private enum TurnTimelineSegment: Identifiable {
     case user(TranscriptItem, isFollowUp: Bool)
-    case activity(id: String, items: [TranscriptItem])
+    case activity(id: String, items: [TranscriptItem], sectionCount: Int)
     case item(TranscriptItem)
 
     var id: String {
         switch self {
         case .user(let item, _): return "user.\(item.id)"
-        case .activity(let id, _): return id
+        case .activity(let id, _, _): return id
         case .item(let item): return "item.\(item.id)"
         }
     }
@@ -94,6 +124,11 @@ private enum TurnTimelineSegment: Identifiable {
     var isActivity: Bool {
         if case .activity = self { return true }
         return false
+    }
+
+    var activitySectionCount: Int {
+        guard case .activity(_, _, let count) = self else { return 0 }
+        return count
     }
 }
 
@@ -284,11 +319,12 @@ private struct RunActivityView: View {
     let isLive: Bool
     let showsHeader: Bool
     let canExpand: Bool
+    let visibleSectionCount: Int
+    let remainingSectionCount: Int
     @Binding var expanded: Bool
-    @State private var renderedSectionCount = 0
+    let onShowMore: () -> Void
 
     var body: some View {
-        let sections = activitySections
         VStack(alignment: .leading, spacing: 5) {
             if showsHeader {
                 Button {
@@ -337,113 +373,31 @@ private struct RunActivityView: View {
             }
 
             if expanded {
-                LazyVStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(sections.prefix(renderedSectionCount))) { section in
-                        switch section {
-                        case .commentary(let item):
-                            MarkdownContentView(
-                                source: item.text,
-                                baseFontSize: 13,
-                                blockSpacing: 6,
-                                lineSpacing: 2
-                            )
-                            .foregroundStyle(Color.primary.opacity(0.9))
-                            .fixedSize(horizontal: false, vertical: true)
-                        case .reasoning(let id, let text):
-                            HStack(alignment: .top, spacing: 7) {
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(width: 14, height: 16)
-                                CompactMarkdownText(source: text, size: 12, weight: .regular)
-                                    .foregroundStyle(.secondary)
-                                    .id(id)
-                            }
-                        case .execution(_, let executionItems):
-                            ExecutionGroupView(items: executionItems)
-                        }
-                    }
-                    if renderedSectionCount < sections.count {
-                        Button {
-                            renderedSectionCount = min(renderedSectionCount + 8, sections.count)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "ellipsis.circle")
-                                Text("显示更多进展（剩余 \(sections.count - renderedSectionCount) 条）")
-                            }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 5)
-                        }
-                        .buttonStyle(.plain)
-                    }
+                if visibleSectionCount > 0 {
+                    RunActivityDetails(items: items, visibleSectionCount: visibleSectionCount)
                 }
-                .fixedSize(horizontal: false, vertical: true)
-                .task(id: sections.count) {
-                    renderedSectionCount = min(max(renderedSectionCount, 8), sections.count)
+                if remainingSectionCount > 0 {
+                    Button(action: onShowMore) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "ellipsis.circle")
+                            Text("显示更多进展（剩余 \(remainingSectionCount) 条）")
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
-        .animation(isLive ? .easeOut(duration: 0.16) : nil, value: latestReasoningText)
-        .onChange(of: expanded) { isExpanded in
-            if !isExpanded { renderedSectionCount = 0 }
-        }
-        .onChange(of: isLive) { running in
-            if showsHeader, !running {
-                expanded = false
-            }
-        }
-    }
-
-    private var latestReasoningText: String? {
-        guard let item = items.last(where: { $0.kind == .reasoning }) else { return nil }
-        return reasoningText(item)
-    }
-
-    private func reasoningText(_ item: TranscriptItem) -> String? {
-        let source = item.text.nonEmpty ?? item.detail?.nonEmpty
-        let lines = source?
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty } ?? []
-        return lines.last?.nonEmpty
-    }
-
-    private var activitySections: [ActivitySection] {
-        var sections: [ActivitySection] = []
-        var pendingExecution: [TranscriptItem] = []
-        let latestReasoning = items.last(where: { $0.kind == .reasoning })
-        let latestReasoningText = latestReasoning.flatMap(reasoningText)
-
-        func flushExecution() {
-            guard !pendingExecution.isEmpty else { return }
-            sections.append(.execution(id: "execution.\(pendingExecution.first?.id ?? UUID().uuidString)", items: pendingExecution))
-            pendingExecution = []
-        }
-
-        for item in items {
-            if item.kind == .plan { continue }
-            if item.kind == .reasoning {
-                guard item.id == latestReasoning?.id, let latestReasoningText else { continue }
-                flushExecution()
-                sections.append(.reasoning(id: item.id, text: latestReasoningText))
-            } else if item.isCommentary {
-                flushExecution()
-                sections.append(.commentary(item))
-            } else {
-                pendingExecution.append(item)
-            }
-        }
-        flushExecution()
-        return sections
     }
 
     private var elapsedMilliseconds: Int {
         if let duration = metadata.durationMs, duration > 0 { return duration }
         guard let startedAt = metadata.startedAt else { return 0 }
-        guard metadata.isRunning || metadata.completedAt != nil else { return 0 }
-        let end = metadata.isRunning ? Date() : (metadata.completedAt ?? startedAt)
+        guard isLive || metadata.completedAt != nil else { return 0 }
+        let end = isLive ? Date() : (metadata.completedAt ?? startedAt)
         return max(0, Int(end.timeIntervalSince(startedAt) * 1000))
     }
 
@@ -469,6 +423,89 @@ private struct RunActivityView: View {
     private var statusColor: Color {
         metadata.status == "failed" ? .red : metadata.status == "interrupted" ? .secondary : RelayTheme.accent
     }
+}
+
+private struct RunActivityDetails: View {
+    let items: [TranscriptItem]
+    let visibleSectionCount: Int
+
+    var body: some View {
+        let sections = makeActivitySectionPage(items: items, limit: visibleSectionCount).sections
+        LazyVStack(alignment: .leading, spacing: 7) {
+            ForEach(sections) { section in
+                switch section {
+                case .commentary(let item):
+                    MarkdownContentView(source: item.text, baseFontSize: 13, blockSpacing: 6, lineSpacing: 2)
+                        .foregroundStyle(Color.primary.opacity(0.9))
+                case .reasoning(let id, let text):
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 14, height: 16)
+                        CompactMarkdownText(source: text, size: 12)
+                            .foregroundStyle(.secondary)
+                            .id(id)
+                    }
+                case .execution(_, let executionItems):
+                    ExecutionGroupView(items: executionItems)
+                }
+            }
+        }
+    }
+}
+
+private struct ActivitySectionPage {
+    let sections: [ActivitySection]
+    let totalCount: Int
+}
+
+private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> ActivitySectionPage {
+    var sections: [ActivitySection] = []
+    var pendingExecution: [TranscriptItem] = []
+    var hasPendingExecution = false
+    var totalCount = 0
+    let latestReasoningId = items.last(where: { $0.kind == .reasoning })?.id
+
+    func append(_ section: ActivitySection) {
+        totalCount += 1
+        if sections.count < limit { sections.append(section) }
+    }
+
+    func flushExecution() {
+        guard hasPendingExecution else { return }
+        let id = pendingExecution.first?.id ?? "hidden.\(totalCount)"
+        append(.execution(id: "execution.\(id)", items: pendingExecution))
+        pendingExecution = []
+        hasPendingExecution = false
+    }
+
+    for item in items where item.kind != .plan {
+        if item.kind == .reasoning {
+            guard item.id == latestReasoningId else { continue }
+            flushExecution()
+            guard let source = item.text.nonEmpty ?? item.detail?.nonEmpty else { continue }
+            totalCount += 1
+            if sections.count < limit, let text = lastNonemptyLine(source) {
+                sections.append(.reasoning(id: item.id, text: text))
+            }
+        } else if item.isCommentary {
+            flushExecution()
+            append(.commentary(item))
+        } else {
+            hasPendingExecution = true
+            if totalCount < limit { pendingExecution.append(item) }
+        }
+    }
+    flushExecution()
+    return ActivitySectionPage(sections: sections, totalCount: totalCount)
+}
+
+private func lastNonemptyLine(_ source: String?) -> String? {
+    guard let source else { return nil }
+    return source.split(whereSeparator: \.isNewline).reversed().lazy
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first(where: { !$0.isEmpty })
 }
 
 private enum ActivitySection: Identifiable {
@@ -553,7 +590,6 @@ private struct ExecutionGroupView: View {
                     }
                 }
                 .padding(.leading, 18)
-                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -667,7 +703,6 @@ private struct CompactTechnicalDetail: View {
             Text(preview.detail)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .textSelection(.enabled)
                 .padding(9)
         }
         .frame(height: CGFloat(preview.lineCount) * 14 + 18)
@@ -732,7 +767,6 @@ private struct ToolEventRow: View {
                                     .font(.system(size: 12, design: item.kind == .command ? .monospaced : .default))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(expanded ? 12 : 1)
-                                    .textSelection(.enabled)
                             }
                         }
 
@@ -801,7 +835,6 @@ private struct ToolEventRow: View {
                 }
                 .padding(.leading, 29)
                 .padding(.bottom, 10)
-                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

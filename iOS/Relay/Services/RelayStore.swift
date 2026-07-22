@@ -86,6 +86,8 @@ final class RelayStore: ObservableObject {
     private var subscribedSessionThreadId: String?
     private var pendingDetailDeltas: [String: PendingDetailDelta] = [:]
     private var detailDeltaFlushTask: Task<Void, Never>?
+    private var pendingTextDeltas: [String: PendingTextDelta] = [:]
+    private var textDeltaFlushTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -108,9 +110,11 @@ final class RelayStore: ObservableObject {
               state.planTurnId == state.turnId else { return [] }
         return state.plan
     }
-    private var activeTurnId: String? {
-        guard let selectedThreadId else { return nil }
-        return taskRunStates[selectedThreadId]?.turnId
+    var activeTurnId: String? {
+        guard let selectedThreadId,
+              let state = taskRunStates[selectedThreadId],
+              state.isRunning else { return nil }
+        return state.turnId
     }
     var currentPendingApprovals: [ApprovalRequest] {
         ApprovalQueue.prioritized(pendingApprovals, selectedThreadId: selectedThreadId)
@@ -698,6 +702,7 @@ final class RelayStore: ObservableObject {
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
+        flushPendingTextDeltas()
         flushPendingDetailDeltas()
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
@@ -1606,9 +1611,10 @@ final class RelayStore: ObservableObject {
     }
 
     private func applyTaskRunEvent(threadId: String, event: TaskRunEvent) {
-        var state = taskRunStates[threadId] ?? TaskRunState(threadId: threadId)
+        let previous = taskRunStates[threadId] ?? TaskRunState(threadId: threadId)
+        var state = previous
         state.apply(event)
-        taskRunStates[threadId] = state
+        if state != previous { taskRunStates[threadId] = state }
     }
 
     private func acceptsTurnEvent(threadId: String, turnId: String?) -> Bool {
@@ -1658,6 +1664,7 @@ final class RelayStore: ObservableObject {
             }
             markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
+            flushPendingTextDeltas()
             flushPendingDetailDeltas()
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
@@ -1694,7 +1701,10 @@ final class RelayStore: ObservableObject {
         case "item/started", "item/completed":
             guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
-            if method == "item/completed" { flushPendingDetailDeltas() }
+            if method == "item/completed" {
+                flushPendingTextDeltas()
+                flushPendingDetailDeltas()
+            }
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
         case "item/agentMessage/delta":
             guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
@@ -1799,11 +1809,17 @@ final class RelayStore: ObservableObject {
             bindPendingUserPrompt(to: turnId, threadId: selectedThreadId)
         }
         var metadata = turnMetadata[turnId] ?? TurnMetadata()
-        metadata.status = "inProgress"
-        metadata.completedAt = nil
-        metadata.durationMs = nil
-        if metadata.startedAt == nil { metadata.startedAt = startedAt ?? Date() }
-        turnMetadata[turnId] = metadata
+        let wasAlreadyActive = metadata.status == "inProgress"
+            && metadata.completedAt == nil
+            && metadata.durationMs == nil
+            && metadata.startedAt != nil
+        if !wasAlreadyActive {
+            metadata.status = "inProgress"
+            metadata.completedAt = nil
+            metadata.durationMs = nil
+            if metadata.startedAt == nil { metadata.startedAt = startedAt ?? Date() }
+            turnMetadata[turnId] = metadata
+        }
         ensureLiveSessionSync()
     }
 
@@ -1961,12 +1977,44 @@ final class RelayStore: ObservableObject {
 
     private func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
         guard let id, let delta else { return }
-        if let index = messages.firstIndex(where: { $0.id == id }) {
-            messages[index].text += delta
-            if messages[index].turnId == nil { messages[index].turnId = turnId }
+        if var pending = pendingTextDeltas[id] {
+            pending.text += delta
+            if pending.turnId == nil { pending.turnId = turnId }
+            pendingTextDeltas[id] = pending
         } else {
-            messages.append(TranscriptItem(id: id, turnId: turnId, role: role, kind: kind, title: title, text: delta))
+            pendingTextDeltas[id] = PendingTextDelta(text: delta, turnId: turnId, role: role, kind: kind, title: title)
         }
+        guard textDeltaFlushTask == nil else { return }
+        textDeltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushPendingTextDeltas()
+        }
+    }
+
+    private func flushPendingTextDeltas() {
+        textDeltaFlushTask?.cancel()
+        textDeltaFlushTask = nil
+        guard !pendingTextDeltas.isEmpty else { return }
+        let pending = pendingTextDeltas
+        pendingTextDeltas.removeAll(keepingCapacity: true)
+        var updated = messages
+        for (id, value) in pending {
+            if let index = updated.firstIndex(where: { $0.id == id }) {
+                updated[index].text += value.text
+                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
+            } else {
+                updated.append(TranscriptItem(
+                    id: id,
+                    turnId: value.turnId,
+                    role: value.role,
+                    kind: value.kind,
+                    title: value.title,
+                    text: value.text
+                ))
+            }
+        }
+        messages = updated
     }
 
     private func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
@@ -2208,6 +2256,8 @@ final class RelayStore: ObservableObject {
     }
 
     private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
+        flushPendingTextDeltas()
+        flushPendingDetailDeltas()
         messages = TranscriptReconciler.mergeSessionItems(snapshotItems, turnId: turnId, into: messages)
         applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
     }
@@ -2281,4 +2331,12 @@ private struct PendingDetailDelta {
     var text: String
     var turnId: String?
     let kind: TranscriptKind
+}
+
+private struct PendingTextDelta {
+    var text: String
+    var turnId: String?
+    let role: TranscriptRole
+    let kind: TranscriptKind
+    let title: String?
 }
