@@ -20,6 +20,7 @@ interface DiagnosticState {
   codexReady: boolean;
   clients: number;
   activeTurns: number;
+  activeTransferCount: number;
   pendingRpcCount: number;
   pendingApprovalCount: number;
   queuedPromptCount: number;
@@ -77,6 +78,12 @@ export class DiagnosticsLog {
         title: "待处理审批",
         detail: state.pendingApprovalCount > 0 ? `${state.pendingApprovalCount} 项操作等待确认` : "没有等待确认的操作",
       },
+      {
+        id: "transfer",
+        level: state.activeTransferCount > 0 ? "warning" : "ok",
+        title: "文件传输",
+        detail: state.activeTransferCount > 0 ? `${state.activeTransferCount} 个文件仍在传输` : "没有进行中的文件传输",
+      },
     ];
     const summary = checks.some((check) => check.level === "error")
       ? "error"
@@ -88,6 +95,7 @@ export class DiagnosticsLog {
       metrics: {
         clients: state.clients,
         activeTurns: state.activeTurns,
+        activeTransferCount: state.activeTransferCount,
         pendingRpcCount: state.pendingRpcCount,
         pendingApprovalCount: state.pendingApprovalCount,
         queuedPromptCount: state.queuedPromptCount,

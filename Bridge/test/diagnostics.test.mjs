@@ -7,6 +7,7 @@ function state(overrides = {}) {
     codexReady: true,
     clients: 1,
     activeTurns: 0,
+    activeTransferCount: 0,
     pendingRpcCount: 0,
     pendingApprovalCount: 0,
     queuedPromptCount: 0,
@@ -31,10 +32,11 @@ test("keeps a bounded newest-first diagnostic timeline", () => {
 });
 
 test("reports degraded state for disconnected clients and pending work", () => {
-  const report = new DiagnosticsLog().report(state({ clients: 0, pendingRpcCount: 2, pendingApprovalCount: 1 }));
+  const report = new DiagnosticsLog().report(state({ clients: 0, pendingRpcCount: 2, pendingApprovalCount: 1, activeTransferCount: 1 }));
   assert.equal(report.summary, "warning");
   assert.equal(report.checks.find((check) => check.id === "rpc").level, "warning");
   assert.equal(report.metrics.pendingApprovalCount, 1);
+  assert.equal(report.checks.find((check) => check.id === "transfer").level, "warning");
 });
 
 test("reports an error when Codex is unavailable without a restart attempt", () => {

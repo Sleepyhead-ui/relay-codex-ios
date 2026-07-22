@@ -48,6 +48,10 @@ export class FileTransferManager {
     this.cleanupTimer.unref();
   }
 
+  get activeTransferCount(): number {
+    return this.uploads.size + this.downloads.size;
+  }
+
   allowWorkspace(workspace: unknown): void {
     if (typeof workspace !== "string" || !workspace.trim()) return;
     this.allowedRoots.add(path.resolve(workspace));

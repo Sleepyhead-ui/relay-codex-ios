@@ -11,12 +11,14 @@ describe("desktop update safety", () => {
     const blockers = updateBlockers({
       status: "ready",
       activeTurns: 1,
+      activeTransferCount: 1,
       pendingRpcCount: 2,
       pendingApprovalCount: 1,
       queuedPromptCount: 3,
     });
-    expect(blockers).toHaveLength(4);
+    expect(blockers).toHaveLength(5);
     expect(blockers.join(" ")).toContain("任务正在运行");
+    expect(blockers.join(" ")).toContain("文件仍在传输");
     expect(blockers.join(" ")).toContain("消息仍在排队");
   });
 

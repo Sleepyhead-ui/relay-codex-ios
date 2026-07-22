@@ -12,6 +12,7 @@ test("uploads and downloads a file in chunks", async (t) => {
   const payload = Buffer.from("Relay 文件传输 ".repeat(80_000));
 
   const started = await manager.handle("relay/file/upload/start", { name: "测试.txt", size: payload.length });
+  assert.equal(manager.activeTransferCount, 1);
   const chunkSize = started.chunkSize;
   for (let offset = 0, index = 0; offset < payload.length; offset += chunkSize, index += 1) {
     await manager.handle("relay/file/upload/chunk", {
@@ -21,9 +22,11 @@ test("uploads and downloads a file in chunks", async (t) => {
     });
   }
   const uploaded = await manager.handle("relay/file/upload/finish", { uploadId: started.uploadId });
+  assert.equal(manager.activeTransferCount, 0);
   assert.deepEqual(await readFile(uploaded.path), payload);
 
   const download = await manager.handle("relay/file/download/start", { path: uploaded.path });
+  assert.equal(manager.activeTransferCount, 1);
   const chunks = [];
   for (let index = 0, done = false; !done; index += 1) {
     const chunk = await manager.handle("relay/file/download/chunk", { downloadId: download.downloadId, index });
@@ -31,6 +34,7 @@ test("uploads and downloads a file in chunks", async (t) => {
     done = chunk.done;
   }
   assert.deepEqual(Buffer.concat(chunks), payload);
+  assert.equal(manager.activeTransferCount, 0);
 });
 
 test("rejects downloads outside allowed roots and invalid chunk order", async (t) => {

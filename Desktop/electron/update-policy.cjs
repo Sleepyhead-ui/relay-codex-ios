@@ -3,6 +3,7 @@ function updateBlockers(health) {
   const blockers = [];
   if (health.status !== "ready") blockers.push("Codex 正在启动或恢复");
   if (number(health.activeTurns) > 0) blockers.push(`${number(health.activeTurns)} 个任务正在运行`);
+  if (number(health.activeTransferCount) > 0) blockers.push(`${number(health.activeTransferCount)} 个文件仍在传输`);
   if (number(health.pendingRpcCount) > 0) blockers.push(`${number(health.pendingRpcCount)} 个请求尚未完成`);
   if (number(health.pendingApprovalCount) > 0) blockers.push(`${number(health.pendingApprovalCount)} 项操作等待确认`);
   if (number(health.queuedPromptCount) > 0) blockers.push(`${number(health.queuedPromptCount)} 条消息仍在排队`);
