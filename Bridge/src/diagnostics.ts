@@ -29,6 +29,7 @@ interface DiagnosticState {
   socket: Record<string, unknown>;
   rpc: Record<string, unknown>;
   codexProfile: Record<string, unknown>;
+  performance: Record<string, unknown>;
 }
 
 export class DiagnosticsLog {
@@ -96,6 +97,7 @@ export class DiagnosticsLog {
       socket: state.socket,
       rpc: state.rpc,
       codexProfile: state.codexProfile,
+      performance: state.performance,
       events: [...this.events].reverse(),
     };
   }

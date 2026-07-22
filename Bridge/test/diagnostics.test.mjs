@@ -16,6 +16,7 @@ function state(overrides = {}) {
     socket: {},
     rpc: {},
     codexProfile: {},
+    performance: {},
     ...overrides,
   };
 }

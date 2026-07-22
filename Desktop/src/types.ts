@@ -113,6 +113,41 @@ export interface DiagnosticEvent {
   details?: Record<string, unknown>;
 }
 
+export interface DiagnosticTimingMetrics {
+  count: number;
+  averageMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
+export interface ClientDiagnosticPerformance {
+  sessions: {
+    snapshots: number;
+    patches: number;
+    revisionGaps: number;
+    recoveries: number;
+    snapshotApplyLatency: DiagnosticTimingMetrics;
+    patchApplyLatency: DiagnosticTimingMetrics;
+  };
+  deltas: {
+    queued: number;
+    frameFlushes: number;
+    updatedItems: number;
+    maxItemsPerFrame: number;
+    flushLatency: DiagnosticTimingMetrics;
+  };
+}
+
+export interface BridgeDiagnosticPerformance {
+  sessions: {
+    snapshots: number;
+    patches: number;
+    patchToSnapshotByteRatio: number;
+  };
+  rpcLatency: DiagnosticTimingMetrics;
+}
+
 export interface DiagnosticReport {
   generatedAt: string;
   summary: "ok" | "warning" | "error";
@@ -126,6 +161,8 @@ export interface DiagnosticReport {
     uptimeSeconds: number;
   };
   events: DiagnosticEvent[];
+  performance?: BridgeDiagnosticPerformance;
+  clientPerformance?: ClientDiagnosticPerformance;
   [key: string]: unknown;
 }
 

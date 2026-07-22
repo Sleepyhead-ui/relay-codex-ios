@@ -9,6 +9,7 @@ import { DesktopSync } from "./desktopSync.js";
 import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
+import { PerformanceMetrics } from "./performanceMetrics.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
@@ -58,8 +59,13 @@ const rpcDiagnostics = {
   lastError: null as string | null,
 };
 const diagnostics = new DiagnosticsLog();
+const performanceMetrics = new PerformanceMetrics();
+const rpcStartedAt = new Map<string, number>();
 diagnostics.record("info", "bridge", "Relay Bridge started.");
 const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridgeId, request) => {
+  const startedAt = rpcStartedAt.get(bridgeId);
+  if (startedAt !== undefined) performanceMetrics.recordRpcLatency(performance.now() - startedAt);
+  rpcStartedAt.delete(bridgeId);
   rpcDiagnostics.lastErrorAt = new Date().toISOString();
   rpcDiagnostics.lastError = `Codex request timed out: ${request.method}`;
   diagnostics.record("error", "rpc", `Request timed out: ${request.method}`, { bridgeId });
@@ -167,7 +173,9 @@ webSocketServer.on("connection", (socket) => {
       return;
     }
     try {
-      void handleClientMessage(socket, data.toString("utf8")).catch((error) => {
+      const raw = data.toString("utf8");
+      performanceMetrics.recordInbound(Buffer.byteLength(raw));
+      void handleClientMessage(socket, raw).catch((error) => {
         sendError(socket, error instanceof Error ? error.message : "Invalid message.");
       });
     } catch (error) {
@@ -180,7 +188,10 @@ webSocketServer.on("connection", (socket) => {
     sessionSubscriptions.delete(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
-    for (const [bridgeId] of pendingClientRequests.removeSocket(socket)) cancelForwardedRequest(bridgeId);
+    for (const [bridgeId] of pendingClientRequests.removeSocket(socket)) {
+      rpcStartedAt.delete(bridgeId);
+      cancelForwardedRequest(bridgeId);
+    }
     socketDiagnostics.lastDisconnectedAt = new Date().toISOString();
     socketDiagnostics.lastClose = `${code}${reason.length ? `: ${reason.toString("utf8")}` : ""}`;
     diagnostics.record(code === 1000 ? "info" : "warning", "socket", "Remote client disconnected.", { code, clients: clients.size });
@@ -224,6 +235,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
   if (message.type === "rpcCancel") {
     const cancelled = pendingClientRequests.cancelClient(socket, message.id);
     if (cancelled) {
+      rpcStartedAt.delete(cancelled[0]);
       diagnostics.record("info", "rpc", `Client cancelled ${cancelled[1].method}.`);
       cancelForwardedRequest(cancelled[0]);
     }
@@ -345,6 +357,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
           const update = cursor.update(snapshot);
           if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
           else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
+          else performanceMetrics.recordSuppressedSessionUpdate();
         });
         subscriptions?.set(threadId, stop);
         const snapshot = await sessionActivity.turnSnapshot(threadId);
@@ -359,6 +372,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
             const update = cursor.update(queued);
             if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
             else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
+            else performanceMetrics.recordSuppressedSessionUpdate();
           }
         }
         rpcDiagnostics.lastCompletedAt = new Date().toISOString();
@@ -443,12 +457,14 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     }
     const timeoutMs = message.method === "thread/turns/list" ? historyRpcTimeoutMs : defaultRpcTimeoutMs;
     pendingClientRequests.add(bridgeId, { socket, clientId: message.id, method: message.method, params }, timeoutMs);
+    rpcStartedAt.set(bridgeId, performance.now());
     try {
       codex.send({ method: message.method, id: bridgeId, params });
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
     } catch (error) {
       pendingClientRequests.delete(bridgeId);
+      rpcStartedAt.delete(bridgeId);
       rpcDiagnostics.lastErrorAt = new Date().toISOString();
       rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not forward RPC to Codex.";
       send(socket, {
@@ -489,6 +505,9 @@ function handleCodexResponse(message: JsonObject): void {
   }
   const pending = pendingClientRequests.take(id);
   if (!pending) return;
+  const startedAt = rpcStartedAt.get(id);
+  if (startedAt !== undefined) performanceMetrics.recordRpcLatency(performance.now() - startedAt);
+  rpcStartedAt.delete(id);
   rpcDiagnostics.lastCompletedAt = new Date().toISOString();
   rpcDiagnostics.lastCompletedMethod = pending.method;
   if ("error" in message) {
@@ -536,6 +555,7 @@ function observeFileTransferWorkspaces(method: string, result: unknown): void {
 }
 
 function handleCodexNotification(message: JsonObject): void {
+  if (typeof message.method === "string") performanceMetrics.recordCodexEvent(message.method);
   runtimeState.observeNotification(message);
   broadcast({ type: "event", ...message });
   if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
@@ -597,7 +617,10 @@ function broadcast(message: JsonObject): void {
 }
 
 function send(socket: WebSocket, message: JsonObject): void {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  if (socket.readyState !== WebSocket.OPEN) return;
+  const encoded = JSON.stringify(message);
+  performanceMetrics.recordOutbound(message, Buffer.byteLength(encoded));
+  socket.send(encoded);
 }
 
 function sendError(socket: WebSocket, message: string): void {
@@ -622,6 +645,7 @@ function diagnosticsReport(): JsonObject {
     socket: { ...socketDiagnostics },
     rpc: { ...rpcDiagnostics },
     codexProfile: { ...activeCodexProfile },
+    performance: performanceMetrics.report(),
   });
 }
 
@@ -715,7 +739,8 @@ function armCodexStartupWatchdog(generation: number): void {
 }
 
 function failPendingRequests(message: string, notifyClients: boolean): void {
-  for (const [, pending] of pendingClientRequests.clear()) {
+  for (const [bridgeId, pending] of pendingClientRequests.clear()) {
+    rpcStartedAt.delete(bridgeId);
     if (notifyClients) send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message } });
   }
   for (const pending of pendingInternalRequests.values()) {

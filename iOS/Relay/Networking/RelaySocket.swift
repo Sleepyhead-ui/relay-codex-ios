@@ -33,6 +33,7 @@ final class RelaySocket: ObservableObject {
 
     @Published private(set) var state: State = .disconnected
     @Published private(set) var desktopSyncMode = "unknown"
+    let performanceMetrics = ClientPerformanceMetrics()
     var onConnected: (() -> Void)?
     var onBridgeStatus: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
@@ -387,14 +388,19 @@ final class RelaySocket: ObservableObject {
     }
 
     private func decode(_ data: Data, generation: UUID) {
-        decodingQueue.async { [weak self] in
+        performanceMetrics.recordInboundMessage(bytes: data.count)
+        let metrics = performanceMetrics
+        decodingQueue.async { [weak self, metrics] in
+            let startedAt = ClientPerformanceClock.now()
             do {
                 let message = try JSONDecoder().decode(JSONValue.self, from: data)
+                metrics.recordDecode(milliseconds: ClientPerformanceClock.milliseconds(since: startedAt))
                 Task { @MainActor [weak self] in
                     guard let self, generation == self.connectionGeneration else { return }
                     self.handle(message, generation: generation)
                 }
             } catch {
+                metrics.recordDecodeFailure()
                 Task { @MainActor [weak self] in
                     guard let self, generation == self.connectionGeneration else { return }
                     self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")

@@ -8,11 +8,13 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSessionPatch, mergeSnapshot, parseApproval,
+  applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSessionPatch, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
 import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
+import { DesktopPerformanceMetrics } from "./performanceMetrics";
+import { SessionRevisionTracker } from "./sessionRevision";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
   GoalState, PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
@@ -75,10 +77,11 @@ export default function App() {
   const messagesRef = useRef<TranscriptItem[]>([]);
   const threadMessageCacheRef = useRef(new Map<string, TranscriptItem[]>());
   const notifiedTurnIdsRef = useRef(new Set<string>());
-  const sessionRevisionRef = useRef(new Map<string, number>());
+  const sessionRevisionRef = useRef(new SessionRevisionTracker());
   const recoveringSessionRef = useRef(new Set<string>());
-  const pendingDeltaRef = useRef(new Map<string, { id: string; turnId: string; kind: "assistant" | "reasoning" | "command"; text: string; detail: string }>());
+  const pendingDeltaRef = useRef(new Map<string, { id: string; turnId: string; kind: "assistant" | "reasoning" | "command"; textChunks: string[]; detailChunks: string[] }>());
   const deltaFrameRef = useRef<number>();
+  const performanceMetricsRef = useRef(new DesktopPerformanceMetrics());
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -489,19 +492,30 @@ export default function App() {
     }
   }
 
-  function handleSessionSnapshot(threadId: string, snapshot: any) {
+  function handleSessionSnapshot(threadId: string, snapshot: any, recordPerformance = true) {
     if (selectedRef.current !== threadId || !snapshot?.known || !snapshot.turnId) return;
+    const startedAt = performance.now();
+    let performanceRecorded = false;
+    const recordSnapshot = () => {
+      if (!recordPerformance || performanceRecorded) return;
+      performanceRecorded = true;
+      performanceMetricsRef.current.recordSessionSnapshot(performance.now() - startedAt);
+    };
     flushPendingDeltas();
-    sessionRevisionRef.current.set(threadId, Number(snapshot.revision || 0));
+    sessionRevisionRef.current.reset(threadId, Number(snapshot.revision || 0));
     const live = snapshot.isRunning === true && snapshot.stale !== true;
     if (live) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
-    if (snapshotItems.length) setMessages((current) => applyUserMessagePlacements(
-      mergeSnapshot(current, snapshotItems, snapshot.turnId),
-      userMessagePlacementsRef.current.values(),
-      threadId,
-      snapshot.turnId,
-    ));
+    if (snapshotItems.length) setMessages((current) => {
+      const next = applyUserMessagePlacements(
+        mergeSnapshot(current, snapshotItems, snapshot.turnId),
+        userMessagePlacementsRef.current.values(),
+        threadId,
+        snapshot.turnId,
+      );
+      recordSnapshot();
+      return next;
+    });
     setTurns((current) => ({
       ...current,
       [snapshot.turnId]: {
@@ -524,32 +538,46 @@ export default function App() {
         setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, status: "idle" } : thread));
       }
     }
+    if (!snapshotItems.length) recordSnapshot();
   }
 
   function handleSessionPatch(threadId: string, patch: any) {
     if (selectedRef.current !== threadId || !patch?.known || !patch.turnId) return;
-    const currentRevision = sessionRevisionRef.current.get(threadId);
-    if (currentRevision === undefined || currentRevision !== Number(patch.baseRevision)) {
+    if (!sessionRevisionRef.current.acceptPatch(threadId, Number(patch.baseRevision), Number(patch.revision))) {
+      performanceMetricsRef.current.recordRevisionGap();
       void recoverSessionSubscription(threadId);
       return;
     }
+    const startedAt = performance.now();
+    let performanceRecorded = false;
+    const recordPatch = () => {
+      if (performanceRecorded) return;
+      performanceRecorded = true;
+      performanceMetricsRef.current.recordSessionPatch(performance.now() - startedAt);
+    };
     flushPendingDeltas();
     const upserts = (patch.upsertItems || [])
       .map((value: any) => parseItem(value, patch.turnId))
       .filter(Boolean) as TranscriptItem[];
     if (upserts.length || patch.removedItemIds?.length) {
-      setMessages((current) => applyUserMessagePlacements(
-        mergeSessionPatch(current, upserts, patch.removedItemIds || [], patch.turnId),
-        userMessagePlacementsRef.current.values(),
-        threadId,
-        patch.turnId,
-      ));
+      setMessages((current) => {
+        const next = applyUserMessagePlacements(
+          mergeSessionPatch(current, upserts, patch.removedItemIds || [], patch.turnId),
+          userMessagePlacementsRef.current.values(),
+          threadId,
+          patch.turnId,
+        );
+        recordPatch();
+        return next;
+      });
     }
-    handleSessionSnapshot(threadId, { ...patch, items: [], revision: patch.revision });
+    handleSessionSnapshot(threadId, { ...patch, items: [], revision: patch.revision }, false);
+    if (!upserts.length && !patch.removedItemIds?.length) recordPatch();
   }
 
   async function recoverSessionSubscription(threadId: string) {
     if (recoveringSessionRef.current.has(threadId)) return;
+    performanceMetricsRef.current.recordRecovery();
     recoveringSessionRef.current.add(threadId);
     try {
       const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId, incremental: true }, 12_000);
@@ -659,10 +687,19 @@ export default function App() {
   }
 
   function queueDelta(id: string, turnId: string, kind: "assistant" | "reasoning" | "command", text: string, detail: string) {
+    performanceMetricsRef.current.recordQueuedDelta();
     const existing = pendingDeltaRef.current.get(id);
-    pendingDeltaRef.current.set(id, existing
-      ? { ...existing, turnId: existing.turnId || turnId, text: existing.text + text, detail: existing.detail + detail }
-      : { id, turnId, kind, text, detail });
+    if (existing) {
+      if (!existing.turnId) existing.turnId = turnId;
+      if (text) existing.textChunks.push(text);
+      if (detail) existing.detailChunks.push(detail);
+    } else {
+      pendingDeltaRef.current.set(id, {
+        id, turnId, kind,
+        textChunks: text ? [text] : [],
+        detailChunks: detail ? [detail] : [],
+      });
+    }
     if (deltaFrameRef.current === undefined) deltaFrameRef.current = requestAnimationFrame(flushPendingDeltas);
   }
 
@@ -670,34 +707,21 @@ export default function App() {
     if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
     deltaFrameRef.current = undefined;
     if (!pendingDeltaRef.current.size) return;
-    const pending = [...pendingDeltaRef.current.values()];
+    const pending = [...pendingDeltaRef.current.values()].map((value) => ({
+      id: value.id,
+      turnId: value.turnId,
+      kind: value.kind,
+      text: value.textChunks.join(""),
+      detail: value.detailChunks.join(""),
+    }));
+    const startedAt = performance.now();
+    let performanceRecorded = false;
     pendingDeltaRef.current.clear();
     setMessages((current) => {
-      const next = [...current];
-      const indexes = new Map(next.map((item, index) => [item.id, index]));
-      for (const value of pending) {
-        const index = indexes.get(value.id);
-        if (index === undefined) {
-          indexes.set(value.id, next.length);
-          next.push({
-            id: value.id,
-            turnId: value.turnId,
-            kind: value.kind,
-            text: value.text,
-            detail: value.detail || undefined,
-            phase: value.kind === "assistant" ? "commentary" : undefined,
-            title: value.kind === "reasoning" ? "思考" : value.kind === "command" ? "运行命令" : undefined,
-            status: value.kind === "command" ? "inProgress" : undefined,
-          });
-        } else {
-          const item = next[index]!;
-          next[index] = {
-            ...item,
-            turnId: item.turnId || value.turnId,
-            text: item.text + value.text,
-            detail: value.detail ? (item.detail || "") + value.detail : item.detail,
-          };
-        }
+      const next = applyDeltaBatch(current, pending);
+      if (!performanceRecorded) {
+        performanceRecorded = true;
+        performanceMetricsRef.current.recordFrameFlush(pending.length, performance.now() - startedAt);
       }
       return next;
     });
@@ -859,7 +883,8 @@ export default function App() {
   async function refreshDiagnostics() {
     setDiagnosticsLoading(true);
     try {
-      setDiagnostics(await rpc.rpc("relay/diagnostics/report", {}, 12_000) as DiagnosticReport);
+      const report = await rpc.rpc("relay/diagnostics/report", {}, 12_000) as DiagnosticReport;
+      setDiagnostics({ ...report, clientPerformance: performanceMetricsRef.current.report() });
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -1235,6 +1260,14 @@ function DiagnosticsPanel({ report, loading, onRefresh, onClose }: {
           <h3>系统检查</h3>
           <div className="diagnostic-checks">{report.checks.map((check) => <div className="diagnostic-check" key={check.id}><span className={`diagnostic-dot ${check.level}`}/><div><strong>{check.title}</strong><span>{check.detail}</span></div></div>)}</div>
         </section>
+        {report.clientPerformance && <section className="diagnostic-section">
+          <h3>性能</h3>
+          <div className="diagnostic-metrics">
+            <DiagnosticMetric title="会话增量同步" value={`${report.clientPerformance.sessions.patches} 补丁 / ${report.clientPerformance.sessions.snapshots} 快照`} detail={`应用 P95 ${formatMilliseconds(report.clientPerformance.sessions.patchApplyLatency.p95Ms)} · ${report.clientPerformance.sessions.revisionGaps} 次修订缺口`}/>
+            <DiagnosticMetric title="流式内容刷新" value={`P95 ${formatMilliseconds(report.clientPerformance.deltas.flushLatency.p95Ms)}`} detail={`${report.clientPerformance.deltas.frameFlushes} 帧 · 单帧最多 ${report.clientPerformance.deltas.maxItemsPerFrame} 项`}/>
+            {report.performance && <DiagnosticMetric title="Bridge RPC" value={`P95 ${formatMilliseconds(report.performance.rpcLatency.p95Ms)}`} detail={`补丁/快照流量比 ${formatPercent(report.performance.sessions.patchToSnapshotByteRatio)}`}/>}
+          </div>
+        </section>}
         <section className="diagnostic-section events">
           <h3>最近事件</h3>
           {!report.events.length ? <p>暂无异常事件</p> : report.events.slice(0, 40).map((event) => <div className="diagnostic-event" key={event.id}><span className={`diagnostic-dot ${event.level}`}/><div><strong>{event.message}</strong><span>{event.category} · {new Date(event.at).toLocaleTimeString()}</span></div></div>)}
@@ -1243,6 +1276,13 @@ function DiagnosticsPanel({ report, loading, onRefresh, onClose }: {
     </aside>
   </div>;
 }
+
+function DiagnosticMetric({ title, value, detail }: { title: string; value: string; detail: string }) {
+  return <div className="diagnostic-metric"><div><strong>{title}</strong><span>{value}</span></div><small>{detail}</small></div>;
+}
+
+function formatMilliseconds(value = 0) { return value < 10 ? `${value.toFixed(1)} ms` : `${Math.round(value)} ms`; }
+function formatPercent(value = 0) { return `${(value * 100).toFixed(1)}%`; }
 
 function Modal({ title, children, onClose, closable = true }: { title: string; children: ReactNode; onClose: () => void; closable?: boolean }) { return <div className="modal-backdrop"><div className="modal"><div className="modal-heading"><strong>{title}</strong>{closable && <button className="icon-button" onClick={onClose}><X size={16}/></button>}</div>{children}</div></div>; }
 function Markdown({ text }: { text: string }) { const html = useMemo(() => DOMPurify.sanitize(marked.parse(text || "", { breaks: true, gfm: true }) as string), [text]); return <div className="markdown" dangerouslySetInnerHTML={{ __html: html }}/>; }

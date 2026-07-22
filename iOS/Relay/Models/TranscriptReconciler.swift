@@ -7,6 +7,16 @@ struct UserMessagePlacement: Equatable {
     let sequence: Int
 }
 
+struct TranscriptDeltaUpdate {
+    let id: String
+    let turnId: String?
+    let role: TranscriptRole
+    let kind: TranscriptKind
+    let title: String?
+    let text: String
+    let detail: String
+}
+
 enum TranscriptReconciler {
     static func upsert(_ item: TranscriptItem, into messages: inout [TranscriptItem]) {
         if let index = messages.firstIndex(where: { $0.id == item.id }) {
@@ -18,6 +28,33 @@ enum TranscriptReconciler {
         }) {
             messages.append(item)
         }
+    }
+
+    static func applyDeltaBatch(_ updates: [TranscriptDeltaUpdate], to messages: [TranscriptItem]) -> [TranscriptItem] {
+        guard !updates.isEmpty else { return messages }
+        var result = messages
+        var indexes: [String: Int] = [:]
+        for (index, item) in result.enumerated() { indexes[item.id] = index }
+        for update in updates {
+            if let index = indexes[update.id] {
+                result[index].text += update.text
+                if !update.detail.isEmpty { result[index].detail = (result[index].detail ?? "") + update.detail }
+                if result[index].turnId == nil { result[index].turnId = update.turnId }
+            } else {
+                indexes[update.id] = result.count
+                result.append(TranscriptItem(
+                    id: update.id,
+                    turnId: update.turnId,
+                    role: update.role,
+                    kind: update.kind,
+                    title: update.title,
+                    text: update.text,
+                    detail: update.detail.nonEmpty,
+                    status: update.kind == .command ? "inProgress" : nil
+                ))
+            }
+        }
+        return result
     }
 
     static func mergeSessionItems(

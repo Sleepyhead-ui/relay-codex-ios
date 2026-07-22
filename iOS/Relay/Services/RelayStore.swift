@@ -84,11 +84,12 @@ final class RelayStore: ObservableObject {
     private var restorationTask: Task<Void, Never>?
     private var liveSessionSyncTask: Task<Void, Never>?
     private var subscribedSessionThreadId: String?
-    private var sessionPatchRevisions: [String: Int] = [:]
+    private var sessionRevisionTracker = SessionRevisionTracker()
     private var lastSessionUpdateAt: [String: Date] = [:]
     private var recoveringSessionThreadIds = Set<String>()
     private var pendingDetailDeltas: [String: PendingDetailDelta] = [:]
     private var pendingTextDeltas: [String: PendingTextDelta] = [:]
+    private var pendingDeltaOrder: [String] = []
     private var deltaFlushTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
@@ -332,7 +333,9 @@ final class RelayStore: ObservableObject {
         guard socket.state == .connected else { return }
         do {
             let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
-            diagnosticsReport = DiagnosticsReport(json: result)
+            var combined = result.objectValue ?? [:]
+            combined["clientPerformance"] = socket.performanceMetrics.report()
+            diagnosticsReport = DiagnosticsReport(json: .object(combined))
         } catch {
             report(error)
         }
@@ -720,7 +723,7 @@ final class RelayStore: ObservableObject {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
             if let subscribedSessionThreadId {
-                sessionPatchRevisions.removeValue(forKey: subscribedSessionThreadId)
+                sessionRevisionTracker.remove(threadId: subscribedSessionThreadId)
                 lastSessionUpdateAt.removeValue(forKey: subscribedSessionThreadId)
                 recoveringSessionThreadIds.remove(subscribedSessionThreadId)
                 Task { [weak self] in
@@ -1539,12 +1542,17 @@ final class RelayStore: ObservableObject {
     private func resetForHostSwitch() {
         restorationTask?.cancel()
         liveSessionSyncTask?.cancel()
+        deltaFlushTask?.cancel()
         restorationTask = nil
         liveSessionSyncTask = nil
+        deltaFlushTask = nil
         subscribedSessionThreadId = nil
-        sessionPatchRevisions.removeAll()
+        sessionRevisionTracker.removeAll()
         lastSessionUpdateAt.removeAll()
         recoveringSessionThreadIds.removeAll()
+        pendingTextDeltas.removeAll()
+        pendingDetailDeltas.removeAll()
+        pendingDeltaOrder.removeAll()
         threads = []
         messages = []
         turnMetadata = [:]
@@ -1990,6 +1998,8 @@ final class RelayStore: ObservableObject {
 
     private func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
         guard let id, let delta else { return }
+        socket.performanceMetrics.recordQueuedDelta()
+        if pendingTextDeltas[id] == nil && pendingDetailDeltas[id] == nil { pendingDeltaOrder.append(id) }
         if var pending = pendingTextDeltas[id] {
             pending.text += delta
             if pending.turnId == nil { pending.turnId = turnId }
@@ -2006,6 +2016,8 @@ final class RelayStore: ObservableObject {
 
     private func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
         guard let id, let delta else { return }
+        socket.performanceMetrics.recordQueuedDelta()
+        if pendingTextDeltas[id] == nil && pendingDetailDeltas[id] == nil { pendingDeltaOrder.append(id) }
         if var pending = pendingDetailDeltas[id] {
             pending.text += delta
             if pending.turnId == nil { pending.turnId = turnId }
@@ -2035,30 +2047,30 @@ final class RelayStore: ObservableObject {
         guard !pendingTextDeltas.isEmpty || !pendingDetailDeltas.isEmpty else { return }
         let pendingText = pendingTextDeltas
         let pendingDetail = pendingDetailDeltas
+        let pendingOrder = pendingDeltaOrder
+        let startedAt = ClientPerformanceClock.now()
+        let updatedItemCount = pendingOrder.count
         pendingTextDeltas.removeAll(keepingCapacity: true)
         pendingDetailDeltas.removeAll(keepingCapacity: true)
-        var updated = messages
-        var indexes: [String: Int] = [:]
-        for (index, item) in updated.enumerated() { indexes[item.id] = index }
-        for (id, value) in pendingText {
-            if let index = indexes[id] {
-                updated[index].text += value.text
-                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
-            } else {
-                indexes[id] = updated.count
-                updated.append(TranscriptItem(id: id, turnId: value.turnId, role: value.role, kind: value.kind, title: value.title, text: value.text))
+        pendingDeltaOrder.removeAll(keepingCapacity: true)
+        let updates = pendingOrder.compactMap { id -> TranscriptDeltaUpdate? in
+            if let text = pendingText[id], let detail = pendingDetail[id] {
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId ?? detail.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: detail.text)
             }
-        }
-        for (id, value) in pendingDetail {
-            if let index = indexes[id] {
-                updated[index].detail = (updated[index].detail ?? "") + value.text
-                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
-            } else {
-                indexes[id] = updated.count
-                updated.append(TranscriptItem(id: id, turnId: value.turnId, role: .tool, kind: value.kind, title: value.kind == .reasoning ? "思考" : "运行命令", text: "", detail: value.text, status: "inProgress"))
+            if let text = pendingText[id] {
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: "")
             }
+            if let detail = pendingDetail[id] {
+                return TranscriptDeltaUpdate(id: id, turnId: detail.turnId, role: .tool, kind: detail.kind, title: detail.kind == .reasoning ? "思考" : "运行命令", text: "", detail: detail.text)
+            }
+            return nil
         }
+        let updated = TranscriptReconciler.applyDeltaBatch(updates, to: messages)
         if updated != messages { messages = updated }
+        socket.performanceMetrics.recordDeltaFlush(
+            items: updatedItemCount,
+            milliseconds: ClientPerformanceClock.milliseconds(since: startedAt)
+        )
     }
 
     private func handleConnectionRestored() async {
@@ -2188,6 +2200,7 @@ final class RelayStore: ObservableObject {
 
     private func syncSessionSnapshot(threadId: String) async {
         guard !recoveringSessionThreadIds.contains(threadId) else { return }
+        socket.performanceMetrics.recordSessionRecovery()
         recoveringSessionThreadIds.insert(threadId)
         defer { recoveringSessionThreadIds.remove(threadId) }
         do {
@@ -2208,8 +2221,14 @@ final class RelayStore: ObservableObject {
         guard selectedThreadId == threadId,
               result["known"]?.boolValue == true,
               let turnId = result["turnId"]?.stringValue else { return }
+        let startedAt = ClientPerformanceClock.now()
+        defer {
+            socket.performanceMetrics.recordSessionSnapshot(
+                milliseconds: ClientPerformanceClock.milliseconds(since: startedAt)
+            )
+        }
 
-        sessionPatchRevisions[threadId] = result["revision"]?.intValue ?? 0
+        sessionRevisionTracker.reset(threadId: threadId, revision: result["revision"]?.intValue ?? 0)
         lastSessionUpdateAt[threadId] = Date()
 
         let snapshotItems = result["items"]?.arrayValue?.compactMap {
@@ -2225,12 +2244,19 @@ final class RelayStore: ObservableObject {
               let turnId = patch["turnId"]?.stringValue,
               let baseRevision = patch["baseRevision"]?.intValue,
               let revision = patch["revision"]?.intValue else { return }
-        guard sessionPatchRevisions[threadId] == baseRevision else {
+        guard sessionRevisionTracker.acceptPatch(threadId: threadId, baseRevision: baseRevision, revision: revision) else {
+            socket.performanceMetrics.recordRevisionGap()
             Task { [weak self] in await self?.syncSessionSnapshot(threadId: threadId) }
             return
         }
 
-        sessionPatchRevisions[threadId] = revision
+        let startedAt = ClientPerformanceClock.now()
+        defer {
+            socket.performanceMetrics.recordSessionPatch(
+                milliseconds: ClientPerformanceClock.milliseconds(since: startedAt)
+            )
+        }
+
         lastSessionUpdateAt[threadId] = Date()
         let upserts = patch["upsertItems"]?.arrayValue?.compactMap {
             TranscriptItem.from(json: $0, turnId: turnId)

@@ -137,6 +137,28 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertTrue(ApprovalQueue.contains([first, second], threadId: "thread.1"))
     }
 
+    func testHighLoadDeltaBatchPreservesHistoryOrderAndTenMegabyteOutput() {
+        let history = (0..<1_000).map { index in
+            item(id: "history.\(index)", turnId: "turn.\(index / 10)", role: .assistant, text: "message \(index)")
+        }
+        let chunks = (0..<100).map { _ in String(repeating: "x", count: 100_000) }
+        let update = TranscriptDeltaUpdate(
+            id: "command.live",
+            turnId: "turn.live",
+            role: .tool,
+            kind: .command,
+            title: "运行命令",
+            text: "",
+            detail: chunks.joined()
+        )
+
+        let result = TranscriptReconciler.applyDeltaBatch([update], to: history)
+        XCTAssertEqual(result.count, 1_001)
+        XCTAssertEqual(result.prefix(1_000).map(\.id), history.map(\.id))
+        XCTAssertEqual(result.filter { $0.id == "command.live" }.count, 1)
+        XCTAssertEqual(result.last?.detail?.count, 10_000_000)
+    }
+
     private func item(
         id: String,
         turnId: String?,

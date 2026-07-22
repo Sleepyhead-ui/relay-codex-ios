@@ -8,6 +8,14 @@ export interface UserMessagePlacement {
   sequence: number;
 }
 
+export interface TranscriptDelta {
+  id: string;
+  turnId: string;
+  kind: "assistant" | "reasoning" | "command";
+  text: string;
+  detail: string;
+}
+
 export function parseThread(value: any): ThreadSummary | null {
   if (!value?.id) return null;
   const status = typeof value.status === "string" ? value.status : value.status?.type || "idle";
@@ -122,6 +130,56 @@ export function upsert(items: TranscriptItem[], incoming: TranscriptItem) {
   if (index < 0) return [...items, incoming];
   const next = [...items];
   next[index] = mergeItem(next[index], incoming);
+  return next;
+}
+
+export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta[]) {
+  if (!deltas.length) return items;
+  const grouped = new Map<string, { value: TranscriptDelta; text: string[]; detail: string[] }>();
+  for (const delta of deltas) {
+    const existing = grouped.get(delta.id);
+    if (existing) {
+      if (delta.text) existing.text.push(delta.text);
+      if (delta.detail) existing.detail.push(delta.detail);
+    } else {
+      grouped.set(delta.id, {
+        value: delta,
+        text: delta.text ? [delta.text] : [],
+        detail: delta.detail ? [delta.detail] : [],
+      });
+    }
+  }
+  const next = [...items];
+  const indexes = new Map(next.map((item, index) => [item.id, index]));
+  for (const groupedValue of grouped.values()) {
+    const value = {
+      ...groupedValue.value,
+      text: groupedValue.text.join(""),
+      detail: groupedValue.detail.join(""),
+    };
+    const index = indexes.get(value.id);
+    if (index === undefined) {
+      indexes.set(value.id, next.length);
+      next.push({
+        id: value.id,
+        turnId: value.turnId,
+        kind: value.kind,
+        text: value.text,
+        detail: value.detail || undefined,
+        phase: value.kind === "assistant" ? "commentary" : undefined,
+        title: value.kind === "reasoning" ? "思考" : value.kind === "command" ? "运行命令" : undefined,
+        status: value.kind === "command" ? "inProgress" : undefined,
+      });
+      continue;
+    }
+    const item = next[index]!;
+    next[index] = {
+      ...item,
+      turnId: item.turnId || value.turnId,
+      text: item.text + value.text,
+      detail: value.detail ? (item.detail || "") + value.detail : item.detail,
+    };
+  }
   return next;
 }
 

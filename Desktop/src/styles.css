@@ -244,6 +244,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .diagnostic-dot.error { background: #df817b; }
 .diagnostic-section.events { padding-bottom: 18px; }
 .diagnostic-section.events > p { color: #73776f; font-size: 10px; }
+.diagnostic-metrics { display: flex; flex-direction: column; }
+.diagnostic-metric { padding: 9px 3px; border-bottom: 1px solid rgba(255,255,255,.045); }
+.diagnostic-metric > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.diagnostic-metric strong { color: #c8cbc4; font-size: 11px; font-weight: 600; }
+.diagnostic-metric span { color: #a9ada5; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; text-align: right; }
+.diagnostic-metric small { display: block; margin-top: 3px; color: #70746d; font-size: 9px; }
 .settings-section { margin-top: 26px; }
 .settings-section h3 { margin: 0 0 12px; color: #999d95; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .settings-section p { margin: 8px 0 0; color: #73776f; font-size: 10px; line-height: 1.5; }

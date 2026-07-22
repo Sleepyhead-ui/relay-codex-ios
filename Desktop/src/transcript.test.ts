@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import type { TranscriptItem } from "./types";
 
 describe("desktop transcript", () => {
   it("applies incremental session changes without replacing unrelated turns", () => {
@@ -212,5 +213,23 @@ describe("desktop transcript", () => {
   it("classifies diff headers before additions and removals", () => {
     expect(["--- a/file", "+++ b/file", "@@ -1 +1 @@", "-old", "+new", " same"].map(diffLineKind))
       .toEqual(["header", "header", "hunk", "removed", "added", "context"]);
+  });
+
+  it("replays a high-load transcript without loss, duplication, or reordering", () => {
+    let messages: TranscriptItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `history.${index}`, turnId: `turn.${Math.floor(index / 10)}`, kind: "assistant" as const, text: `message ${index}`,
+    }));
+    const outputChunk = "x".repeat(100_000);
+    const deltas = Array.from({ length: 100 }, () => ({
+      id: "command.live", turnId: "turn.live", kind: "command" as const, text: "", detail: outputChunk,
+    }));
+    messages = applyDeltaBatch(messages, deltas);
+
+    expect(messages).toHaveLength(1_001);
+    expect(messages.slice(0, 1_000).map((item) => item.id)).toEqual(
+      Array.from({ length: 1_000 }, (_, index) => `history.${index}`),
+    );
+    expect(messages.filter((item) => item.id === "command.live")).toHaveLength(1);
+    expect(messages.at(-1)?.detail?.length).toBe(10_000_000);
   });
 });
