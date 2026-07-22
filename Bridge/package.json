@@ -1,6 +1,6 @@
 {
   "name": "relay-codex-bridge",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "private": true,
   "description": "Authenticated local bridge between Relay for iOS and Codex App Server",
   "type": "module",

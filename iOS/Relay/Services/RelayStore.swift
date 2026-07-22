@@ -503,7 +503,9 @@ final class RelayStore: ObservableObject {
                 reconnectOnTimeout: false
             )
             activeCodexProfileId = result["profile"]?["id"]?.stringValue ?? profileId
-            resetForCodexProfileSwitch()
+            // The Bridge's switching notification owns the reset. Resetting
+            // again here can erase conversations already restored by a fast
+            // ready notification that overtook this RPC response.
         } catch {
             isSwitchingCodexProfile = false
             report(error)
@@ -2058,22 +2060,34 @@ final class RelayStore: ObservableObject {
         async let queueRefresh: Void = refreshPromptQueue()
         _ = await (threadsRefresh, queueRefresh)
         if modelOptions.isEmpty { await refreshModels(showErrors: false) }
-        if let selectedThreadId {
-            await selectThread(selectedThreadId, closeSidebar: false, showErrors: false)
+        let targetThreadId = ProfileSwitchSelection.restoredThreadId(
+            previous: selectedThreadId,
+            availableThreadIds: threads.map(\.id)
+        )
+        if let targetThreadId {
+            await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
         } else {
-            if let targetThreadId = threads.first?.id {
-                await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
-            }
+            setSelectedThread(nil)
         }
     }
 
     private func handleBridgeStatus(_ message: JSONValue) {
+        let status = message["status"]?.stringValue
+        var changedWithoutSwitchNotification = false
         if let profileId = message["codexProfile"]?["id"]?.stringValue {
-            let profileChanged = activeCodexProfileId != profileId
+            let hadActiveProfile = !activeCodexProfileId.isEmpty
+            let profileChanged = hadActiveProfile && activeCodexProfileId != profileId
             activeCodexProfileId = profileId
             if profileChanged { loadPinnedThreads() }
+            changedWithoutSwitchNotification = profileChanged && status != "switching"
         }
-        switch message["status"]?.stringValue {
+        if changedWithoutSwitchNotification {
+            // The app may have been backgrounded while another client switched
+            // profiles, so the switching notification can be missed.
+            isSwitchingCodexProfile = true
+            resetForCodexProfileSwitch()
+        }
+        switch status {
         case "switching":
             isSwitchingCodexProfile = true
             resetForCodexProfileSwitch()
