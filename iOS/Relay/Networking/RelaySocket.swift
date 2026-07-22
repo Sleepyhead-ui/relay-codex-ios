@@ -392,7 +392,7 @@ final class RelaySocket: ObservableObject {
                 let message = try JSONDecoder().decode(JSONValue.self, from: data)
                 Task { @MainActor [weak self] in
                     guard let self, generation == self.connectionGeneration else { return }
-                    self.handle(message)
+                    self.handle(message, generation: generation)
                 }
             } catch {
                 Task { @MainActor [weak self] in
@@ -403,7 +403,7 @@ final class RelaySocket: ObservableObject {
         }
     }
 
-    private func handle(_ message: JSONValue) {
+    private func handle(_ message: JSONValue, generation: UUID) {
         guard let type = message["type"]?.stringValue else { return }
 
         switch type {
