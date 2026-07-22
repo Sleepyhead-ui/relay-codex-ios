@@ -49,11 +49,11 @@ final class RelayStore: ObservableObject {
     @Published private(set) var showingArchivedThreads = false
     @Published var showingDiagnostics = false
     @Published private(set) var diagnosticsReport: DiagnosticsReport?
-    @Published private(set) var notificationsEnabled = false
+    @Published var notificationsEnabled = false
     @Published private(set) var savedHosts: [RelayHostEntry] = []
-    @Published private(set) var hostAvailability: [String: Bool] = [:]
-    @Published private(set) var currentHostId = ""
-    @Published private(set) var isCheckingHosts = false
+    @Published var hostAvailability: [String: Bool] = [:]
+    @Published var currentHostId = ""
+    @Published var isCheckingHosts = false
     @Published private(set) var updateInfo: RelayUpdateInfo?
     @Published private(set) var isCheckingUpdate = false
     @Published private(set) var isDownloadingUpdate = false
@@ -69,11 +69,11 @@ final class RelayStore: ObservableObject {
     private let threadCacheDefaultsKey = "relay.cachedThreads"
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
-    private let notificationsDefaultsKey = "relay.notifications.enabled"
+    let notificationsDefaultsKey = "relay.notifications.enabled"
     private let hostRegistryDefaultsKey = "relay.host.registry"
-    private let currentHostDefaultsKey = "relay.host.currentId"
-    private let notificationCoordinator = NotificationCoordinator()
-    private var applicationIsActive = true
+    let currentHostDefaultsKey = "relay.host.currentId"
+    let notificationCoordinator = NotificationCoordinator()
+    var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
     private var threadLoadGeneration = UUID()
     var reconcilingThreadId: String?
@@ -247,80 +247,6 @@ final class RelayStore: ObservableObject {
             self?.pendingApprovals.removeAll { $0.id == id }
         }
         socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
-    }
-
-    func connect() {
-        errorMessage = nil
-        do {
-            try persistConnection()
-            try socket.connect(endpoint: host.endpoint, token: token)
-            showingConnection = false
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func disconnect() { socket.disconnect() }
-
-    func refreshSavedHostStatus() async {
-        guard !savedHosts.isEmpty else { return }
-        isCheckingHosts = true
-        defer { isCheckingHosts = false }
-        await withTaskGroup(of: (String, Bool).self) { group in
-            for entry in savedHosts {
-                group.addTask {
-                    guard var components = URLComponents(string: entry.endpoint) else { return (entry.id, false) }
-                    components.scheme = components.scheme == "wss" ? "https" : "http"
-                    components.path = "/health"
-                    guard let url = components.url else { return (entry.id, false) }
-                    var request = URLRequest(url: url)
-                    request.timeoutInterval = 2.5
-                    do {
-                        let (_, response) = try await URLSession.shared.data(for: request)
-                        return (entry.id, (response as? HTTPURLResponse)?.statusCode == 200)
-                    } catch {
-                        return (entry.id, false)
-                    }
-                }
-            }
-            for await (id, available) in group { hostAvailability[id] = available }
-        }
-    }
-
-    func switchHost(_ id: String) {
-        guard id != currentHostId, let entry = savedHosts.first(where: { $0.id == id }) else { return }
-        disconnect()
-        resetForHostSwitch()
-        currentHostId = id
-        host = entry.configuration
-        token = KeychainStore.loadToken(account: tokenAccount(for: id)) ?? ""
-        UserDefaults.standard.set(id, forKey: currentHostDefaultsKey)
-        if token.isEmpty {
-            showingSettings = false
-            showingConnection = true
-        } else {
-            connect()
-        }
-    }
-
-    func applicationBecameActive() {
-        applicationIsActive = true
-        if socket.state == .connected {
-            scheduleRestoration()
-        } else {
-            socket.reconnectIfNeeded()
-        }
-    }
-
-    func applicationEnteredBackground() {
-        applicationIsActive = false
-    }
-
-    func setNotificationsEnabled(_ enabled: Bool) async {
-        let allowed = enabled ? await notificationCoordinator.requestAuthorization() : false
-        notificationsEnabled = enabled && allowed
-        UserDefaults.standard.set(notificationsEnabled, forKey: notificationsDefaultsKey)
-        if enabled && !allowed { errorMessage = "系统未授予 Relay 通知权限。" }
     }
 
     func refreshDiagnostics() async {
@@ -1218,7 +1144,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func persistConnection() throws {
+    func persistConnection() throws {
         guard !token.isEmpty else {
             throw RelaySocket.SocketError.remote("Enter the pairing token shown by Relay Bridge.")
         }
@@ -1239,11 +1165,11 @@ final class RelayStore: ObservableObject {
         if !currentHostId.isEmpty { UserDefaults.standard.set(currentHostId, forKey: currentHostDefaultsKey) }
     }
 
-    private func tokenAccount(for hostId: String) -> String {
+    func tokenAccount(for hostId: String) -> String {
         hostId.isEmpty ? "bridge-token" : "bridge-token.\(hostId)"
     }
 
-    private func resetForHostSwitch() {
+    func resetForHostSwitch() {
         restorationTask?.cancel()
         liveSessionSyncTask?.cancel()
         deltaFlushTask?.cancel()
@@ -1471,7 +1397,7 @@ final class RelayStore: ObservableObject {
         await task.value
     }
 
-    private func scheduleRestoration() {
+    func scheduleRestoration() {
         guard restorationTask == nil else { return }
         restorationTask = Task { [weak self] in
             guard let self else { return }
