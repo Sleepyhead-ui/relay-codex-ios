@@ -35,7 +35,7 @@ export function installDevBridge() {
     updateStatus: async () => update,
     checkUpdate: async () => update,
     downloadUpdate: async () => update,
-    installUpdate: async () => true,
+    installUpdate: async () => update,
     connect: async () => { setTimeout(() => stateListeners.forEach((listener) => listener({ state: "connected" })), 10); return true; },
     disconnect: async () => {},
     send: async (message: any) => {

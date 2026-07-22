@@ -24,6 +24,7 @@ esbuild.buildSync({
 });
 fs.copyFileSync(path.join(bridgeRoot, "package.json"), path.join(runtimeRoot, "package.json"));
 fs.copyFileSync(path.join(bridgeRoot, "package-lock.json"), path.join(runtimeRoot, "package-lock.json"));
+fs.copyFileSync(process.execPath, path.join(runtimeRoot, "node.exe"));
 run(process.execPath, [npmCli, "ci", "--omit=dev", "--prefer-offline", "--no-audit", "--no-fund"], runtimeRoot);
 fs.renameSync(path.join(runtimeRoot, "node_modules"), path.join(runtimeRoot, "vendor"));
 

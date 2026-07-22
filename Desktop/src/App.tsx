@@ -797,12 +797,12 @@ export default function App() {
 
   async function applyDesktopUpdate() {
     try {
-      if (update.state === "ready") await window.relayDesktop.installUpdate();
+      if (update.state === "ready" || update.state === "deferred") setUpdate(await window.relayDesktop.installUpdate());
       else setUpdate(await window.relayDesktop.downloadUpdate());
     } catch (reason) { setError(errorText(reason)); }
   }
 
-  const serviceAvailable = service.state === "running" || service.state === "starting";
+  const serviceAvailable = service.state === "running" || service.state === "starting" || service.state === "degraded";
   const connectionLabel = !serviceAvailable ? "远程服务未启动" : profileSwitching ? "正在切换实例" : upstreamRetrying ? "Codex 上游重连中" : connection === "connected" ? "实时同步" : connection === "reconnecting" ? `正在重连 · ${connectionAttempt}` : connection === "handshaking" ? "正在初始化" : "未连接";
 
   return (
@@ -1121,7 +1121,7 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
       </div>
       <div className="settings-section"><h3>默认工作区</h3><label className="field"><span>目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>访问权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
       <div className="settings-section"><h3>运行与通知</h3><label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后自动运行 Relay 与 Bridge</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label><label className="toggle-row"><span><strong>任务与审批通知</strong><small>窗口不在前台时显示系统通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button></div>
-      <div className="settings-section"><h3>应用更新</h3><div className="update-row"><div><strong>{update.message || "检查 Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" ? <button onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "重启安装" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : "检查"}</button>}</div></div>
+      <div className="settings-section"><h3>应用更新</h3><div className="update-row"><div><strong>{update.message || "检查 Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" || update.state === "deferred" ? <button disabled={update.state === "deferred"} onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "安全重启安装" : update.state === "deferred" ? "等待任务结束" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading" || update.state === "installing"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : update.state === "installing" ? "安装中" : "检查"}</button>}</div></div>
       <details className="advanced-settings"><summary>高级连接</summary><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>Token</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label></details>
       <div className="drawer-actions"><button onClick={onClose}>关闭</button><button className="accent" onClick={() => void onSave()}>保存高级连接</button></div>
     </aside>

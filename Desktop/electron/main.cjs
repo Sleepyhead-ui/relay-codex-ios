@@ -7,6 +7,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WebSocket } = require("ws");
 const { autoUpdater } = require("electron-updater");
+const { serviceStateFromHealth, updateReadinessForService } = require("./update-policy.cjs");
 
 let mainWindow;
 let socket;
@@ -17,10 +18,23 @@ let intentionalClose = false;
 let serviceState = "stopped";
 let serviceMessage = "";
 let autoServiceTimer;
+let deferredInstallTimer;
+let checkingDeferredInstall = false;
+let resumeServiceAfterUpdate = false;
 let updateState = { state: "idle", currentVersion: app.getVersion() };
 
 const configPath = () => path.join(app.getPath("userData"), "connection.json");
 const preferencesPath = () => path.join(app.getPath("userData"), "preferences.json");
+const resumeServicePath = () => path.join(app.getPath("userData"), "resume-service-after-update");
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
 
 function readPreferences() {
   try { return { autoStart: false, notifications: true, ...JSON.parse(fs.readFileSync(preferencesPath(), "utf8")) }; }
@@ -35,8 +49,14 @@ function writePreferences(value) {
 function scheduleAutomaticServiceStart() {
   if (autoServiceTimer) clearInterval(autoServiceTimer);
   const attempt = async () => {
-    if (!readPreferences().autoStart || serviceState === "running" || serviceState === "starting") return;
-    try { await startRemoteService(); } catch {}
+    if ((!readPreferences().autoStart && !resumeServiceAfterUpdate) || serviceState === "running" || serviceState === "starting") return;
+    try {
+      await startRemoteService();
+      if (resumeServiceAfterUpdate) {
+        resumeServiceAfterUpdate = false;
+        try { fs.unlinkSync(resumeServicePath()); } catch {}
+      }
+    } catch {}
   };
   setTimeout(() => void attempt(), 1_500).unref();
   autoServiceTimer = setInterval(() => void attempt(), 15_000);
@@ -81,6 +101,25 @@ function bridgeRoot() {
     : path.resolve(__dirname, "..", "..", "Bridge");
 }
 
+function ensureServiceRuntime() {
+  if (!app.isPackaged) {
+    return { host: process.execPath, bridge: bridgeRoot(), helper: path.join(__dirname, "relaunch-helper.cjs") };
+  }
+  const root = path.join(app.getPath("userData"), "service-runtime", app.getVersion());
+  const bridge = path.join(root, "bridge");
+  const host = path.join(bridge, "node.exe");
+  const helper = path.join(root, "relaunch-helper.cjs");
+  const marker = path.join(root, ".complete");
+  if (!fs.existsSync(marker) || !fs.existsSync(host)) {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.mkdirSync(root, { recursive: true });
+    fs.cpSync(bridgeRoot(), bridge, { recursive: true, force: true });
+    fs.copyFileSync(path.join(__dirname, "relaunch-helper.cjs"), helper);
+    fs.writeFileSync(marker, `${app.getVersion()}\n`, "utf8");
+  }
+  return { host, bridge, helper };
+}
+
 function publishService() {
   publish("relay:service", {
     state: serviceState,
@@ -96,7 +135,7 @@ function publishUpdate(patch) {
 }
 
 autoUpdater.autoDownload = false;
-autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.autoInstallOnAppQuit = false;
 autoUpdater.on("checking-for-update", () => publishUpdate({ state: "checking", message: "正在检查更新" }));
 autoUpdater.on("update-available", (info) => publishUpdate({ state: "available", version: info.version, message: `Relay Desktop ${info.version} 可用` }));
 autoUpdater.on("update-not-available", () => publishUpdate({ state: "current", version: app.getVersion(), message: "当前已是最新版本" }));
@@ -114,8 +153,10 @@ async function inspectRemoteService() {
     return { state: serviceState, message: serviceMessage };
   }
   const health = await readHealth(endpoint).catch(() => undefined);
-  serviceState = health?.status === "ready" ? "running" : health ? "starting" : "stopped";
-  serviceMessage = health?.status === "ready" ? "远程服务已启动" : health ? "Codex 正在初始化" : "远程服务未启动";
+  serviceState = serviceStateFromHealth(health);
+  serviceMessage = serviceState === "running" ? "远程服务已启动"
+    : serviceState === "degraded" ? "远程服务在线，桌面端尚未接入"
+    : health ? "Codex 正在初始化" : "远程服务未启动";
   publishService();
   return { state: serviceState, message: serviceMessage, endpoint, health };
 }
@@ -125,7 +166,8 @@ async function startRemoteService() {
   if (!current.endpoint) throw new Error(current.message || "请先连接 Tailscale。");
   if (current.health) return finalizeLocalConnection(current.endpoint, current);
 
-  const entry = path.join(bridgeRoot(), "dist", "index.cjs");
+  const runtime = ensureServiceRuntime();
+  const entry = path.join(runtime.bridge, "dist", "index.cjs");
   if (!fs.existsSync(entry)) throw new Error("Relay 内置远程服务缺失，请重新安装 Desktop。");
   const endpoint = current.endpoint;
   const url = new URL(endpoint);
@@ -135,7 +177,7 @@ async function startRemoteService() {
   serviceState = "starting";
   serviceMessage = "正在启动远程服务";
   publishService();
-  const child = spawn(process.execPath, [entry], {
+  const child = spawn(runtime.host, [entry], {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", log, log],
@@ -147,7 +189,7 @@ async function startRemoteService() {
       RELAY_ADVERTISE_URL: endpoint,
       RELAY_DESKTOP_SYNC: "false",
       RELAY_DESKTOP_CDP_PORT: "9223",
-      CODEX_BIN: path.join(bridgeRoot(), "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
+      CODEX_BIN: path.join(runtime.bridge, "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
     },
   });
   child.unref();
@@ -179,6 +221,60 @@ function finalizeLocalConnection(endpoint, result) {
   openSocket(connectionConfig);
   publishService();
   return { ...result, state: serviceState, message: serviceMessage, connection: connectionConfig };
+}
+
+async function updateReadiness() {
+  let endpoint;
+  try { endpoint = localServiceEndpoint(); } catch { return { health: undefined, blockers: [] }; }
+  const health = await readHealth(endpoint).catch(() => undefined);
+  return { health, blockers: updateReadinessForService(health, serviceState) };
+}
+
+function scheduleDeferredInstall() {
+  if (deferredInstallTimer) return;
+  deferredInstallTimer = setInterval(async () => {
+    if (checkingDeferredInstall || updateState.state !== "deferred") return;
+    checkingDeferredInstall = true;
+    try {
+      const readiness = await updateReadiness();
+      if (readiness.blockers.length === 0) performUpdateInstall(readiness.health);
+      else publishUpdate({ message: `等待任务结束后更新：${readiness.blockers.join("；")}`, blockers: readiness.blockers });
+    } finally {
+      checkingDeferredInstall = false;
+    }
+  }, 3_000);
+  deferredInstallTimer.unref();
+}
+
+function performUpdateInstall(health) {
+  if (deferredInstallTimer) clearInterval(deferredInstallTimer);
+  deferredInstallTimer = undefined;
+  const runtime = ensureServiceRuntime();
+  if (health) fs.writeFileSync(resumeServicePath(), `${Date.now()}\n`, "utf8");
+  const helper = spawn(runtime.host, [runtime.helper, process.execPath], {
+    detached: true,
+    windowsHide: true,
+    stdio: "ignore",
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+  });
+  helper.on("error", (error) => publishUpdate({ message: `更新已开始；自动重启守护程序启动失败：${error.message}` }));
+  helper.unref();
+  publishUpdate({ state: "installing", message: "正在安装，Relay Desktop 将自动重新打开", blockers: [] });
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+}
+
+async function requestUpdateInstall() {
+  const readiness = await updateReadiness();
+  if (readiness.blockers.length > 0) {
+    scheduleDeferredInstall();
+    return publishUpdate({
+      state: "deferred",
+      message: `等待任务结束后更新：${readiness.blockers.join("；")}`,
+      blockers: readiness.blockers,
+    });
+  }
+  performUpdateInstall(readiness.health);
+  return updateState;
 }
 
 function readHealth(endpoint) {
@@ -275,10 +371,12 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
   const preferences = readPreferences();
+  resumeServiceAfterUpdate = fs.existsSync(resumeServicePath());
   app.setLoginItemSettings({ openAtLogin: Boolean(preferences.autoStart), path: process.execPath });
   createWindow();
-  if (preferences.autoStart) scheduleAutomaticServiceStart();
+  if (preferences.autoStart || resumeServiceAfterUpdate) scheduleAutomaticServiceStart();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
@@ -303,10 +401,7 @@ ipcMain.handle("relay:download-update", async () => {
   await autoUpdater.downloadUpdate();
   return updateState;
 });
-ipcMain.handle("relay:install-update", () => {
-  setImmediate(() => autoUpdater.quitAndInstall(false, true));
-  return true;
-});
+ipcMain.handle("relay:install-update", () => requestUpdateInstall());
 ipcMain.handle("relay:set-preferences", (_event, patch) => {
   const preferences = { ...readPreferences(), ...(patch || {}) };
   writePreferences(preferences);

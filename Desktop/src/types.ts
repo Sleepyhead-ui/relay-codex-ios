@@ -1,10 +1,10 @@
 export type ConnectionState = "disconnected" | "connecting" | "handshaking" | "reconnecting" | "connected" | "error" | "failed";
 
 export interface ConnectionConfig { endpoint: string; token: string }
-export type ServiceState = "stopped" | "starting" | "running" | "failed";
+export type ServiceState = "stopped" | "starting" | "running" | "degraded" | "failed";
 export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig }
 export interface DesktopPreferences { autoStart: boolean; notifications: boolean }
-export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string }
+export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "deferred" | "installing" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string; blockers?: string[] }
 export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
 
 export interface CodexProfile {
@@ -141,7 +141,7 @@ declare global {
       updateStatus(): Promise<DesktopUpdateState>;
       checkUpdate(): Promise<DesktopUpdateState>;
       downloadUpdate(): Promise<DesktopUpdateState>;
-      installUpdate(): Promise<boolean>;
+      installUpdate(): Promise<DesktopUpdateState>;
       connect(config: ConnectionConfig): Promise<boolean>;
       disconnect(): Promise<void>;
       send(message: unknown): Promise<boolean>;

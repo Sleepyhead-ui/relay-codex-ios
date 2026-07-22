@@ -108,6 +108,8 @@ const httpServer = createServer((request, response) => {
       uptimeSeconds: Math.floor(process.uptime()),
       activeTurns: runtimeState.activeCount,
       pendingRpcCount: pendingClientRequests.size,
+      pendingApprovalCount: pendingServerRequests.size,
+      queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
       codexRestartAttempt,
       socket: socketDiagnostics,
       rpc: rpcDiagnostics,
