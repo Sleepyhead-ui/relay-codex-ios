@@ -13,6 +13,51 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(result.map(\.id), ["user.1"])
     }
 
+    func testIgnoresInternalEnvironmentContextAndImageClosingTag() throws {
+        let internalContext = JSONValue.object([
+            "id": .string("internal.env"),
+            "type": .string("userMessage"),
+            "content": .array([
+                .object(["type": .string("text"), "text": .string("<environment_context><current_date>2026-07-22</current_date></environment_context>")])
+            ])
+        ])
+        XCTAssertNil(TranscriptItem.from(json: internalContext, turnId: "turn.1"))
+
+        let imageMessage = JSONValue.object([
+            "id": .string("image.1"),
+            "type": .string("userMessage"),
+            "content": .array([
+                .object(["type": .string("text"), "text": .string("查看截图\n<image name=[Image #1] path=\"C:\\Temp\\screen.png\">\n</image>")])
+            ])
+        ])
+        let parsed = try XCTUnwrap(TranscriptItem.from(json: imageMessage, turnId: "turn.1"))
+        XCTAssertEqual(parsed.text, "查看截图")
+        XCTAssertEqual(parsed.imagePaths, ["C:\\Temp\\screen.png"])
+    }
+
+    func testLaggingSnapshotCannotShortenLiveOutput() throws {
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "正在检查完整进展", phase: "commentary")
+        var command = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "npm test", detail: "line 1\nline 2")
+        command.status = "inProgress"
+        let shortProgress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "正在检查", phase: "commentary")
+        let shortCommand = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "npm test", detail: "line 1")
+
+        let result = TranscriptReconciler.mergeSessionItems([shortProgress, shortCommand], turnId: "turn.1", into: [progress, command])
+
+        XCTAssertEqual(result[0].text, "正在检查完整进展")
+        XCTAssertEqual(result[1].detail, "line 1\nline 2")
+    }
+
+    func testHistoryReconciliationPreservesLiveCommandsMissingFromEarlyHistory() {
+        let prompt = item(id: "user.1", turnId: "turn.1", role: .user, text: "运行测试")
+        let command = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "npm test", detail: "passed")
+        let answer = item(id: "answer.1", turnId: "turn.1", role: .assistant, text: "完成")
+
+        let result = TranscriptReconciler.mergeHistoryItems([prompt, answer], into: [prompt, command])
+
+        XCTAssertEqual(result.map(\.id), ["user.1", "command.1", "answer.1"])
+    }
+
     func testSnapshotReplacesEquivalentLiveItemWithoutChangingItsIdentity() {
         let live = item(id: "live.1", turnId: "turn.1", role: .assistant, text: "正在检查  项目", phase: "commentary")
         let snapshot = item(id: "rollout.9", turnId: "turn.1", role: .assistant, text: "正在检查 项目", phase: "commentary")

@@ -485,6 +485,7 @@ struct TranscriptItem: Identifiable, Equatable {
                     return nil
                 }
                 .joined(separator: "\n") ?? ""
+            if isInternalEnvironmentContext(text), imagePaths.isEmpty { return nil }
             return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective)
         case "agentMessage":
             return TranscriptItem(
@@ -703,9 +704,19 @@ struct TranscriptItem: Identifiable, Equatable {
                 }
             }
         }
-        let cleaned = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        let withoutOpeningTags = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        let cleaned = withoutOpeningTags.replacingOccurrences(
+            of: #"</image\s*>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
         let compacted = cleaned.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
         return (compacted.trimmingCharacters(in: .whitespacesAndNewlines), paths)
+    }
+
+    private static func isInternalEnvironmentContext(_ text: String) -> Bool {
+        let pattern = #"^\s*<environment_context\b[^>]*>[\s\S]*</environment_context>\s*$"#
+        return text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private static func commandFailureSummary(_ output: String?) -> String? {

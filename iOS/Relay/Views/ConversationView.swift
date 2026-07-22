@@ -4,6 +4,7 @@ import UIKit
 struct ConversationView: View {
     @EnvironmentObject private var store: RelayStore
     @State private var isAtBottom = true
+    @State private var isUserScrolling = false
 
     private let bottomAnchor = "relay-conversation-bottom"
 
@@ -158,6 +159,18 @@ struct ConversationView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 4)
+                            .onChanged { _ in
+                                isUserScrolling = true
+                                isAtBottom = false
+                            }
+                            .onEnded { _ in
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                    isUserScrolling = false
+                                }
+                            }
+                    )
                     .onTapGesture { dismissKeyboard() }
 
                     if !isAtBottom {
@@ -191,12 +204,17 @@ struct ConversationView: View {
                         scrollToBottom(proxy, animated: false)
                     }
                 }
-                .onChange(of: store.messages) { _ in
-                    guard isAtBottom else { return }
-                    scrollToBottom(proxy, animated: true)
+                .onChange(of: transcriptUpdateKey) { _ in
+                    guard isAtBottom, !isUserScrolling else { return }
+                    scrollToBottom(proxy, animated: !store.isRunning)
                 }
             }
         }
+    }
+
+    private var transcriptUpdateKey: String {
+        guard let item = store.messages.last else { return "0" }
+        return "\(store.messages.count)|\(item.id)|\(item.text.utf8.count)|\(item.detail?.utf8.count ?? 0)"
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {

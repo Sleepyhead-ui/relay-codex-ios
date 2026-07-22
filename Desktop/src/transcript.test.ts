@@ -52,11 +52,20 @@ describe("desktop transcript", () => {
       type: "userMessage",
       content: [
         { type: "localImage", path: "C:\\Temp\\screen.png" },
-        { type: "text", text: "查看这张截图\n\n<image name=[Image #1] path=\"C:\\Temp\\screen.png\">" },
+        { type: "text", text: "查看这张截图\n\n<image name=[Image #1] path=\"C:\\Temp\\screen.png\">\n</image>" },
       ],
     }, "turn.1");
     expect(item?.text).toBe("查看这张截图");
     expect(item?.imagePaths).toEqual(["C:\\Temp\\screen.png"]);
+  });
+
+  it("hides internal environment context user messages", () => {
+    const item = parseItem({
+      id: "internal.env",
+      type: "userMessage",
+      content: [{ type: "text", text: "<environment_context><current_date>2026-07-22</current_date></environment_context>" }],
+    }, "turn.1");
+    expect(item).toBeNull();
   });
 
   it("deduplicates matching progress from app-server and rollout snapshots", () => {
@@ -110,7 +119,7 @@ describe("desktop transcript", () => {
       { id: "command.1", turnId: "turn.1", kind: "command" as const, text: "npm test" },
     ];
     const merged = mergeSnapshot(existing, snapshot, "turn.1");
-    expect(merged.map((item) => item.id)).toEqual(["progress.1", "command.1", "user.1"]);
+    expect(merged.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
 
     const placed = applyUserMessagePlacements(merged, [{
       messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1,
@@ -121,6 +130,20 @@ describe("desktop transcript", () => {
       messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1,
     }], "thread.1", "turn.1");
     expect(placedAgain.map((item) => item.id)).toEqual(["user.1", "progress.1", "command.1"]);
+  });
+
+  it("does not let a lagging snapshot shorten streamed progress or command output", () => {
+    const existing = [
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查完整进展" },
+      { id: "command.1", turnId: "turn.1", kind: "command" as const, text: "npm test", detail: "line 1\nline 2" },
+    ];
+    const snapshot = [
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查" },
+      { id: "command.1", turnId: "turn.1", kind: "command" as const, text: "npm test", detail: "line 1" },
+    ];
+    const merged = mergeSnapshot(existing, snapshot, "turn.1");
+    expect(merged[0].text).toBe("正在检查完整进展");
+    expect(merged[1].detail).toBe("line 1\nline 2");
   });
 
   it("keeps a steer prompt at its actual point in the activity timeline", () => {

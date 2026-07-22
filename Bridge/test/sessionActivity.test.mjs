@@ -29,6 +29,16 @@ test("infers an active desktop turn from the rollout file after bridge restart",
         payload: { type: "user_message", client_id: "client.user.1", message: "Inspect this task" },
       },
       {
+        timestamp: "2026-07-19T16:16:27.100Z",
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context><current_date>2026-07-22</current_date></environment_context>" }] },
+      },
+      {
+        timestamp: "2026-07-19T16:16:27.200Z",
+        type: "response_item",
+        payload: { type: "message", id: "developer.1", role: "developer", content: [{ type: "input_text", text: "Internal instructions" }] },
+      },
+      {
         timestamp: "2026-07-19T16:16:30.000Z",
         type: "response_item",
         payload: { type: "reasoning", id: "reasoning.1", summary: [{ type: "summary_text", text: "Inspecting state" }] },

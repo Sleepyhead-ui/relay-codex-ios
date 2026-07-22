@@ -83,6 +83,8 @@ final class RelayStore: ObservableObject {
     private var restorationTask: Task<Void, Never>?
     private var liveSessionSyncTask: Task<Void, Never>?
     private var subscribedSessionThreadId: String?
+    private var pendingDetailDeltas: [String: PendingDetailDelta] = [:]
+    private var detailDeltaFlushTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -686,6 +688,7 @@ final class RelayStore: ObservableObject {
     }
 
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
+        flushPendingDetailDeltas()
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
@@ -814,8 +817,13 @@ final class RelayStore: ObservableObject {
                 outboundDrafts.removeValue(forKey: deliveredId)
                 acceptedMessageIds.remove(deliveredId)
             }
-            messages = loadedMessages
-            turnMetadata = loadedMetadata
+            if switchingThreads {
+                messages = loadedMessages
+                turnMetadata = loadedMetadata
+            } else {
+                messages = TranscriptReconciler.mergeHistoryItems(loadedMessages, into: messages)
+                turnMetadata.merge(loadedMetadata) { _, loaded in loaded }
+            }
             let status = result["thread"]?["status"]?["type"]?.stringValue
                 ?? result["thread"]?["status"]?.stringValue
                 ?? "idle"
@@ -1640,6 +1648,7 @@ final class RelayStore: ObservableObject {
             }
             markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
+            flushPendingDetailDeltas()
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
             if let turnId {
@@ -1675,6 +1684,7 @@ final class RelayStore: ObservableObject {
         case "item/started", "item/completed":
             guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
+            if method == "item/completed" { flushPendingDetailDeltas() }
             if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
         case "item/agentMessage/delta":
             guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
@@ -1951,12 +1961,37 @@ final class RelayStore: ObservableObject {
 
     private func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
         guard let id, let delta else { return }
-        if let index = messages.firstIndex(where: { $0.id == id }) {
-            messages[index].detail = (messages[index].detail ?? "") + delta
-            if messages[index].turnId == nil { messages[index].turnId = turnId }
+        if var pending = pendingDetailDeltas[id] {
+            pending.text += delta
+            if pending.turnId == nil { pending.turnId = turnId }
+            pendingDetailDeltas[id] = pending
         } else {
-            messages.append(TranscriptItem(id: id, turnId: turnId, role: .tool, kind: kind, title: kind == .reasoning ? "思考" : "运行命令", text: "", detail: delta, status: "inProgress"))
+            pendingDetailDeltas[id] = PendingDetailDelta(text: delta, turnId: turnId, kind: kind)
         }
+        guard detailDeltaFlushTask == nil else { return }
+        detailDeltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushPendingDetailDeltas()
+        }
+    }
+
+    private func flushPendingDetailDeltas() {
+        detailDeltaFlushTask?.cancel()
+        detailDeltaFlushTask = nil
+        guard !pendingDetailDeltas.isEmpty else { return }
+        let pending = pendingDetailDeltas
+        pendingDetailDeltas.removeAll(keepingCapacity: true)
+        var updated = messages
+        for (id, value) in pending {
+            if let index = updated.firstIndex(where: { $0.id == id }) {
+                updated[index].detail = (updated[index].detail ?? "") + value.text
+                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
+            } else {
+                updated.append(TranscriptItem(id: id, turnId: value.turnId, role: .tool, kind: value.kind, title: value.kind == .reasoning ? "思考" : "运行命令", text: "", detail: value.text, status: "inProgress"))
+            }
+        }
+        messages = updated
     }
 
     private func handleConnectionRestored() async {
@@ -2230,4 +2265,10 @@ private struct OutboundDraft {
     let threadId: String
     let text: String
     let attachments: [PendingAttachment]
+}
+
+private struct PendingDetailDelta {
+    var text: String
+    var turnId: String?
+    let kind: TranscriptKind
 }

@@ -214,6 +214,7 @@ private struct InlineImageGrid: View {
             }
         }
         .frame(width: paths.count == 1 ? 190 : 250)
+        .transaction { $0.animation = nil }
     }
 }
 
@@ -284,13 +285,15 @@ private struct RunActivityView: View {
     let showsHeader: Bool
     let canExpand: Bool
     @Binding var expanded: Bool
+    @State private var renderedSectionCount = 0
 
     var body: some View {
+        let sections = activitySections
         VStack(alignment: .leading, spacing: 5) {
             if showsHeader {
                 Button {
                     guard canExpand else { return }
-                    withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                    expanded.toggle()
                 } label: {
                     HStack(alignment: .center, spacing: 7) {
                         Group {
@@ -306,11 +309,17 @@ private struct RunActivityView: View {
                         }
                         .frame(width: 14, height: 16, alignment: .center)
 
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text(activityLabel)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.secondary)
+                        Group {
+                            if isLive {
+                                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                    Text(activityLabel)
+                                }
+                            } else {
+                                Text(activityLabel)
+                            }
                         }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
 
                         Spacer(minLength: 6)
                         if canExpand {
@@ -328,8 +337,8 @@ private struct RunActivityView: View {
             }
 
             if expanded {
-                VStack(alignment: .leading, spacing: 7) {
-                    ForEach(activitySections) { section in
+                LazyVStack(alignment: .leading, spacing: 7) {
+                    ForEach(Array(sections.prefix(renderedSectionCount))) { section in
                         switch section {
                         case .commentary(let item):
                             MarkdownContentView(
@@ -354,15 +363,30 @@ private struct RunActivityView: View {
                             ExecutionGroupView(items: executionItems)
                         }
                     }
+                    if renderedSectionCount < sections.count {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(height: 22)
+                    }
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
+                .task(id: sections.count) {
+                    renderedSectionCount = min(max(renderedSectionCount, 2), sections.count)
+                    while renderedSectionCount < sections.count, !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 16_000_000)
+                        guard !Task.isCancelled else { return }
+                        renderedSectionCount = min(renderedSectionCount + 2, sections.count)
+                    }
+                }
             }
         }
-        .animation(.easeOut(duration: 0.16), value: latestReasoningText)
+        .animation(isLive ? .easeOut(duration: 0.16) : nil, value: latestReasoningText)
+        .onChange(of: expanded) { isExpanded in
+            if !isExpanded { renderedSectionCount = 0 }
+        }
         .onChange(of: isLive) { running in
             if showsHeader, !running {
-                withAnimation(.easeInOut(duration: 0.16)) { expanded = false }
+                expanded = false
             }
         }
     }
@@ -488,7 +512,7 @@ private struct ExecutionGroupView: View {
     private var groupedBody: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
-                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                expanded.toggle()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "terminal")
@@ -521,7 +545,6 @@ private struct ExecutionGroupView: View {
                 }
                 .padding(.leading, 18)
                 .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
             }
         }
     }
@@ -561,7 +584,7 @@ private struct CompactCommandRow: View {
         VStack(alignment: .leading, spacing: 3) {
             Button {
                 guard hasDetails else { return }
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                expanded.toggle()
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "terminal")
@@ -612,7 +635,6 @@ private struct CompactCommandRow: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
             }
         }
     }
@@ -632,20 +654,30 @@ private struct CompactTechnicalDetail: View {
     let detail: String
 
     var body: some View {
-        ScrollView([.horizontal, .vertical], showsIndicators: lineCount > 10) {
-            Text(detail)
+        ScrollView(.horizontal, showsIndicators: true) {
+            Text(preview.detail)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .padding(9)
         }
-        .frame(height: detailHeight)
+        .frame(height: CGFloat(preview.lineCount) * 14 + 18)
         .background(RelayTheme.codeFill)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private var lineCount: Int { max(1, detail.components(separatedBy: .newlines).count) }
-    private var detailHeight: CGFloat { CGFloat(min(lineCount, 10)) * 14 + 18 }
+    private var preview: (detail: String, lineCount: Int) {
+        let byteLimit = 24_000
+        let bytes = detail.utf8
+        let tail = bytes.count > byteLimit
+            ? String(decoding: bytes.suffix(byteLimit), as: UTF8.self)
+            : detail
+        let lines = tail.components(separatedBy: .newlines)
+        let visible = Array(lines.suffix(12))
+        let omitted = bytes.count > byteLimit || lines.count > visible.count
+        let text = (omitted ? ["... earlier output omitted ..."] : []) + visible
+        return (text.joined(separator: "\n"), max(1, text.count))
+    }
 }
 
 private struct ToolEventRow: View {
@@ -657,7 +689,7 @@ private struct ToolEventRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 guard hasExpandableContent else { return }
-                withAnimation(.easeInOut(duration: 0.16)) { expanded.toggle() }
+                expanded.toggle()
             } label: {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon)
@@ -761,7 +793,6 @@ private struct ToolEventRow: View {
                 .padding(.leading, 29)
                 .padding(.bottom, 10)
                 .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
             }
         }
     }

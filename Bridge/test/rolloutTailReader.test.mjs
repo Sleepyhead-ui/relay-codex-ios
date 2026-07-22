@@ -11,6 +11,8 @@ function event(payload, type = "event_msg") {
 
 function parseItem(payload, fallbackId) {
   if (payload.type !== "message") return null;
+  if (payload.role === "user" && /^\s*<environment_context[\s\S]*<\/environment_context>\s*$/.test(payload.text || "")) return null;
+  if (payload.role === "user") return { id: payload.id || fallbackId, type: "userMessage", text: payload.text || "" };
   return { id: payload.id || fallbackId, type: "agentMessage", text: payload.text || "", phase: payload.phase };
 }
 
@@ -73,6 +75,27 @@ test("replaces the internal compaction summary with a context marker", async () 
 
     assert.deepEqual(snapshot.items.map((item) => item.type), ["contextCompaction"]);
     assert.equal(snapshot.items.some((item) => item.text?.includes("Current State")), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("does not bind ignored internal user context to the visible prompt", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-tail-internal-user-"));
+  const file = path.join(directory, "rollout.jsonl");
+  try {
+    const contents = event({ type: "task_started", turn_id: "turn.internal" })
+      + event({ type: "message", role: "user", text: "Visible prompt" }, "response_item")
+      + event({ type: "user_message", client_id: "client.visible" })
+      + event({ type: "message", role: "user", text: "<environment_context>private</environment_context>" }, "response_item")
+      + event({ type: "user_message", client_id: "client.internal" });
+    await writeFile(file, contents, "utf8");
+
+    const reader = new RolloutTailReader(file, parseItem);
+    const snapshot = await reader.read((await stat(file)).size);
+
+    assert.equal(snapshot.items.length, 1);
+    assert.equal(snapshot.items[0].clientId, "client.visible");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -57,7 +57,9 @@ export function parseItem(value: any, turnId?: string): TranscriptItem | null {
   switch (value.type) {
     case "userMessage": {
       const content = userContent(value.content);
-      const visible = extractGoalContext(cleanDesktopUserText(content.text));
+      const cleaned = cleanDesktopUserText(content.text);
+      if (isInternalEnvironmentContext(cleaned) && !content.imagePaths.length) return null;
+      const visible = extractGoalContext(cleaned);
       return { id, turnId, kind: "user", text: visible.text, imagePaths: content.imagePaths, goal: visible.objective };
     }
     case "agentMessage": return { id, turnId, kind: "assistant", text: value.text || "", phase: value.phase };
@@ -97,11 +99,15 @@ export function parseItem(value: any, turnId?: string): TranscriptItem | null {
 
 export function mergeItem(existing: TranscriptItem | undefined, incoming: TranscriptItem): TranscriptItem {
   if (!existing) return incoming;
+  const textStreamsIncrementally = incoming.kind === "assistant" || incoming.kind === "reasoning";
+  const detailStreamsIncrementally = incoming.kind === "command" || incoming.kind === "reasoning";
+  const text = !incoming.text || (textStreamsIncrementally && existing.text && existing.text.startsWith(incoming.text)) ? existing.text : incoming.text;
+  const detail = !incoming.detail || (detailStreamsIncrementally && existing.detail && existing.detail.startsWith(incoming.detail)) ? existing.detail : incoming.detail;
   return {
     ...existing, ...incoming,
     id: existing.id,
-    text: incoming.text || existing.text,
-    detail: incoming.detail || existing.detail,
+    text,
+    detail,
     turnId: incoming.turnId || existing.turnId,
     phase: incoming.phase || existing.phase,
     title: incoming.title || existing.title,
@@ -161,13 +167,15 @@ export function mergeSnapshot(existing: TranscriptItem[], snapshot: TranscriptIt
   const outside = existing.filter((item) => item.turnId !== turnId);
   const current = existing.filter((item) => item.turnId === turnId);
   const consumed = new Set<string>();
-  const merged = snapshot.map((item) => {
-    const match = current.find((candidate) => !consumed.has(candidate.id) && (candidate.id === item.id || semanticMatch(candidate, item)));
-    if (!match) return item;
-    consumed.add(match.id);
-    return mergeItem(match, item);
-  });
-  merged.push(...current.filter((item) => !consumed.has(item.id)));
+  const merged = [...current];
+  for (const item of snapshot) {
+    const index = merged.findIndex((candidate) => !consumed.has(candidate.id) && (candidate.id === item.id || semanticMatch(candidate, item)));
+    if (index < 0) merged.push(item);
+    else {
+      consumed.add(merged[index].id);
+      merged[index] = mergeItem(merged[index], item);
+    }
+  }
   const first = existing.findIndex((item) => item.turnId === turnId);
   if (first < 0) return [...existing, ...merged];
   return [...outside.slice(0, first), ...merged, ...outside.slice(first)];
@@ -328,8 +336,11 @@ function extractImageMarkup(value: string) {
     const imagePath = doubleQuoted || singleQuoted || bare;
     if (imagePath) imagePaths.push(imagePath);
     return "";
-  }).replace(/\n{3,}/g, "\n\n").trim();
+  }).replace(/<\/image\s*>/gi, "").replace(/\n{3,}/g, "\n\n").trim();
   return { text, imagePaths };
+}
+function isInternalEnvironmentContext(value: string) {
+  return /^\s*<environment_context\b[^>]*>[\s\S]*<\/environment_context>\s*$/i.test(value);
 }
 function cleanDesktopUserText(value: string) {
   const marker = /^\s*#{0,6}\s*My request for Codex:\s*$/im.exec(value);

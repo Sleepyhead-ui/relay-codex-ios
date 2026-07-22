@@ -27,28 +27,45 @@ enum TranscriptReconciler {
     ) -> [TranscriptItem] {
         let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
         let existing = messages.filter { $0.turnId == turnId }
-        let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
         var consumedExistingIds = Set<String>()
-        var merged = snapshotItems.map { item in
-            if let previous = existingById[item.id] {
-                consumedExistingIds.insert(previous.id)
-                return merge(existing: previous, incoming: item)
-            }
-            if let previous = existing.first(where: {
-                !consumedExistingIds.contains($0.id) && semanticallyMatches($0, item)
+        var merged = existing
+        for item in snapshotItems {
+            if let index = merged.firstIndex(where: {
+                !consumedExistingIds.contains($0.id) && ($0.id == item.id || semanticallyMatches($0, item))
             }) {
-                consumedExistingIds.insert(previous.id)
-                var combined = merge(existing: previous, incoming: item)
-                combined.id = previous.id
-                return combined
+                consumedExistingIds.insert(merged[index].id)
+                var combined = merge(existing: merged[index], incoming: item)
+                combined.id = merged[index].id
+                merged[index] = combined
+            } else {
+                merged.append(item)
             }
-            return item
         }
-        merged.append(contentsOf: existing.filter { !consumedExistingIds.contains($0.id) })
 
         guard merged != existing else { return messages }
         var result = messages.filter { $0.turnId != turnId }
         result.insert(contentsOf: merged, at: min(firstIndex, result.endIndex))
+        return result
+    }
+
+    static func mergeHistoryItems(_ historyItems: [TranscriptItem], into messages: [TranscriptItem]) -> [TranscriptItem] {
+        var result = messages.filter { !isInternalEnvironmentContext($0) }
+        var consumedIds = Set<String>()
+        for item in historyItems {
+            if let index = result.firstIndex(where: {
+                !consumedIds.contains($0.id) && ($0.id == item.id || semanticallyMatches($0, item))
+            }) {
+                consumedIds.insert(result[index].id)
+                var combined = merge(existing: result[index], incoming: item)
+                combined.id = result[index].id
+                result[index] = combined
+            } else if let turnId = item.turnId,
+                      let lastTurnIndex = result.lastIndex(where: { $0.turnId == turnId }) {
+                result.insert(item, at: lastTurnIndex + 1)
+            } else {
+                result.append(item)
+            }
+        }
         return result
     }
 
@@ -97,8 +114,16 @@ enum TranscriptReconciler {
         if merged.title == nil { merged.title = existing.title }
         if merged.phase == nil { merged.phase = existing.phase }
         if merged.status == nil { merged.status = existing.status }
-        if merged.text.isEmpty { merged.text = existing.text }
-        if merged.detail?.isEmpty != false, let detail = existing.detail, !detail.isEmpty { merged.detail = detail }
+        let textStreamsIncrementally = existing.role == .assistant || existing.kind == .reasoning
+        if merged.text.isEmpty || (textStreamsIncrementally && !existing.text.isEmpty && existing.text.hasPrefix(merged.text)) {
+            merged.text = existing.text
+        }
+        if let existingDetail = existing.detail, !existingDetail.isEmpty {
+            let detailStreamsIncrementally = existing.kind == .command || existing.kind == .reasoning
+            if merged.detail?.isEmpty != false || (detailStreamsIncrementally && existingDetail.hasPrefix(merged.detail ?? "")) {
+                merged.detail = existingDetail
+            }
+        }
         if merged.durationMs == nil { merged.durationMs = existing.durationMs }
         if merged.exitCode == nil { merged.exitCode = existing.exitCode }
         if merged.cwd == nil { merged.cwd = existing.cwd }
@@ -137,5 +162,11 @@ enum TranscriptReconciler {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isInternalEnvironmentContext(_ item: TranscriptItem) -> Bool {
+        guard item.role == .user, item.imagePaths.isEmpty else { return false }
+        let pattern = #"^\s*<environment_context\b[^>]*>[\s\S]*</environment_context>\s*$"#
+        return item.text.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 }

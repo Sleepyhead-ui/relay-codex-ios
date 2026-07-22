@@ -117,6 +117,8 @@ export class RolloutTailReader {
       return;
     }
 
+    if (type === "message" && payload.role === "user") this.lastUserIndex = undefined;
+
     if ((type === "custom_tool_call_output" || type === "function_call_output") && typeof payload.call_id === "string") {
       const toolIndex = this.toolIndexes.get(payload.call_id);
       if (typeof toolIndex === "number") {

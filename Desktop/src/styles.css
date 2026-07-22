@@ -138,6 +138,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .activity-block.interrupted .activity-status { color: #7d817a; }
 .activity-label { min-width: 0; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .activity-content { margin: 7px 0 0 25px; display: flex; flex-direction: column; gap: 8px; }
+.activity-loading { display: flex; min-height: 22px; align-items: center; padding-left: 2px; }
 .progress-copy { color: #d6d8d2; font-size: 13px; line-height: 1.55; }
 .reasoning-summary { display: flex; align-items: flex-start; gap: 7px; color: #8e928a; font-size: 12px; line-height: 1.45; }
 .reasoning-summary > svg { flex: 0 0 auto; margin-top: 2px; }

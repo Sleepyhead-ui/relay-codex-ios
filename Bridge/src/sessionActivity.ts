@@ -242,8 +242,10 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
       return typeof part.text === "string" ? [part.text] : [];
     }).join("\n");
     if (role === "user") {
+      if (isInternalEnvironmentContext(text)) return null;
       return { id, type: "userMessage", content: [{ type: "text", text }] };
     }
+    if (role !== "assistant") return null;
     return {
       id,
       type: "agentMessage",
@@ -275,4 +277,8 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
   }
 
   return null;
+}
+
+function isInternalEnvironmentContext(text: string): boolean {
+  return /^\s*<environment_context\b[^>]*>[\s\S]*<\/environment_context>\s*$/i.test(text);
 }
