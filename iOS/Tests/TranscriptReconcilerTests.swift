@@ -2,6 +2,28 @@ import XCTest
 @testable import Relay
 
 final class TranscriptReconcilerTests: XCTestCase {
+    func testSessionPatchUpdatesAddsAndRemovesOnlyTheCurrentTurn() {
+        let existing = [
+            TranscriptItem(id: "older", turnId: "turn.0", role: .assistant, kind: .message, text: "older"),
+            TranscriptItem(id: "one", turnId: "turn.1", role: .assistant, kind: .message, text: "first"),
+            TranscriptItem(id: "two", turnId: "turn.1", role: .tool, kind: .command, text: "old command"),
+        ]
+        let patch = [
+            TranscriptItem(id: "one", turnId: "turn.1", role: .assistant, kind: .message, text: "first expanded"),
+            TranscriptItem(id: "three", turnId: "turn.1", role: .tool, kind: .reasoning, text: "next"),
+        ]
+
+        let result = TranscriptReconciler.mergeSessionPatchItems(
+            patch,
+            removedItemIds: ["two"],
+            turnId: "turn.1",
+            into: existing
+        )
+
+        XCTAssertEqual(result.map(\.id), ["older", "one", "three"])
+        XCTAssertEqual(result[1].text, "first expanded")
+    }
+
     func testRemovesInternalCompactionSummary() {
         let messages = [
             item(id: "user.1", turnId: "turn.1", role: .user, text: "Continue"),

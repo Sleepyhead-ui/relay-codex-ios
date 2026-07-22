@@ -1,7 +1,7 @@
 import Foundation
 import CoreFoundation
 
-enum JSONValue: Codable, Equatable {
+enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue])
     case array([JSONValue])
     case string(String)

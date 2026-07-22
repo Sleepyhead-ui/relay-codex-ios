@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSnapshot, parseApproval,
+  applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSessionPatch, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
@@ -75,6 +75,10 @@ export default function App() {
   const messagesRef = useRef<TranscriptItem[]>([]);
   const threadMessageCacheRef = useRef(new Map<string, TranscriptItem[]>());
   const notifiedTurnIdsRef = useRef(new Set<string>());
+  const sessionRevisionRef = useRef(new Map<string, number>());
+  const recoveringSessionRef = useRef(new Set<string>());
+  const pendingDeltaRef = useRef(new Map<string, { id: string; turnId: string; kind: "assistant" | "reasoning" | "command"; text: string; detail: string }>());
+  const deltaFrameRef = useRef<number>();
   const messageHandlerRef = useRef<(message: any) => void>(() => {});
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -117,6 +121,9 @@ export default function App() {
   useEffect(() => { localStorage.setItem("relay.desktop.access", defaultAccess); }, [defaultAccess]);
   useEffect(() => { localStorage.setItem("relay.desktop.accessByProject", JSON.stringify(projectAccesses)); }, [projectAccesses]);
   useEffect(() => { localStorage.setItem("relay.desktop.followUp", followUpBehavior); }, [followUpBehavior]);
+  useEffect(() => () => {
+    if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
+  }, []);
 
   useEffect(() => {
     const offMessage = window.relayDesktop.onMessage((message) => rpc.handle(message));
@@ -151,6 +158,7 @@ export default function App() {
   messageHandlerRef.current = (message: any) => {
     if (message?.type === "event") handleEvent(String(message.method || ""), message.params || {});
     else if (message?.type === "sessionSnapshot") handleSessionSnapshot(message.threadId, message.snapshot);
+    else if (message?.type === "sessionPatch") handleSessionPatch(message.threadId, message.patch);
     else if (message?.type === "serverRequest") {
       const incoming = parseApproval(message);
       setApprovals((current) => current.some((item) => String(item.id) === String(incoming.id))
@@ -219,6 +227,11 @@ export default function App() {
       setModels([]);
       setTaskStates({});
       setGoals({});
+      sessionRevisionRef.current.clear();
+      recoveringSessionRef.current.clear();
+      pendingDeltaRef.current.clear();
+      if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
+      deltaFrameRef.current = undefined;
       setArchivedView(false);
     } else if (message.status === "ready" && profileSwitchingRef.current) {
       profileSwitchingRef.current = false;
@@ -336,6 +349,7 @@ export default function App() {
   }
 
   async function selectThread(id: string, readingArchived = archivedView) {
+    flushPendingDeltas();
     const previous = selectedRef.current;
     if (previous && previous !== id) threadMessageCacheRef.current.set(previous, messagesRef.current);
     selectedRef.current = id;
@@ -404,7 +418,7 @@ export default function App() {
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
       if (!readingArchived) try {
-        const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id }, 12_000);
+        const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id, incremental: true }, 12_000);
         if (selectedRef.current === id) handleSessionSnapshot(id, snapshot);
       } catch {}
     } catch (reason) { setError(errorText(reason)); }
@@ -477,6 +491,8 @@ export default function App() {
 
   function handleSessionSnapshot(threadId: string, snapshot: any) {
     if (selectedRef.current !== threadId || !snapshot?.known || !snapshot.turnId) return;
+    flushPendingDeltas();
+    sessionRevisionRef.current.set(threadId, Number(snapshot.revision || 0));
     const live = snapshot.isRunning === true && snapshot.stale !== true;
     if (live) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
@@ -508,6 +524,38 @@ export default function App() {
         setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, status: "idle" } : thread));
       }
     }
+  }
+
+  function handleSessionPatch(threadId: string, patch: any) {
+    if (selectedRef.current !== threadId || !patch?.known || !patch.turnId) return;
+    const currentRevision = sessionRevisionRef.current.get(threadId);
+    if (currentRevision === undefined || currentRevision !== Number(patch.baseRevision)) {
+      void recoverSessionSubscription(threadId);
+      return;
+    }
+    flushPendingDeltas();
+    const upserts = (patch.upsertItems || [])
+      .map((value: any) => parseItem(value, patch.turnId))
+      .filter(Boolean) as TranscriptItem[];
+    if (upserts.length || patch.removedItemIds?.length) {
+      setMessages((current) => applyUserMessagePlacements(
+        mergeSessionPatch(current, upserts, patch.removedItemIds || [], patch.turnId),
+        userMessagePlacementsRef.current.values(),
+        threadId,
+        patch.turnId,
+      ));
+    }
+    handleSessionSnapshot(threadId, { ...patch, items: [], revision: patch.revision });
+  }
+
+  async function recoverSessionSubscription(threadId: string) {
+    if (recoveringSessionRef.current.has(threadId)) return;
+    recoveringSessionRef.current.add(threadId);
+    try {
+      const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId, incremental: true }, 12_000);
+      if (selectedRef.current === threadId) handleSessionSnapshot(threadId, snapshot);
+    } catch {}
+    finally { recoveringSessionRef.current.delete(threadId); }
   }
 
   function handleEvent(method: string, params: any) {
@@ -569,6 +617,7 @@ export default function App() {
       return;
     }
     if (terminal) {
+      flushPendingDeltas();
       if (turnId) {
         const metadata: TurnMetadata = parseTurn(params.turn || { id: turnId }) || { id: String(turnId), status: "completed" };
         const status = method.includes("failed") ? "failed" : method.includes("abort") || method.includes("interrupt") ? "interrupted" : metadata.status;
@@ -582,6 +631,7 @@ export default function App() {
       return;
     }
     if (method === "item/started" || method === "item/completed") {
+      flushPendingDeltas();
       const item = parseItem(params.item, turnId);
       if (item) setMessages((current) => upsert(current, item));
       return;
@@ -600,19 +650,56 @@ export default function App() {
 
   function appendText(id: string, delta: string, turnId: string, kind: "assistant" | "reasoning") {
     if (!id || !delta) return;
-    setMessages((current) => {
-      const index = current.findIndex((item) => item.id === id);
-      if (index < 0) return [...current, { id, turnId, kind, text: delta, phase: kind === "assistant" ? "commentary" : undefined, title: kind === "reasoning" ? "思考" : undefined }];
-      const next = [...current]; next[index] = { ...next[index], text: next[index].text + delta, turnId: next[index].turnId || turnId }; return next;
-    });
+    queueDelta(id, turnId, kind, delta, "");
   }
 
   function appendDetail(id: string, delta: string, turnId: string, kind: "reasoning" | "command") {
     if (!id || !delta) return;
+    queueDelta(id, turnId, kind, "", delta);
+  }
+
+  function queueDelta(id: string, turnId: string, kind: "assistant" | "reasoning" | "command", text: string, detail: string) {
+    const existing = pendingDeltaRef.current.get(id);
+    pendingDeltaRef.current.set(id, existing
+      ? { ...existing, turnId: existing.turnId || turnId, text: existing.text + text, detail: existing.detail + detail }
+      : { id, turnId, kind, text, detail });
+    if (deltaFrameRef.current === undefined) deltaFrameRef.current = requestAnimationFrame(flushPendingDeltas);
+  }
+
+  function flushPendingDeltas() {
+    if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
+    deltaFrameRef.current = undefined;
+    if (!pendingDeltaRef.current.size) return;
+    const pending = [...pendingDeltaRef.current.values()];
+    pendingDeltaRef.current.clear();
     setMessages((current) => {
-      const index = current.findIndex((item) => item.id === id);
-      if (index < 0) return [...current, { id, turnId, kind, text: "", detail: delta, title: kind === "reasoning" ? "思考" : "运行命令", status: "inProgress" }];
-      const next = [...current]; next[index] = { ...next[index], detail: (next[index].detail || "") + delta }; return next;
+      const next = [...current];
+      const indexes = new Map(next.map((item, index) => [item.id, index]));
+      for (const value of pending) {
+        const index = indexes.get(value.id);
+        if (index === undefined) {
+          indexes.set(value.id, next.length);
+          next.push({
+            id: value.id,
+            turnId: value.turnId,
+            kind: value.kind,
+            text: value.text,
+            detail: value.detail || undefined,
+            phase: value.kind === "assistant" ? "commentary" : undefined,
+            title: value.kind === "reasoning" ? "思考" : value.kind === "command" ? "运行命令" : undefined,
+            status: value.kind === "command" ? "inProgress" : undefined,
+          });
+        } else {
+          const item = next[index]!;
+          next[index] = {
+            ...item,
+            turnId: item.turnId || value.turnId,
+            text: item.text + value.text,
+            detail: value.detail ? (item.detail || "") + value.detail : item.detail,
+          };
+        }
+      }
+      return next;
     });
   }
 

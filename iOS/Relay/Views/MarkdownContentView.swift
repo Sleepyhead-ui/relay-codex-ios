@@ -247,6 +247,21 @@ private enum MarkdownBlock {
 
 private enum MarkdownParser {
     static func parse(_ source: String) -> [MarkdownBlock] {
+        let key = source as NSString
+        if let cached = cache.object(forKey: key) { return cached.blocks }
+        let blocks = parseUncached(source)
+        cache.setObject(MarkdownBlocksBox(blocks), forKey: key, cost: source.utf8.count)
+        return blocks
+    }
+
+    private static let cache: NSCache<NSString, MarkdownBlocksBox> = {
+        let cache = NSCache<NSString, MarkdownBlocksBox>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 2 * 1024 * 1024
+        return cache
+    }()
+
+    private static func parseUncached(_ source: String) -> [MarkdownBlock] {
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var index = 0
@@ -379,4 +394,9 @@ private enum MarkdownParser {
             String($0).trimmingCharacters(in: .whitespaces)
         }
     }
+}
+
+private final class MarkdownBlocksBox: NSObject {
+    let blocks: [MarkdownBlock]
+    init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
 }

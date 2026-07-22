@@ -5,6 +5,7 @@ struct ConversationView: View {
     @EnvironmentObject private var store: RelayStore
     @State private var isAtBottom = true
     @State private var isUserScrolling = false
+    @State private var autoScrollScheduled = false
 
     private let bottomAnchor = "relay-conversation-bottom"
 
@@ -143,14 +144,13 @@ struct ConversationView: View {
                             ForEach(store.transcriptGroups) { group in
                                 TurnGroupView(group: group, isLive: group.turnId == store.activeTurnId)
                                     .id(group.id)
-                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                    .transition(.opacity)
                             }
 
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomAnchor)
                                 .onAppear { isAtBottom = true }
-                                .onDisappear { isAtBottom = false }
                         }
                         .frame(maxWidth: RelayTheme.contentWidth)
                         .padding(.horizontal, RelayTheme.horizontalPadding)
@@ -175,6 +175,7 @@ struct ConversationView: View {
 
                     if !isAtBottom {
                         Button {
+                            isAtBottom = true
                             scrollToBottom(proxy, animated: true)
                         } label: {
                             Image(systemName: "arrow.down")
@@ -205,8 +206,13 @@ struct ConversationView: View {
                     }
                 }
                 .onChange(of: transcriptUpdateKey) { _ in
-                    guard isAtBottom, !isUserScrolling else { return }
-                    scrollToBottom(proxy, animated: !store.isRunning)
+                    guard isAtBottom, !isUserScrolling, !autoScrollScheduled else { return }
+                    autoScrollScheduled = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        autoScrollScheduled = false
+                        guard isAtBottom, !isUserScrolling else { return }
+                        scrollToBottom(proxy, animated: !store.isRunning)
+                    }
                 }
             }
         }

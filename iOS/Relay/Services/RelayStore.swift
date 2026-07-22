@@ -84,10 +84,12 @@ final class RelayStore: ObservableObject {
     private var restorationTask: Task<Void, Never>?
     private var liveSessionSyncTask: Task<Void, Never>?
     private var subscribedSessionThreadId: String?
+    private var sessionPatchRevisions: [String: Int] = [:]
+    private var lastSessionUpdateAt: [String: Date] = [:]
+    private var recoveringSessionThreadIds = Set<String>()
     private var pendingDetailDeltas: [String: PendingDetailDelta] = [:]
-    private var detailDeltaFlushTask: Task<Void, Never>?
     private var pendingTextDeltas: [String: PendingTextDelta] = [:]
-    private var textDeltaFlushTask: Task<Void, Never>?
+    private var deltaFlushTask: Task<Void, Never>?
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
@@ -232,6 +234,9 @@ final class RelayStore: ObservableObject {
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onSessionSnapshot = { [weak self] threadId, snapshot in
             self?.applySessionSnapshot(snapshot, threadId: threadId)
+        }
+        socket.onSessionPatch = { [weak self] threadId, patch in
+            self?.applySessionPatch(patch, threadId: threadId)
         }
         socket.onPromptQueueUpdated = { [weak self] threadId, message in
             self?.applyPromptQueueUpdate(threadId: threadId, items: message["items"]?.arrayValue ?? [])
@@ -715,6 +720,9 @@ final class RelayStore: ObservableObject {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
             if let subscribedSessionThreadId {
+                sessionPatchRevisions.removeValue(forKey: subscribedSessionThreadId)
+                lastSessionUpdateAt.removeValue(forKey: subscribedSessionThreadId)
+                recoveringSessionThreadIds.remove(subscribedSessionThreadId)
                 Task { [weak self] in
                     _ = try? await self?.socket.rpc(
                         method: "relay/thread/session/unsubscribe",
@@ -1534,6 +1542,9 @@ final class RelayStore: ObservableObject {
         restorationTask = nil
         liveSessionSyncTask = nil
         subscribedSessionThreadId = nil
+        sessionPatchRevisions.removeAll()
+        lastSessionUpdateAt.removeAll()
+        recoveringSessionThreadIds.removeAll()
         threads = []
         messages = []
         turnMetadata = [:]
@@ -1986,37 +1997,11 @@ final class RelayStore: ObservableObject {
         } else {
             pendingTextDeltas[id] = PendingTextDelta(text: delta, turnId: turnId, role: role, kind: kind, title: title)
         }
-        guard textDeltaFlushTask == nil else { return }
-        textDeltaFlushTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            guard !Task.isCancelled else { return }
-            self?.flushPendingTextDeltas()
-        }
+        scheduleDeltaFlush()
     }
 
     private func flushPendingTextDeltas() {
-        textDeltaFlushTask?.cancel()
-        textDeltaFlushTask = nil
-        guard !pendingTextDeltas.isEmpty else { return }
-        let pending = pendingTextDeltas
-        pendingTextDeltas.removeAll(keepingCapacity: true)
-        var updated = messages
-        for (id, value) in pending {
-            if let index = updated.firstIndex(where: { $0.id == id }) {
-                updated[index].text += value.text
-                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
-            } else {
-                updated.append(TranscriptItem(
-                    id: id,
-                    turnId: value.turnId,
-                    role: value.role,
-                    kind: value.kind,
-                    title: value.title,
-                    text: value.text
-                ))
-            }
-        }
-        messages = updated
+        flushPendingDeltas()
     }
 
     private func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
@@ -2028,30 +2013,52 @@ final class RelayStore: ObservableObject {
         } else {
             pendingDetailDeltas[id] = PendingDetailDelta(text: delta, turnId: turnId, kind: kind)
         }
-        guard detailDeltaFlushTask == nil else { return }
-        detailDeltaFlushTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            guard !Task.isCancelled else { return }
-            self?.flushPendingDetailDeltas()
-        }
+        scheduleDeltaFlush()
     }
 
     private func flushPendingDetailDeltas() {
-        detailDeltaFlushTask?.cancel()
-        detailDeltaFlushTask = nil
-        guard !pendingDetailDeltas.isEmpty else { return }
-        let pending = pendingDetailDeltas
+        flushPendingDeltas()
+    }
+
+    private func scheduleDeltaFlush() {
+        guard deltaFlushTask == nil else { return }
+        deltaFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushPendingDeltas()
+        }
+    }
+
+    private func flushPendingDeltas() {
+        deltaFlushTask?.cancel()
+        deltaFlushTask = nil
+        guard !pendingTextDeltas.isEmpty || !pendingDetailDeltas.isEmpty else { return }
+        let pendingText = pendingTextDeltas
+        let pendingDetail = pendingDetailDeltas
+        pendingTextDeltas.removeAll(keepingCapacity: true)
         pendingDetailDeltas.removeAll(keepingCapacity: true)
         var updated = messages
-        for (id, value) in pending {
-            if let index = updated.firstIndex(where: { $0.id == id }) {
+        var indexes: [String: Int] = [:]
+        for (index, item) in updated.enumerated() { indexes[item.id] = index }
+        for (id, value) in pendingText {
+            if let index = indexes[id] {
+                updated[index].text += value.text
+                if updated[index].turnId == nil { updated[index].turnId = value.turnId }
+            } else {
+                indexes[id] = updated.count
+                updated.append(TranscriptItem(id: id, turnId: value.turnId, role: value.role, kind: value.kind, title: value.title, text: value.text))
+            }
+        }
+        for (id, value) in pendingDetail {
+            if let index = indexes[id] {
                 updated[index].detail = (updated[index].detail ?? "") + value.text
                 if updated[index].turnId == nil { updated[index].turnId = value.turnId }
             } else {
+                indexes[id] = updated.count
                 updated.append(TranscriptItem(id: id, turnId: value.turnId, role: .tool, kind: value.kind, title: value.kind == .reasoning ? "思考" : "运行命令", text: "", detail: value.text, status: "inProgress"))
             }
         }
-        messages = updated
+        if updated != messages { messages = updated }
     }
 
     private func handleConnectionRestored() async {
@@ -2154,7 +2161,7 @@ final class RelayStore: ObservableObject {
             guard let self, let initialThreadId = self.selectedThreadId else { return }
             if let initial = try? await self.socket.rpc(
                 method: "relay/thread/session/subscribe",
-                params: ["threadId": .string(initialThreadId)],
+                params: ["threadId": .string(initialThreadId), "incremental": .bool(true)],
                 timeoutSeconds: 12,
                 reconnectOnTimeout: false
             ) {
@@ -2165,13 +2172,14 @@ final class RelayStore: ObservableObject {
                 guard let threadId = self.selectedThreadId,
                       self.isRunning,
                       self.socket.state == .connected else { break }
-                await self.syncSessionSnapshot(threadId: threadId)
                 do {
-                    // File notifications provide the low-latency path. This
-                    // slower poll is only a reconciliation fallback.
-                    try await Task.sleep(nanoseconds: 8_000_000_000)
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
                 } catch {
                     break
+                }
+                let lastUpdate = self.lastSessionUpdateAt[threadId] ?? .distantPast
+                if Date().timeIntervalSince(lastUpdate) >= 25 {
+                    await self.syncSessionSnapshot(threadId: threadId)
                 }
             }
             self.liveSessionSyncTask = nil
@@ -2179,13 +2187,17 @@ final class RelayStore: ObservableObject {
     }
 
     private func syncSessionSnapshot(threadId: String) async {
+        guard !recoveringSessionThreadIds.contains(threadId) else { return }
+        recoveringSessionThreadIds.insert(threadId)
+        defer { recoveringSessionThreadIds.remove(threadId) }
         do {
             let result = try await socket.rpc(
-                method: "relay/thread/session/snapshot",
-                params: ["threadId": .string(threadId)],
+                method: "relay/thread/session/subscribe",
+                params: ["threadId": .string(threadId), "incremental": .bool(true)],
                 timeoutSeconds: 12,
                 reconnectOnTimeout: false
             )
+            subscribedSessionThreadId = threadId
             applySessionSnapshot(result, threadId: threadId)
         } catch {
             // Connection recovery owns transport errors; polling should not raise repeated alerts.
@@ -2197,15 +2209,52 @@ final class RelayStore: ObservableObject {
               result["known"]?.boolValue == true,
               let turnId = result["turnId"]?.stringValue else { return }
 
-        let snapshotIsStale = result["stale"]?.boolValue == true
-        if result["isRunning"]?.boolValue == true, !snapshotIsStale {
-            bindPendingUserPrompt(to: turnId, threadId: threadId)
-        }
+        sessionPatchRevisions[threadId] = result["revision"]?.intValue ?? 0
+        lastSessionUpdateAt[threadId] = Date()
 
         let snapshotItems = result["items"]?.arrayValue?.compactMap {
             TranscriptItem.from(json: $0, turnId: turnId)
         } ?? []
         if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
+        applySessionStatus(result, threadId: threadId, turnId: turnId)
+    }
+
+    private func applySessionPatch(_ patch: JSONValue, threadId: String) {
+        guard selectedThreadId == threadId,
+              patch["known"]?.boolValue == true,
+              let turnId = patch["turnId"]?.stringValue,
+              let baseRevision = patch["baseRevision"]?.intValue,
+              let revision = patch["revision"]?.intValue else { return }
+        guard sessionPatchRevisions[threadId] == baseRevision else {
+            Task { [weak self] in await self?.syncSessionSnapshot(threadId: threadId) }
+            return
+        }
+
+        sessionPatchRevisions[threadId] = revision
+        lastSessionUpdateAt[threadId] = Date()
+        let upserts = patch["upsertItems"]?.arrayValue?.compactMap {
+            TranscriptItem.from(json: $0, turnId: turnId)
+        } ?? []
+        let removedItemIds = Set(patch["removedItemIds"]?.arrayValue?.compactMap(\.stringValue) ?? [])
+        if !upserts.isEmpty || !removedItemIds.isEmpty {
+            flushPendingTextDeltas()
+            flushPendingDetailDeltas()
+            messages = TranscriptReconciler.mergeSessionPatchItems(
+                upserts,
+                removedItemIds: removedItemIds,
+                turnId: turnId,
+                into: messages
+            )
+            applyUserMessagePlacements(turnId: turnId, threadId: threadId)
+        }
+        applySessionStatus(patch, threadId: threadId, turnId: turnId)
+    }
+
+    private func applySessionStatus(_ result: JSONValue, threadId: String, turnId: String) {
+        let snapshotIsStale = result["stale"]?.boolValue == true
+        if result["isRunning"]?.boolValue == true, !snapshotIsStale {
+            bindPendingUserPrompt(to: turnId, threadId: threadId)
+        }
 
         var metadata = turnMetadata[turnId] ?? TurnMetadata()
         if let startedAt = result["startedAt"]?.doubleValue {

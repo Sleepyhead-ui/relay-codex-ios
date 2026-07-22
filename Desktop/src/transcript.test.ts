@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSnapshot, parseApproval, parseItem } from "./transcript";
+import { applyContextCompaction, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem } from "./transcript";
 
 describe("desktop transcript", () => {
+  it("applies incremental session changes without replacing unrelated turns", () => {
+    const existing = [
+      { id: "older", turnId: "turn.0", kind: "assistant" as const, text: "older" },
+      { id: "one", turnId: "turn.1", kind: "assistant" as const, text: "first" },
+      { id: "two", turnId: "turn.1", kind: "command" as const, text: "old command" },
+    ];
+    const merged = mergeSessionPatch(existing, [
+      { id: "one", turnId: "turn.1", kind: "assistant", text: "first expanded" },
+      { id: "three", turnId: "turn.1", kind: "reasoning", text: "next" },
+    ], ["two"], "turn.1");
+    expect(merged.map((item) => item.id)).toEqual(["older", "one", "three"]);
+    expect(merged[1]?.text).toBe("first expanded");
+  });
+
   it("uses timestamps when an active turn carries a zero history duration", () => {
     expect(formatElapsed(Date.now() / 1000 - 65, undefined, 0)).toBe("1 分 5 秒");
   });

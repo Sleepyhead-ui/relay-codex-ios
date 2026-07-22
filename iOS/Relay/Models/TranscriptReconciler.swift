@@ -48,6 +48,36 @@ enum TranscriptReconciler {
         return result
     }
 
+    static func mergeSessionPatchItems(
+        _ upserts: [TranscriptItem],
+        removedItemIds: Set<String>,
+        turnId: String,
+        into messages: [TranscriptItem]
+    ) -> [TranscriptItem] {
+        guard !upserts.isEmpty || !removedItemIds.isEmpty else { return messages }
+        var result = removedItemIds.isEmpty
+            ? messages
+            : messages.filter { $0.turnId != turnId || !removedItemIds.contains($0.id) }
+        var indexes: [String: Int] = [:]
+        for (index, item) in result.enumerated() where indexes[item.id] == nil { indexes[item.id] = index }
+
+        for item in upserts {
+            if let index = indexes[item.id] {
+                result[index] = merge(existing: result[index], incoming: item)
+                continue
+            }
+            if let index = result.firstIndex(where: { $0.turnId == turnId && semanticallyMatches($0, item) }) {
+                result[index] = merge(existing: result[index], incoming: item)
+                continue
+            }
+            let insertion = (result.lastIndex(where: { $0.turnId == turnId }).map { $0 + 1 }) ?? result.endIndex
+            result.insert(item, at: insertion)
+            indexes.removeAll(keepingCapacity: true)
+            for (index, item) in result.enumerated() where indexes[item.id] == nil { indexes[item.id] = index }
+        }
+        return result == messages ? messages : result
+    }
+
     static func mergeHistoryItems(_ historyItems: [TranscriptItem], into messages: [TranscriptItem]) -> [TranscriptItem] {
         var result = messages.filter { !isInternalEnvironmentContext($0) }
         var consumedIds = Set<String>()

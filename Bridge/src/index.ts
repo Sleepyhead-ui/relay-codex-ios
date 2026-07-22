@@ -14,6 +14,7 @@ import { PromptQueue } from "./promptQueue.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
+import { SessionPatchCursor } from "./sessionPatch.js";
 import { UpdateManager } from "./updateManager.js";
 
 interface PendingServerRequest {
@@ -326,14 +327,40 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       try {
         const threadId = String(message.params.threadId ?? "");
+        const incremental = message.params.incremental === true;
         const subscriptions = sessionSubscriptions.get(socket);
         subscriptions?.get(threadId)?.();
+        const cursor = incremental ? new SessionPatchCursor() : undefined;
+        let ready = false;
+        let queuedSnapshot: Awaited<ReturnType<typeof sessionActivity.turnSnapshot>> | undefined;
         const stop = sessionActivity.subscribe(threadId, (snapshot) => {
-          send(socket, { type: "sessionSnapshot", threadId, snapshot });
+          if (!ready) {
+            queuedSnapshot = snapshot;
+            return;
+          }
+          if (!cursor) {
+            send(socket, { type: "sessionSnapshot", threadId, snapshot });
+            return;
+          }
+          const update = cursor.update(snapshot);
+          if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
+          else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
         });
         subscriptions?.set(threadId, stop);
-        const result = await sessionActivity.turnSnapshot(threadId);
+        const snapshot = await sessionActivity.turnSnapshot(threadId);
+        const result = cursor ? cursor.reset(snapshot) : snapshot;
         send(socket, { type: "rpcResult", id: message.id, result });
+        ready = true;
+        if (queuedSnapshot) {
+          const queued = queuedSnapshot;
+          queuedSnapshot = undefined;
+          if (!cursor) send(socket, { type: "sessionSnapshot", threadId, snapshot: queued });
+          else {
+            const update = cursor.update(queued);
+            if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
+            else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
+          }
+        }
         rpcDiagnostics.lastCompletedAt = new Date().toISOString();
         rpcDiagnostics.lastCompletedMethod = message.method;
       } catch (error) {

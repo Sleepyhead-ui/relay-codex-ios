@@ -37,6 +37,7 @@ final class RelaySocket: ObservableObject {
     var onBridgeStatus: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onSessionSnapshot: ((String, JSONValue) -> Void)?
+    var onSessionPatch: ((String, JSONValue) -> Void)?
     var onPromptQueueUpdated: ((String, JSONValue) -> Void)?
     var onUpdateProgress: ((JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
@@ -58,6 +59,7 @@ final class RelaySocket: ObservableObject {
     private var stableConnectionTask: Task<Void, Never>?
     private var connectionTimeoutTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
+    private let decodingQueue = DispatchQueue(label: "dev.relay.websocket.decode", qos: .userInitiated)
 
     func connect(endpoint: String, token: String) throws {
         guard let url = URL(string: endpoint), ["ws", "wss"].contains(url.scheme?.lowercased() ?? "") else {
@@ -371,18 +373,12 @@ final class RelaySocket: ObservableObject {
                 guard let self, generation == self.connectionGeneration else { return }
                 switch result {
                 case .success(let message):
-                    do {
-                        let data: Data
-                        switch message {
-                        case .string(let text): data = Data(text.utf8)
-                        case .data(let value): data = value
-                        @unknown default: throw SocketError.remote("Unsupported WebSocket message.")
-                        }
-                        try self.handle(data, generation: generation)
-                    } catch {
-                        self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
-                    }
                     self.receiveNext(generation: generation)
+                    switch message {
+                    case .string(let text): self.decode(Data(text.utf8), generation: generation)
+                    case .data(let value): self.decode(value, generation: generation)
+                    @unknown default: self.onNonfatalError?("Ignored one unsupported Bridge message.")
+                    }
                 case .failure(let error):
                     self.handleConnectionFailure(error, generation: generation)
                 }
@@ -390,20 +386,35 @@ final class RelaySocket: ObservableObject {
         }
     }
 
-    private func handle(_ data: Data, generation: UUID) throws {
-        guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = raw["type"] as? String else { return }
-        let message = JSONValue(any: raw)
+    private func decode(_ data: Data, generation: UUID) {
+        decodingQueue.async { [weak self] in
+            do {
+                let message = try JSONDecoder().decode(JSONValue.self, from: data)
+                Task { @MainActor [weak self] in
+                    guard let self, generation == self.connectionGeneration else { return }
+                    self.handle(message)
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    guard let self, generation == self.connectionGeneration else { return }
+                    self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func handle(_ message: JSONValue) {
+        guard let type = message["type"]?.stringValue else { return }
 
         switch type {
         case "bridgeStatus":
             connectionTimeoutTask?.cancel()
             connectionTimeoutTask = nil
-            let status = raw["status"] as? String
+            let status = message["status"]?.stringValue
             onBridgeStatus?(message)
-            if let desktopSync = raw["desktopSync"] as? [String: Any], let mode = desktopSync["mode"] as? String {
+            if let mode = message["desktopSync"]?["mode"]?.stringValue {
                 desktopSyncMode = mode
-            } else if let enabled = raw["desktopSync"] as? Bool {
+            } else if let enabled = message["desktopSync"]?.boolValue {
                 desktopSyncMode = enabled ? "deep-link" : "off"
             }
             if status == "ready" {
@@ -418,27 +429,31 @@ final class RelaySocket: ObservableObject {
                 onNonfatalError?("Codex App Server stopped on Windows. Relay will keep the connection and retry when it is available.")
             }
         case "rpcAccepted":
-            guard let id = raw["id"] as? String else { return }
+            guard let id = message["id"]?.stringValue else { return }
             pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
             pendingAccepted.removeValue(forKey: id)?()
         case "rpcResult":
-            guard let id = raw["id"] as? String, let continuation = pending.removeValue(forKey: id) else { return }
+            guard let id = message["id"]?.stringValue, let continuation = pending.removeValue(forKey: id) else { return }
             pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
             pendingAccepted.removeValue(forKey: id)
             pendingTimeouts.removeValue(forKey: id)?.cancel()
-            if let error = raw["error"] as? [String: Any] {
-                continuation.resume(throwing: SocketError.remote(error["message"] as? String ?? "Codex request failed."))
+            if let error = message["error"] {
+                continuation.resume(throwing: SocketError.remote(error["message"]?.stringValue ?? "Codex request failed."))
             } else {
-                continuation.resume(returning: JSONValue(any: raw["result"] ?? NSNull()))
+                continuation.resume(returning: message["result"] ?? .null)
             }
         case "event":
-            if let method = raw["method"] as? String { onEvent?(method, message["params"] ?? .object([:])) }
+            if let method = message["method"]?.stringValue { onEvent?(method, message["params"] ?? .object([:])) }
         case "sessionSnapshot":
-            if let threadId = raw["threadId"] as? String {
+            if let threadId = message["threadId"]?.stringValue {
                 onSessionSnapshot?(threadId, message["snapshot"] ?? .object([:]))
             }
+        case "sessionPatch":
+            if let threadId = message["threadId"]?.stringValue {
+                onSessionPatch?(threadId, message["patch"] ?? .object([:]))
+            }
         case "promptQueueUpdated":
-            if let threadId = raw["threadId"] as? String {
+            if let threadId = message["threadId"]?.stringValue {
                 onPromptQueueUpdated?(threadId, message)
             }
         case "updateProgress":
@@ -448,7 +463,7 @@ final class RelaySocket: ObservableObject {
         case "serverRequestResolved":
             onServerRequestResolved?(message)
         case "bridgeError":
-            onNonfatalError?(raw["message"] as? String ?? "Bridge reported an error.")
+            onNonfatalError?(message["message"]?.stringValue ?? "Bridge reported an error.")
         default:
             break
         }
