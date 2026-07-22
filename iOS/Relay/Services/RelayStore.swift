@@ -50,6 +50,7 @@ final class RelayStore: ObservableObject {
     @Published private(set) var updateInfo: RelayUpdateInfo?
     @Published private(set) var isCheckingUpdate = false
     @Published private(set) var isDownloadingUpdate = false
+    @Published private(set) var updateDownloadProgress: Double?
 
     let socket = RelaySocket()
     private let hostDefaultsKey = "relay.host.configuration"
@@ -231,6 +232,11 @@ final class RelayStore: ObservableObject {
         socket.onPromptQueueUpdated = { [weak self] threadId, message in
             self?.applyPromptQueueUpdate(threadId: threadId, items: message["items"]?.arrayValue ?? [])
         }
+        socket.onUpdateProgress = { [weak self] message in
+            guard let downloaded = message["downloadedBytes"]?.doubleValue,
+                  let total = message["totalBytes"]?.doubleValue, total > 0 else { return }
+            self?.updateDownloadProgress = min(1, max(0, downloaded / total))
+        }
         socket.onServerRequest = { [weak self] message in self?.enqueueApproval(message) }
         socket.onServerRequestResolved = { [weak self] message in
             guard let id = message["id"]?.stringValue ?? message["id"]?.intValue.map(String.init) else { return }
@@ -357,7 +363,11 @@ final class RelayStore: ObservableObject {
     func downloadLatestIPA() async {
         guard updateInfo?.available == true, !isDownloadingUpdate else { return }
         isDownloadingUpdate = true
-        defer { isDownloadingUpdate = false }
+        updateDownloadProgress = 0
+        defer {
+            isDownloadingUpdate = false
+            updateDownloadProgress = nil
+        }
         do {
             let result = try await socket.rpc(
                 method: "relay/update/download-ios",

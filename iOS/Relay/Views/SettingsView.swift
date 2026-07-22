@@ -150,8 +150,8 @@ struct SettingsView: View {
                                 Task { await store.downloadLatestIPA() }
                             } label: {
                                 HStack {
-                                    if store.isDownloadingUpdate { ProgressView() }
-                                    Label(store.isDownloadingUpdate ? "正在通过 Windows 下载" : "下载 IPA", systemImage: "arrow.down.circle")
+                                    if store.isDownloadingUpdate { ProgressView(value: store.updateDownloadProgress ?? 0) }
+                                    Label(store.isDownloadingUpdate ? "正在通过 Windows 下载 \(Int((store.updateDownloadProgress ?? 0) * 100))%" : "下载 IPA", systemImage: "arrow.down.circle")
                                 }
                             }
                             .disabled(store.isDownloadingUpdate)

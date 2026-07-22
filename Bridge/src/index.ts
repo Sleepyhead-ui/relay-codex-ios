@@ -244,7 +244,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       try {
         const result = message.method === "relay/update/check"
           ? await updateManager.check(typeof message.params.currentVersion === "string" ? message.params.currentVersion : "0.0.0")
-          : await updateManager.downloadIOS();
+          : await updateManager.downloadIOS((progress) => send(socket, { type: "updateProgress", ...progress }));
         send(socket, { type: "rpcResult", id: message.id, result });
         rpcDiagnostics.lastCompletedAt = new Date().toISOString();
         rpcDiagnostics.lastCompletedMethod = message.method;

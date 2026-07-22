@@ -38,6 +38,7 @@ final class RelaySocket: ObservableObject {
     var onEvent: ((String, JSONValue) -> Void)?
     var onSessionSnapshot: ((String, JSONValue) -> Void)?
     var onPromptQueueUpdated: ((String, JSONValue) -> Void)?
+    var onUpdateProgress: ((JSONValue) -> Void)?
     var onServerRequest: ((JSONValue) -> Void)?
     var onServerRequestResolved: ((JSONValue) -> Void)?
     var onNonfatalError: ((String) -> Void)?
@@ -440,6 +441,8 @@ final class RelaySocket: ObservableObject {
             if let threadId = raw["threadId"] as? String {
                 onPromptQueueUpdated?(threadId, message)
             }
+        case "updateProgress":
+            onUpdateProgress?(message)
         case "serverRequest":
             onServerRequest?(message)
         case "serverRequestResolved":

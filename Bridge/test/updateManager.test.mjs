@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { compareVersions, selectDigestAsset, selectIPAAsset } from "../dist/updateManager.js";
+import { compareVersions, releaseAssetUrls, selectDigestAsset, selectIPAAsset } from "../dist/updateManager.js";
 
 test("compares semantic release versions numerically", () => {
   assert.equal(compareVersions("0.7.0", "v0.6.23"), 1);
@@ -21,4 +21,13 @@ test("accepts only a small digest asset from the fixed repository", () => {
   const foreign = { ...valid, browser_download_url: "https://example.com/Relay.ipa.sha256" };
   assert.equal(selectDigestAsset([foreign, oversized, valid]), valid);
   assert.equal(selectDigestAsset([foreign, oversized]), undefined);
+});
+
+test("prefers the fixed GitHub API asset endpoint before the browser download", () => {
+  const asset = { id: 123, name: "Relay.ipa", size: 1, browser_download_url: "https://github.com/Sleepyhead-ui/relay-codex-ios/releases/download/v1/Relay.ipa" };
+  assert.deepEqual(releaseAssetUrls(asset), [
+    "https://api.github.com/repos/Sleepyhead-ui/relay-codex-ios/releases/assets/123",
+    asset.browser_download_url,
+  ]);
+  assert.deepEqual(releaseAssetUrls({ ...asset, id: undefined, browser_download_url: "https://example.com/Relay.ipa" }), []);
 });
