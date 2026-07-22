@@ -416,15 +416,15 @@ final class IncrementalMarkdownDocument {
             return blocks
         }
 
-        let nextStablePrefix = Self.safeStablePrefix(in: normalized)
-        if nextStablePrefix.hasPrefix(stablePrefix) {
-            let promoted = String(nextStablePrefix.dropFirst(stablePrefix.count))
-            if !promoted.isEmpty { stableBlocks.append(contentsOf: MarkdownParser.parseUncached(promoted)) }
-        } else {
-            stableBlocks = MarkdownParser.parseUncached(nextStablePrefix)
+        let normalizedUTF16 = normalized as NSString
+        let stableLength = (stablePrefix as NSString).length
+        let unstable = normalizedUTF16.substring(from: min(stableLength, normalizedUTF16.length))
+        let promoted = Self.safeStablePrefix(in: unstable)
+        if !promoted.isEmpty {
+            stablePrefix += promoted
+            stableBlocks.append(contentsOf: MarkdownParser.parseUncached(promoted))
         }
-        stablePrefix = nextStablePrefix
-        let tail = String(normalized.dropFirst(stablePrefix.count))
+        let tail = (unstable as NSString).substring(from: (promoted as NSString).length)
         blocks = stableBlocks + MarkdownParser.parseUncached(tail)
         source = normalized
         return blocks

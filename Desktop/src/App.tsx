@@ -15,7 +15,7 @@ import type { UserMessagePlacement } from "./transcript";
 import { createTaskStateCore, decodeTaskRunEvents, isTaskRunning, reduceTaskStateCore, type TaskRunEvent } from "./taskState";
 import { DesktopPerformanceMetrics } from "./performanceMetrics";
 import { SessionRevisionTracker } from "./sessionRevision";
-import { splitMarkdownChunks } from "./markdownChunks";
+import { IncrementalMarkdownChunks } from "./markdownChunks";
 import { previewTechnicalText } from "./technicalText";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
@@ -1311,7 +1311,8 @@ function formatPercent(value = 0) { return `${(value * 100).toFixed(1)}%`; }
 
 function Modal({ title, children, onClose, closable = true }: { title: string; children: ReactNode; onClose: () => void; closable?: boolean }) { return <div className="modal-backdrop"><div className="modal"><div className="modal-heading"><strong>{title}</strong>{closable && <button className="icon-button" onClick={onClose}><X size={16}/></button>}</div>{children}</div></div>; }
 function Markdown({ text }: { text: string }) {
-  const chunks = useMemo(() => splitMarkdownChunks(text || ""), [text]);
+  const document = useRef(new IncrementalMarkdownChunks()).current;
+  const chunks = useMemo(() => document.update(text || ""), [document, text]);
   return <div className="markdown">{chunks.map((source, index) => <MarkdownChunk key={index} source={source}/>)}</div>;
 }
 
@@ -1355,5 +1356,5 @@ function sortPinnedThreads(threads: ThreadSummary[], pinned: Set<string>) {
 function effortName(value: string) { return ({ none: "关闭", minimal: "最低", low: "低", medium: "中", high: "高", xhigh: "最高", ultra: "极高+" } as Record<string, string>)[value] || value; }
 function errorText(reason: unknown) { return reason instanceof Error ? reason.message : String(reason); }
 function firstLine(value: string) { return value.split(/\r?\n/)[0]?.trim() || "命令"; }
-function lastLine(value: string) { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)?.replaceAll("**", "") || ""; }
+function lastLine(value: string) { return value.slice(-4_096).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1)?.replaceAll("**", "") || ""; }
 function relativeTime(timestamp: number) { if (!timestamp) return ""; const seconds = Math.max(0, Date.now() / 1000 - timestamp); if (seconds < 60) return "刚刚"; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时`; return `${Math.floor(seconds / 86400)} 天`; }

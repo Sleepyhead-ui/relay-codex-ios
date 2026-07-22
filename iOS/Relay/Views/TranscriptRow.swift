@@ -507,7 +507,7 @@ private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> Act
 
 private func lastNonemptyLine(_ source: String?) -> String? {
     guard let source else { return nil }
-    return source.split(whereSeparator: \.isNewline).reversed().lazy
+    return source.suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
         .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
         .first(where: { !$0.isEmpty })
 }

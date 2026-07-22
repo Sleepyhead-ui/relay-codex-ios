@@ -1,6 +1,37 @@
 export function splitMarkdownChunks(source: string): string[] {
+  return splitMarkdownChunkResult(source).chunks;
+}
+
+export class IncrementalMarkdownChunks {
+  private source = "";
+  private stableLength = 0;
+  private stableChunks: string[] = [];
+  processedCharacters = 0;
+
+  update(nextSource: string) {
+    const normalized = nextSource.replace(/\r\n/g, "\n");
+    if (!normalized.startsWith(this.source)) {
+      this.source = "";
+      this.stableLength = 0;
+      this.stableChunks = [];
+    }
+    const tail = normalized.slice(this.stableLength);
+    this.processedCharacters += tail.length;
+    const result = splitMarkdownChunkResult(tail);
+    if (result.stableCount > 0) {
+      const promoted = result.chunks.slice(0, result.stableCount);
+      this.stableChunks.push(...promoted);
+      this.stableLength += promoted.reduce((total, chunk) => total + chunk.length, 0);
+    }
+    const unstable = result.chunks.slice(result.stableCount);
+    this.source = normalized;
+    return [...this.stableChunks, ...unstable];
+  }
+}
+
+function splitMarkdownChunkResult(source: string): { chunks: string[]; stableCount: number } {
   const normalized = source.replace(/\r\n/g, "\n");
-  if (!normalized) return [""];
+  if (!normalized) return { chunks: [], stableCount: 0 };
   const chunks: string[] = [];
   let chunkStart = 0;
   let lineStart = 0;
@@ -25,8 +56,10 @@ export function splitMarkdownChunks(source: string): string[] {
     if (newline < 0) break;
     lineStart = newline + 1;
   }
-  if (chunkStart < normalized.length) chunks.push(normalized.slice(chunkStart));
-  return chunks.length ? chunks : [normalized];
+  const endedAtBoundary = chunkStart === normalized.length;
+  if (!endedAtBoundary) chunks.push(normalized.slice(chunkStart));
+  if (!chunks.length) chunks.push(normalized);
+  return { chunks, stableCount: endedAtBoundary ? chunks.length : Math.max(0, chunks.length - 1) };
 }
 
 function nextNonemptyLine(source: string, start: number) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitMarkdownChunks } from "./markdownChunks";
+import { IncrementalMarkdownChunks, splitMarkdownChunks } from "./markdownChunks";
 
 describe("incremental markdown chunks", () => {
   it("keeps completed paragraphs stable while the tail grows", () => {
@@ -20,5 +20,15 @@ describe("incremental markdown chunks", () => {
   it("keeps one markdown list in one parser chunk", () => {
     const source = "1. first\n\n2. second\n\n3. third";
     expect(splitMarkdownChunks(source)).toEqual([source]);
+  });
+
+  it("does not rescan stable paragraphs for every streaming frame", () => {
+    const document = new IncrementalMarkdownChunks();
+    const prefix = `${"stable paragraph\n\n".repeat(1_000)}`;
+    document.update(`${prefix}tail`);
+    const before = document.processedCharacters;
+    for (let frame = 0; frame < 100; frame += 1) document.update(`${prefix}tail${".".repeat(frame + 1)}`);
+    expect(document.processedCharacters - before).toBeLessThan(20_000);
+    expect(document.update(`${prefix}tail done`).join("")).toBe(`${prefix}tail done`);
   });
 });
