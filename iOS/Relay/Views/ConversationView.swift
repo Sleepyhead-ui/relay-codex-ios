@@ -243,11 +243,11 @@ struct ConversationView: View {
     private var connectionLabel: String {
         switch store.socket.state {
         case .connected:
-            return store.isSelectedThreadUpstreamRetrying ? "Codex 上游重连中" : store.host.name
-        case .connecting: return "Connecting"
-        case .reconnecting(let attempt): return "Reconnecting · \(attempt)"
-        case .disconnected: return "Offline"
-        case .failed: return "Connection lost"
+            return store.isSelectedThreadUpstreamRetrying ? "Codex 上游服务正在重试" : store.host.name
+        case .connecting: return "正在连接 Windows"
+        case .reconnecting(let attempt): return "正在重新连接 Windows · \(attempt)"
+        case .disconnected: return "Windows 离线"
+        case .failed: return "Windows 连接已断开"
         }
     }
 }

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
+import { resolveCodexExecutable } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
@@ -584,7 +585,9 @@ function diagnosticsReport(): JsonObject {
 }
 
 function createCodexAppServer(generation: number): CodexAppServer {
-  return new CodexAppServer(config.codexBin, {
+  const executable = resolveCodexExecutable(codexProfiles.activeCodexHome, config.codexBin);
+  console.log(`[codex] Starting App Server with ${executable}`);
+  return new CodexAppServer(executable, {
     onResponse: (message) => {
       if (generation === codexGeneration) handleCodexResponse(message);
     },

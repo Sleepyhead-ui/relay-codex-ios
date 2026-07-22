@@ -803,7 +803,7 @@ export default function App() {
   }
 
   const serviceAvailable = service.state === "running" || service.state === "starting" || service.state === "degraded";
-  const connectionLabel = !serviceAvailable ? "远程服务未启动" : profileSwitching ? "正在切换实例" : upstreamRetrying ? "Codex 上游重连中" : connection === "connected" ? "实时同步" : connection === "reconnecting" ? `正在重连 · ${connectionAttempt}` : connection === "handshaking" ? "正在初始化" : "未连接";
+  const connectionLabel = !serviceAvailable ? "远程服务未启动" : profileSwitching ? "正在切换实例" : upstreamRetrying ? "Codex 上游服务正在重试" : connection === "connected" ? "实时同步" : connection === "reconnecting" ? `正在重新连接 Windows · ${connectionAttempt}` : connection === "handshaking" ? "正在初始化" : "未连接";
 
   return (
     <div className="app-shell">

@@ -201,11 +201,11 @@ struct SettingsView: View {
 
     private var status: String {
         switch store.socket.state {
-        case .connected: return "Connected"
-        case .connecting: return "Connecting"
-        case .reconnecting(let attempt): return "Reconnecting (\(attempt))"
-        case .disconnected: return "Offline"
-        case .failed: return "Connection lost"
+        case .connected: return "已连接"
+        case .connecting: return "正在连接 Windows"
+        case .reconnecting(let attempt): return "正在重新连接 Windows（\(attempt)）"
+        case .disconnected: return "Windows 离线"
+        case .failed: return "Windows 连接已断开"
         }
     }
 
