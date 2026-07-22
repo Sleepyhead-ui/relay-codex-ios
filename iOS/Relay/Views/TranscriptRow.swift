@@ -364,19 +364,24 @@ private struct RunActivityView: View {
                         }
                     }
                     if renderedSectionCount < sections.count {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .frame(height: 22)
+                        Button {
+                            renderedSectionCount = min(renderedSectionCount + 8, sections.count)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "ellipsis.circle")
+                                Text("显示更多进展（剩余 \(sections.count - renderedSectionCount) 条）")
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .task(id: sections.count) {
-                    renderedSectionCount = min(max(renderedSectionCount, 2), sections.count)
-                    while renderedSectionCount < sections.count, !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 16_000_000)
-                        guard !Task.isCancelled else { return }
-                        renderedSectionCount = min(renderedSectionCount + 2, sections.count)
-                    }
+                    renderedSectionCount = min(max(renderedSectionCount, 8), sections.count)
                 }
             }
         }
@@ -391,10 +396,12 @@ private struct RunActivityView: View {
         }
     }
 
-    private var reasoningItems: [TranscriptItem] { items.filter { $0.kind == .reasoning } }
-
     private var latestReasoningText: String? {
-        guard let item = reasoningItems.last else { return nil }
+        guard let item = items.last(where: { $0.kind == .reasoning }) else { return nil }
+        return reasoningText(item)
+    }
+
+    private func reasoningText(_ item: TranscriptItem) -> String? {
         let source = item.text.nonEmpty ?? item.detail?.nonEmpty
         let lines = source?
             .components(separatedBy: .newlines)
@@ -406,6 +413,8 @@ private struct RunActivityView: View {
     private var activitySections: [ActivitySection] {
         var sections: [ActivitySection] = []
         var pendingExecution: [TranscriptItem] = []
+        let latestReasoning = items.last(where: { $0.kind == .reasoning })
+        let latestReasoningText = latestReasoning.flatMap(reasoningText)
 
         func flushExecution() {
             guard !pendingExecution.isEmpty else { return }
@@ -416,7 +425,7 @@ private struct RunActivityView: View {
         for item in items {
             if item.kind == .plan { continue }
             if item.kind == .reasoning {
-                guard item.id == reasoningItems.last?.id, let latestReasoningText else { continue }
+                guard item.id == latestReasoning?.id, let latestReasoningText else { continue }
                 flushExecution()
                 sections.append(.reasoning(id: item.id, text: latestReasoningText))
             } else if item.isCommentary {

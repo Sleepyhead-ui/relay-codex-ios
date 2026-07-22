@@ -1018,23 +1018,18 @@ function ActivityBlock({ items, metadata, live, showHeader, canExpand, expanded,
     else execution.push(item);
   }
   flush();
-  const [visibleSegmentCount, setVisibleSegmentCount] = useState(() => expanded ? Math.min(2, segments.length) : 0);
+  const [visibleSegmentCount, setVisibleSegmentCount] = useState(() => expanded ? Math.min(8, segments.length) : 0);
   useEffect(() => {
     if (!expanded) {
       setVisibleSegmentCount(0);
       return;
     }
-    setVisibleSegmentCount((current) => Math.min(segments.length, Math.max(current, Math.min(2, segments.length))));
+    setVisibleSegmentCount((current) => Math.min(segments.length, Math.max(current, Math.min(8, segments.length))));
   }, [expanded, segments.length]);
-  useEffect(() => {
-    if (!expanded || visibleSegmentCount >= segments.length) return;
-    const frame = requestAnimationFrame(() => setVisibleSegmentCount((current) => Math.min(segments.length, current + 2)));
-    return () => cancelAnimationFrame(frame);
-  }, [expanded, segments.length, visibleSegmentCount]);
   if (!showHeader && !expanded) return null;
   return <div className={`activity-block ${!showHeader ? "continuation" : ""} ${live ? "live" : metadata?.status || ""}`}>
     {showHeader && <button className="activity-header" onClick={() => canExpand && onToggle()}><span className="activity-status">{live ? <span className="spinner"/> : metadata?.status === "failed" ? <AlertCircle size={15}/> : metadata?.status === "interrupted" ? <CircleStop size={15}/> : <Check size={15}/>}</span><span className="activity-label">{label}</span>{canExpand && <ChevronDown size={14} className={expanded ? "rotated" : ""}/>}</button>}
-    {expanded && <div className="activity-content">{segments.slice(0, visibleSegmentCount).map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : segment.reasoning ? <div className="reasoning-summary" key={segment.id}><Sparkles size={13}/><Markdown text={lastLine(segment.reasoning.text || segment.reasoning.detail || "思考")}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}{visibleSegmentCount < segments.length && <div className="activity-loading"><span className="spinner small"/></div>}</div>}
+    {expanded && <div className="activity-content">{segments.slice(0, visibleSegmentCount).map((segment) => segment.commentary ? <div className="progress-copy" key={segment.id}><Markdown text={segment.commentary.text}/></div> : segment.reasoning ? <div className="reasoning-summary" key={segment.id}><Sparkles size={13}/><Markdown text={lastLine(segment.reasoning.text || segment.reasoning.detail || "思考")}/></div> : <ExecutionGroup key={segment.id} items={segment.execution || []}/>)}{visibleSegmentCount < segments.length && <button className="activity-more" onClick={() => setVisibleSegmentCount((current) => Math.min(segments.length, current + 8))}><MoreHorizontal size={13}/><span>显示更多进展（剩余 {segments.length - visibleSegmentCount} 条）</span></button>}</div>}
   </div>;
 }
 
