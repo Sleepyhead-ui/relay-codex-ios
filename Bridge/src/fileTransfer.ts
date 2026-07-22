@@ -29,7 +29,7 @@ interface DownloadSession {
 
 export class FileTransferManager {
   readonly filesRoot: string;
-  private readonly allowedRoots: string[];
+  private readonly allowedRoots = new Set<string>();
   private readonly defaultCwd: string | undefined;
   private readonly uploads = new Map<string, UploadSession>();
   private readonly downloads = new Map<string, DownloadSession>();
@@ -42,9 +42,15 @@ export class FileTransferManager {
   ) {
     this.filesRoot = path.resolve(filesRoot);
     this.defaultCwd = defaultCwd ? path.resolve(defaultCwd) : undefined;
-    this.allowedRoots = [this.filesRoot, ...(this.defaultCwd ? [this.defaultCwd] : [])];
+    this.allowedRoots.add(this.filesRoot);
+    if (this.defaultCwd) this.allowedRoots.add(this.defaultCwd);
     this.cleanupTimer = setInterval(() => { void this.cleanupExpired(); }, Math.min(sessionTtlMs, 60_000));
     this.cleanupTimer.unref();
+  }
+
+  allowWorkspace(workspace: unknown): void {
+    if (typeof workspace !== "string" || !workspace.trim()) return;
+    this.allowedRoots.add(path.resolve(workspace));
   }
 
   async handle(method: string, params: JsonObject): Promise<JsonObject> {
@@ -140,7 +146,7 @@ export class FileTransferManager {
   private async startDownload(params: JsonObject): Promise<JsonObject> {
     const suppliedPath = requiredString(params, "path");
     const requestedPath = path.resolve(path.isAbsolute(suppliedPath) ? suppliedPath : (this.defaultCwd ?? process.cwd()), path.isAbsolute(suppliedPath) ? "" : suppliedPath);
-    if (!this.allowedRoots.some((root) => isInside(root, requestedPath))) {
+    if (![...this.allowedRoots].some((root) => isInside(root, requestedPath))) {
       throw new Error("That file is outside the configured workspace.");
     }
     return this.createDownload(requestedPath, MAX_FILE_BYTES);

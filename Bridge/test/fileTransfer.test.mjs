@@ -48,6 +48,29 @@ test("rejects downloads outside allowed roots and invalid chunk order", async (t
   }), /Expected upload chunk 0/);
 });
 
+test("allows files from workspaces observed after bridge startup", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
+  const workspace = await mkdtemp(path.join(tmpdir(), "relay-workspace-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "relay-outside-"));
+  t.after(() => Promise.all([
+    rm(root, { recursive: true, force: true }),
+    rm(workspace, { recursive: true, force: true }),
+    rm(outside, { recursive: true, force: true }),
+  ]));
+  const manager = new FileTransferManager(undefined, path.join(root, ".relay-files"));
+  const workspaceFile = path.join(workspace, "result.ipa");
+  const outsideFile = path.join(outside, "secret.txt");
+  await writeFile(workspaceFile, "release");
+  await writeFile(outsideFile, "secret");
+
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: workspaceFile }), /outside/);
+  manager.allowWorkspace(workspace);
+  const download = await manager.handle("relay/file/download/start", { path: workspaceFile });
+  const chunk = await manager.handle("relay/file/download/chunk", { downloadId: download.downloadId, index: 0 });
+  assert.equal(Buffer.from(chunk.data, "base64").toString(), "release");
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: outsideFile }), /outside/);
+});
+
 test("previews supported images outside the workspace without exposing other files", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
   const outside = await mkdtemp(path.join(tmpdir(), "relay-preview-"));

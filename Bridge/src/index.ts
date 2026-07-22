@@ -509,6 +509,7 @@ function handleCodexResponse(message: JsonObject): void {
   } else if (pending.method === "thread/resume" && "result" in message) {
     sessionActivity.observeThreadResume(message.result);
   }
+  if ("result" in message) observeFileTransferWorkspaces(pending.method, message.result);
   if (pending.method === "turn/start" && !("error" in message)) {
     const result = isObject(message.result) ? message.result : {};
     runtimeState.observeTurnStart(pending.params.threadId, result.turn);
@@ -518,6 +519,19 @@ function handleCodexResponse(message: JsonObject): void {
     const result = isObject(message.result) ? message.result : {};
     runtimeState.observeTurnStart(pending.params.threadId, { id: result.turnId });
     desktopSync.activateThread(pending.params.threadId, "turn-steered");
+  }
+}
+
+function observeFileTransferWorkspaces(method: string, result: unknown): void {
+  const object = isObject(result) ? result : {};
+  if (method === "thread/list") {
+    for (const thread of Array.isArray(object.data) ? object.data : []) {
+      if (isObject(thread)) fileTransfer.allowWorkspace(thread.cwd);
+    }
+    return;
+  }
+  if (["thread/start", "thread/resume", "thread/read"].includes(method) && isObject(object.thread)) {
+    fileTransfer.allowWorkspace(object.thread.cwd);
   }
 }
 
