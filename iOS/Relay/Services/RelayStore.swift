@@ -31,7 +31,7 @@ final class RelayStore: ObservableObject {
     @Published private(set) var loadingImagePaths = Set<String>()
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
-    @Published private(set) var taskRunStates: [String: TaskRunState] = [:]
+    @Published var taskRunStates: [String: TaskRunState] = [:]
     @Published private(set) var goalStates: [String: GoalState] = [:]
     @Published private(set) var sendingThreadIds = Set<String>()
     @Published private(set) var isPreparingPrompt = false
@@ -69,9 +69,9 @@ final class RelayStore: ObservableObject {
     private var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
     private var threadLoadGeneration = UUID()
-    private var reconcilingThreadId: String?
-    private var queuedEvents: [(method: String, params: JSONValue)] = []
-    private var threadSnapshots = ThreadSnapshotCache()
+    var reconcilingThreadId: String?
+    var queuedEvents: [(method: String, params: JSONValue)] = []
+    var threadSnapshots = ThreadSnapshotCache()
     private var olderTurnsCursorByThread: [String: String] = [:]
     private var workingDirectoryOverrides: [String: String] = [:]
     private var workspaceAccessByProject: [String: WorkspaceAccessMode] = [:]
@@ -80,9 +80,9 @@ final class RelayStore: ObservableObject {
     private var outboundDrafts: [String: OutboundDraft] = [:]
     private var userMessagePlacements: [String: UserMessagePlacement] = [:]
     private var nextUserMessageSequence = 0
-    private var completedTurnIds = Set<String>()
+    var taskStateCore = TaskStateCore()
     private var restorationTask: Task<Void, Never>?
-    private var liveSessionSyncTask: Task<Void, Never>?
+    var liveSessionSyncTask: Task<Void, Never>?
     private var subscribedSessionThreadId: String?
     private var sessionRevisionTracker = SessionRevisionTracker()
     private var lastSessionUpdateAt: [String: Date] = [:]
@@ -424,13 +424,13 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        taskStateCore.reset()
         goalStates = [:]
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
         acceptedMessageIds = []
         outboundDrafts = [:]
-        completedTurnIds = []
         threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         hasOlderTurns = false
@@ -951,7 +951,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func refreshGoal(threadId: String) async {
+    func refreshGoal(threadId: String) async {
         guard socket.state == .connected else { return }
         do {
             let result = try await socket.rpc(
@@ -1061,7 +1061,7 @@ final class RelayStore: ObservableObject {
             let confirmedTurnId = result["turn"]?["id"]?.stringValue
             if let confirmedTurnId {
                 let existingMetadata = turnMetadata[confirmedTurnId]
-                let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
+                let alreadyCompleted = taskStateCore.isCompleted(confirmedTurnId)
                     || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
                 if !alreadyCompleted {
                     applyTaskRunEvent(
@@ -1160,7 +1160,7 @@ final class RelayStore: ObservableObject {
             )
             let confirmedTurnId = result["turnId"]?.stringValue ?? expectedTurnId
             let existingMetadata = turnMetadata[confirmedTurnId]
-            let alreadyCompleted = completedTurnIds.contains(confirmedTurnId)
+            let alreadyCompleted = taskStateCore.isCompleted(confirmedTurnId)
                 || (existingMetadata.map { !$0.isRunning && $0.startedAt != nil } ?? false)
             if !alreadyCompleted {
                 applyTaskRunEvent(threadId: threadId, event: .progress(turnId: confirmedTurnId, startedAt: nil))
@@ -1484,7 +1484,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func notifyTaskCompleted(threadId: String, turnId: String?, failed: Bool) {
+    func notifyTaskCompleted(threadId: String, turnId: String?, failed: Bool) {
         guard notificationsEnabled,
               let turnId,
               notifiedCompletionTurnIds.insert(turnId).inserted,
@@ -1558,6 +1558,7 @@ final class RelayStore: ObservableObject {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        taskStateCore.reset()
         goalStates = [:]
         queuedFollowUps = []
         pendingApprovals = []
@@ -1566,12 +1567,12 @@ final class RelayStore: ObservableObject {
         setSelectedThread(nil)
     }
 
-    private func persistGenerationSettings() {
+    func persistGenerationSettings() {
         UserDefaults.standard.set(selectedModelId, forKey: modelDefaultsKey)
         UserDefaults.standard.set(selectedEffort, forKey: effortDefaultsKey)
     }
 
-    private func persistThreadCache() {
+    func persistThreadCache() {
         guard let data = try? JSONEncoder().encode(Array(threads.prefix(200))) else { return }
         UserDefaults.standard.set(data, forKey: threadCacheDefaultsKey)
     }
@@ -1603,7 +1604,7 @@ final class RelayStore: ObservableObject {
         if !showingArchivedThreads { persistThreadCache() }
     }
 
-    private func setThreadStatus(_ threadId: String, status: String, touchUpdatedAt: Bool = true) {
+    func setThreadStatus(_ threadId: String, status: String, touchUpdatedAt: Bool = true) {
         guard let index = threads.firstIndex(where: { $0.id == threadId }) else { return }
         let changed = threads[index].status != status
         threads[index].status = status
@@ -1629,314 +1630,6 @@ final class RelayStore: ObservableObject {
         if selectedEffort.isEmpty || (!ids.isEmpty && !ids.contains(selectedEffort)) {
             selectedEffort = model.defaultEffort
         }
-    }
-
-    private func applyTaskRunEvent(threadId: String, event: TaskRunEvent) {
-        let previous = taskRunStates[threadId] ?? TaskRunState(threadId: threadId)
-        var state = previous
-        state.apply(event)
-        if state != previous { taskRunStates[threadId] = state }
-    }
-
-    private func acceptsTurnEvent(threadId: String, turnId: String?) -> Bool {
-        guard let turnId,
-              let state = taskRunStates[threadId],
-              state.isRunning,
-              let activeTurnId = state.turnId else { return true }
-        return activeTurnId == turnId
-    }
-
-    @discardableResult
-    private func applyDecodedTaskEvents(method: String, params: JSONValue, fallbackThreadId: String?) -> Bool {
-        let transition = TaskEventDecoder.decode(method: method, params: params, fallbackThreadId: fallbackThreadId)
-        guard let threadId = transition.threadId else { return true }
-        if let turnId = transition.turnId,
-           completedTurnIds.contains(turnId),
-           method == "turn/started" || method == "turn/plan/updated" || TaskEventDecoder.isProgress(method) {
-            return false
-        }
-        if method != "turn/started", !acceptsTurnEvent(threadId: threadId, turnId: transition.turnId) {
-            return false
-        }
-        for event in transition.events { applyTaskRunEvent(threadId: threadId, event: event) }
-        return true
-    }
-
-    private func handleEvent(method: String, params: JSONValue) {
-        if let eventThreadId = params["threadId"]?.stringValue, eventThreadId != selectedThreadId {
-            applyBackgroundEvent(method: method, params: params, threadId: eventThreadId)
-            return
-        }
-        if let reconcilingThreadId, reconcilingThreadId == selectedThreadId {
-            queuedEvents.append((method, params))
-            return
-        }
-        applyEvent(method: method, params: params)
-    }
-
-    private func applyEvent(method: String, params: JSONValue) {
-        let eventTurnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
-        guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: selectedThreadId) else { return }
-        switch method {
-        case "turn/started":
-            let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))
-            if let turnId = params["turn"]?["id"]?.stringValue {
-                completedTurnIds.remove(turnId)
-            }
-            markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
-        case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
-            flushPendingTextDeltas()
-            flushPendingDetailDeltas()
-            let turn = params["turn"] ?? .object([:])
-            let turnId = turn["id"]?.stringValue ?? eventTurnId
-            if let turnId {
-                completedTurnIds.insert(turnId)
-                var metadata = TurnMetadata(json: turn)
-                if method == "turn/aborted" || method == "turn/interrupted" {
-                    metadata.status = "interrupted"
-                } else if method == "turn/failed" {
-                    metadata.status = "failed"
-                }
-                if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
-                turnMetadata[turnId] = metadata
-                for itemJSON in turn["items"]?.arrayValue ?? [] {
-                    if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
-                }
-            }
-            let completedActiveTurn = activeTurnId == nil || turnId == activeTurnId
-            if completedActiveTurn {
-                if let selectedThreadId {
-                    setThreadStatus(selectedThreadId, status: "idle")
-                }
-                liveSessionSyncTask?.cancel()
-                liveSessionSyncTask = nil
-            }
-            Task {
-                await refreshThreads(showErrors: false)
-                if let selectedThreadId { await refreshGoal(threadId: selectedThreadId) }
-            }
-            if let selectedThreadId {
-                notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: method == "turn/failed")
-            }
-            scheduleCompletionReconciliation(threadId: selectedThreadId)
-        case "item/started", "item/completed":
-            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
-            markTurnActive(eventTurnId)
-            if method == "item/completed" {
-                flushPendingTextDeltas()
-                flushPendingDetailDeltas()
-            }
-            if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
-        case "item/agentMessage/delta":
-            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
-            markTurnActive(eventTurnId)
-            appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .assistant, kind: .message)
-        case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta":
-            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
-            markTurnActive(eventTurnId)
-            appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .tool, kind: .reasoning, title: "思考")
-        case "item/reasoning/textDelta":
-            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
-            markTurnActive(eventTurnId)
-            appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .reasoning)
-        case "item/commandExecution/outputDelta":
-            guard eventTurnId.map({ !completedTurnIds.contains($0) }) ?? true else { break }
-            markTurnActive(eventTurnId)
-            appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .command)
-        case "turn/plan/updated":
-            break
-        case "thread/tokenUsage/updated":
-            if let threadId = params["threadId"]?.stringValue, let usage = params["tokenUsage"] {
-                tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
-            }
-        case "thread/compacted":
-            if let turnId = eventTurnId {
-                messages = TranscriptReconciler.removeCompactionSummary(turnId: turnId, from: messages)
-                upsert(TranscriptItem(id: "compaction.\(turnId)", turnId: turnId, role: .tool, kind: .contextCompaction, title: "已压缩上下文", text: "Codex 已整理较早的对话内容，为后续工作释放上下文空间。", status: "completed"))
-            }
-        case "thread/settings/updated":
-            if let model = params["threadSettings"]?["model"]?.stringValue { selectedModelId = model }
-            if let effort = params["threadSettings"]?["effort"]?.stringValue { selectedEffort = effort }
-            persistGenerationSettings()
-        case "error":
-            let message = params["error"]?["message"]?.stringValue
-                ?? params["message"]?.stringValue
-                ?? "Codex reported an error."
-            let threadId = params["threadId"]?.stringValue ?? selectedThreadId
-            if params["willRetry"]?.boolValue != true {
-                errorMessage = message
-                if params["willRetry"]?.boolValue == false, let threadId {
-                    markSelectedThreadFailed(threadId: threadId, turnId: eventTurnId, message: message)
-                }
-            }
-        default:
-            break
-        }
-    }
-
-    private func applyBackgroundEvent(method: String, params: JSONValue, threadId: String) {
-        let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
-        guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: threadId) else { return }
-        switch method {
-        case "turn/started", "item/started", "item/completed", "item/agentMessage/delta",
-             "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
-             "item/reasoning/textDelta", "item/commandExecution/outputDelta", "turn/plan/updated":
-            if method == "turn/started", let turnId { completedTurnIds.remove(turnId) }
-            if threads.first(where: { $0.id == threadId })?.isRunning != true {
-                setThreadStatus(threadId, status: "active")
-            }
-            updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: turnId)
-        case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
-            if let turnId { completedTurnIds.insert(turnId) }
-            let completesKnownTurn = taskRunStates[threadId]?.turnId == nil
-                || turnId == nil
-                || taskRunStates[threadId]?.turnId == turnId
-            if completesKnownTurn {
-                setThreadStatus(threadId, status: "idle")
-                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
-            }
-            Task {
-                await refreshThreads(showErrors: false)
-                await refreshGoal(threadId: threadId)
-            }
-            notifyTaskCompleted(threadId: threadId, turnId: turnId, failed: method == "turn/failed")
-        case "error":
-            if params["willRetry"]?.boolValue == false {
-                if let turnId { completedTurnIds.insert(turnId) }
-                setThreadStatus(threadId, status: "idle")
-                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
-            }
-        case "thread/tokenUsage/updated":
-            if let usage = params["tokenUsage"] {
-                tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
-            }
-        default:
-            break
-        }
-    }
-
-    private func markTurnActive(_ turnId: String?, startedAt: Date? = nil) {
-        if let selectedThreadId, let turnId {
-            guard acceptsTurnEvent(threadId: selectedThreadId, turnId: turnId) else { return }
-            applyTaskRunEvent(threadId: selectedThreadId, event: .progress(turnId: turnId, startedAt: startedAt))
-        }
-        if let selectedThreadId {
-            if threads.first(where: { $0.id == selectedThreadId })?.isRunning != true {
-                setThreadStatus(selectedThreadId, status: "active")
-            }
-        }
-        guard let turnId else { return }
-        if let selectedThreadId {
-            bindPendingUserPrompt(to: turnId, threadId: selectedThreadId)
-        }
-        var metadata = turnMetadata[turnId] ?? TurnMetadata()
-        let wasAlreadyActive = metadata.status == "inProgress"
-            && metadata.completedAt == nil
-            && metadata.durationMs == nil
-            && metadata.startedAt != nil
-        if !wasAlreadyActive {
-            metadata.status = "inProgress"
-            metadata.completedAt = nil
-            metadata.durationMs = nil
-            if metadata.startedAt == nil { metadata.startedAt = startedAt ?? Date() }
-            turnMetadata[turnId] = metadata
-        }
-        ensureLiveSessionSync()
-    }
-
-    private func reconcileRuntimeState(_ runtime: JSONValue) {
-        guard runtime["known"]?.boolValue == true else { return }
-        let runtimeError = runtime["upstreamError"]?.stringValue
-        if let selectedThreadId {
-            if runtime["upstreamRetrying"]?.boolValue == true {
-                applyTaskRunEvent(
-                    threadId: selectedThreadId,
-                    event: .retrying(
-                        turnId: runtime["activeTurnId"]?.stringValue,
-                        message: runtimeError ?? "Codex is reconnecting to the upstream service."
-                    )
-                )
-            } else {
-                applyTaskRunEvent(threadId: selectedThreadId, event: .clearRetry)
-            }
-        }
-        if runtime["isRunning"]?.boolValue == true {
-            let startedAt = runtime["startedAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
-            markTurnActive(runtime["activeTurnId"]?.stringValue, startedAt: startedAt)
-        } else {
-            if let staleTurnId = activeTurnId, var metadata = turnMetadata[staleTurnId], metadata.isRunning {
-                metadata.status = runtimeError == nil ? "completed" : "failed"
-                metadata.errorMessage = runtimeError
-                if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
-                turnMetadata[staleTurnId] = metadata
-            }
-            if let selectedThreadId {
-                setThreadStatus(selectedThreadId, status: "idle", touchUpdatedAt: false)
-            }
-            if let selectedThreadId {
-                applyTaskRunEvent(
-                    threadId: selectedThreadId,
-                    event: .terminal(
-                        turnId: runtime["activeTurnId"]?.stringValue,
-                        phase: runtimeError == nil ? .completed : .failed,
-                        completedAt: Date()
-                    )
-                )
-            }
-        }
-    }
-
-    private func markSelectedThreadFailed(threadId: String, turnId: String?, message: String) {
-        guard selectedThreadId == threadId else { return }
-        let failedTurnId = turnId ?? taskRunStates[threadId]?.turnId
-        if let failedTurnId {
-            completedTurnIds.insert(failedTurnId)
-            var metadata = turnMetadata[failedTurnId] ?? TurnMetadata()
-            metadata.status = "failed"
-            metadata.errorMessage = message
-            metadata.completedAt = metadata.completedAt ?? Date()
-            if metadata.durationMs == nil, let startedAt = metadata.startedAt {
-                metadata.durationMs = Int(max(0, Date().timeIntervalSince(startedAt) * 1000))
-            }
-            turnMetadata[failedTurnId] = metadata
-        }
-        liveSessionSyncTask?.cancel()
-        liveSessionSyncTask = nil
-        setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
-        cacheCurrentThread()
-    }
-
-    private func finishThreadReconciliation(_ threadId: String) {
-        guard reconcilingThreadId == threadId, selectedThreadId == threadId else { return }
-        reconcilingThreadId = nil
-        let events = queuedEvents
-        queuedEvents = []
-        for event in events { applyEvent(method: event.method, params: event.params) }
-        cacheCurrentThread()
-    }
-
-    private func scheduleCompletionReconciliation(threadId: String?) {
-        guard let threadId else { return }
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, self.selectedThreadId == threadId, !self.isRunning, self.activeTurnId == nil else { return }
-            await self.selectThread(threadId, closeSidebar: false, showErrors: false)
-        }
-    }
-
-    private func updateCachedSnapshot(threadId: String, isRunning: Bool, activeTurnId: String?) {
-        guard let snapshot = threadSnapshots[threadId] else { return }
-        threadSnapshots[threadId] = ThreadSnapshot(
-            messages: snapshot.messages,
-            turnMetadata: snapshot.turnMetadata,
-            isRunning: isRunning,
-            activeTurnId: activeTurnId,
-            activePlan: isRunning ? snapshot.activePlan : [],
-            activePlanTurnId: isRunning ? snapshot.activePlanTurnId : nil,
-            modelId: snapshot.modelId,
-            effort: snapshot.effort,
-            cachedAt: Date()
-        )
     }
 
     private func enqueueFollowUp(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
@@ -1992,11 +1685,11 @@ final class RelayStore: ObservableObject {
         queuedFollowUps.sort { $0.createdAt < $1.createdAt }
     }
 
-    private func upsert(_ item: TranscriptItem) {
+    func upsert(_ item: TranscriptItem) {
         TranscriptReconciler.upsert(item, into: &messages)
     }
 
-    private func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
+    func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
         guard let id, let delta else { return }
         socket.performanceMetrics.recordQueuedDelta()
         if pendingTextDeltas[id] == nil && pendingDetailDeltas[id] == nil { pendingDeltaOrder.append(id) }
@@ -2010,11 +1703,11 @@ final class RelayStore: ObservableObject {
         scheduleDeltaFlush()
     }
 
-    private func flushPendingTextDeltas() {
+    func flushPendingTextDeltas() {
         flushPendingDeltas()
     }
 
-    private func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
+    func appendDetail(id: String?, delta: String?, turnId: String?, kind: TranscriptKind) {
         guard let id, let delta else { return }
         socket.performanceMetrics.recordQueuedDelta()
         if pendingTextDeltas[id] == nil && pendingDetailDeltas[id] == nil { pendingDeltaOrder.append(id) }
@@ -2028,7 +1721,7 @@ final class RelayStore: ObservableObject {
         scheduleDeltaFlush()
     }
 
-    private func flushPendingDetailDeltas() {
+    func flushPendingDetailDeltas() {
         flushPendingDeltas()
     }
 
@@ -2143,7 +1836,7 @@ final class RelayStore: ObservableObject {
         outboundDrafts = [:]
         userMessagePlacements = [:]
         nextUserMessageSequence = 0
-        completedTurnIds = []
+        taskStateCore.reset()
         isLoadingThread = false
         showingArchivedThreads = false
         setSelectedThread(nil)
@@ -2164,7 +1857,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func ensureLiveSessionSync() {
+    func ensureLiveSessionSync() {
         guard liveSessionSyncTask == nil,
               isRunning,
               selectedThreadId != nil,
@@ -2303,7 +1996,6 @@ final class RelayStore: ObservableObject {
             }
             turnMetadata[turnId] = metadata
             if activeTurnId == nil || activeTurnId == turnId {
-                completedTurnIds.insert(turnId)
                 setThreadStatus(threadId, status: "idle")
                 liveSessionSyncTask?.cancel()
                 liveSessionSyncTask = nil
@@ -2320,7 +2012,7 @@ final class RelayStore: ObservableObject {
         cacheCurrentThread()
     }
 
-    private func bindPendingUserPrompt(to turnId: String, threadId: String) {
+    func bindPendingUserPrompt(to turnId: String, threadId: String) {
         guard selectedThreadId == threadId else { return }
         var pending: (messageId: String, sequence: Int)?
         for (messageId, placement) in userMessagePlacements {
@@ -2360,7 +2052,7 @@ final class RelayStore: ObservableObject {
         )
     }
 
-    private func cacheCurrentThread() {
+    func cacheCurrentThread() {
         guard let selectedThreadId else { return }
         threadSnapshots.store(ThreadSnapshot(
             messages: messages,

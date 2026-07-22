@@ -6,6 +6,64 @@ struct TaskEventTransition {
     let events: [TaskRunEvent]
 }
 
+struct TaskStateCore {
+    private(set) var completedTurnIds = Set<String>()
+
+    mutating func apply(
+        threadId: String,
+        event: TaskRunEvent,
+        to states: inout [String: TaskRunState]
+    ) -> Bool {
+        let previous = states[threadId] ?? TaskRunState(threadId: threadId)
+        if let turnId = event.referencedTurnId,
+           completedTurnIds.contains(turnId),
+           event.isReplayableProgress {
+            return false
+        }
+
+        var next = previous
+        next.apply(event)
+        let completionsBefore = completedTurnIds
+        switch event {
+        case .terminal(let turnId, _, _):
+            if let completed = turnId ?? previous.turnId { completedTurnIds.insert(completed) }
+        case .hydrate(let running, let turnId, _):
+            if running, let turnId {
+                completedTurnIds.remove(turnId)
+            } else if !running, let turnId {
+                completedTurnIds.insert(turnId)
+            }
+        default:
+            break
+        }
+        let stateChanged = next != previous
+        if stateChanged { states[threadId] = next }
+        return stateChanged || completedTurnIds != completionsBefore
+    }
+
+    func isCompleted(_ turnId: String) -> Bool { completedTurnIds.contains(turnId) }
+    mutating func markCompleted(_ turnId: String) { completedTurnIds.insert(turnId) }
+    mutating func reset() { completedTurnIds.removeAll() }
+}
+
+private extension TaskRunEvent {
+    var referencedTurnId: String? {
+        switch self {
+        case .started(let turnId, _), .progress(let turnId, _), .plan(let turnId, _): return turnId
+        case .retrying(let turnId, _), .terminal(let turnId, _, _): return turnId
+        case .hydrate(_, let turnId, _): return turnId
+        case .reset, .starting, .clearRetry: return nil
+        }
+    }
+
+    var isReplayableProgress: Bool {
+        switch self {
+        case .started, .progress, .plan: return true
+        default: return false
+        }
+    }
+}
+
 enum TaskEventDecoder {
     static func decode(method: String, params: JSONValue, fallbackThreadId: String? = nil) -> TaskEventTransition {
         let threadId = params["threadId"]?.stringValue ?? fallbackThreadId
@@ -67,29 +125,19 @@ enum TaskEventDecoder {
 
 struct TaskEventReplay {
     private(set) var states: [String: TaskRunState] = [:]
-    private var completedTurnIds = Set<String>()
+    private var core = TaskStateCore()
 
     mutating func apply(method: String, params: JSONValue, fallbackThreadId: String? = nil) {
         let transition = TaskEventDecoder.decode(method: method, params: params, fallbackThreadId: fallbackThreadId)
         guard let threadId = transition.threadId else { return }
-        if let turnId = transition.turnId,
-           completedTurnIds.contains(turnId),
-           method == "turn/started" || method == "turn/plan/updated" || TaskEventDecoder.isProgress(method) {
-            return
-        }
-        var state = states[threadId] ?? TaskRunState(threadId: threadId)
-        for event in transition.events { state.apply(event) }
-        states[threadId] = state
-        if method == "turn/completed" || method == "turn/aborted" || method == "turn/interrupted" || method == "turn/failed",
-           let turnId = transition.turnId {
-            completedTurnIds.insert(turnId)
-        }
+        for event in transition.events { _ = core.apply(threadId: threadId, event: event, to: &states) }
     }
 
     mutating func hydrate(threadId: String, running: Bool, turnId: String?, startedAt: Date? = nil) {
-        var state = states[threadId] ?? TaskRunState(threadId: threadId)
-        state.apply(.hydrate(running: running, turnId: turnId, startedAt: startedAt))
-        states[threadId] = state
-        if !running, let turnId { completedTurnIds.insert(turnId) }
+        _ = core.apply(
+            threadId: threadId,
+            event: .hydrate(running: running, turnId: turnId, startedAt: startedAt),
+            to: &states
+        )
     }
 }

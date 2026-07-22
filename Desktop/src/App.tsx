@@ -12,7 +12,7 @@ import {
   parseItem, parseModel, parseThread, parseTurn, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
-import { idleTaskState, isTaskRunning, reduceTaskRunState, type TaskRunEvent, type TaskRunState } from "./taskState";
+import { createTaskStateCore, decodeTaskRunEvents, isTaskRunning, reduceTaskStateCore, type TaskRunEvent } from "./taskState";
 import { DesktopPerformanceMetrics } from "./performanceMetrics";
 import { SessionRevisionTracker } from "./sessionRevision";
 import type {
@@ -39,7 +39,7 @@ export default function App() {
   const [selectedThreadId, setSelectedThreadId] = useState<string>();
   const [messages, setMessages] = useState<TranscriptItem[]>([]);
   const [turns, setTurns] = useState<Record<string, TurnMetadata>>({});
-  const [taskStates, setTaskStates] = useState<Record<string, TaskRunState>>({});
+  const [taskCore, setTaskCore] = useState(createTaskStateCore);
   const [goals, setGoals] = useState<Record<string, GoalState>>({});
   const [composer, setComposer] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -88,6 +88,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId);
+  const taskStates = taskCore.states;
   const accessKey = normalizedWorkspaceKey(selectedThread?.cwd || workspace);
   const access = accessKey ? projectAccesses[accessKey] || defaultAccess : defaultAccess;
   const selectedTaskState = selectedThreadId ? taskStates[selectedThreadId] : undefined;
@@ -107,10 +108,7 @@ export default function App() {
   messagesRef.current = messages;
 
   function updateTaskState(threadId: string, event: TaskRunEvent) {
-    setTaskStates((current) => ({
-      ...current,
-      [threadId]: reduceTaskRunState(current[threadId] || idleTaskState(threadId), event),
-    }));
+    setTaskCore((current) => reduceTaskStateCore(current, threadId, event));
   }
 
   function setAccess(value: WorkspaceAccess) {
@@ -228,7 +226,7 @@ export default function App() {
       threadMessageCacheRef.current.clear();
       setTurns({});
       setModels([]);
-      setTaskStates({});
+      setTaskCore(createTaskStateCore());
       setGoals({});
       sessionRevisionRef.current.clear();
       recoveringSessionRef.current.clear();
@@ -601,32 +599,15 @@ export default function App() {
       setThreads((current) => current.map((thread) => thread.id === threadId
         ? { ...thread, status: terminal ? "idle" : method.startsWith("turn/") || method.startsWith("item/") ? "active" : thread.status, updatedAt: Date.now() / 1000 }
         : thread));
-      if (method === "turn/started" && turnId) {
-        updateTaskState(threadId, { type: "started", turnId, startedAt: params.turn?.startedAt });
-      } else if (terminal) {
-        updateTaskState(threadId, {
-          type: "terminal",
-          turnId,
-          phase: method === "turn/failed" ? "failed" : method === "turn/completed" ? "completed" : "interrupted",
-          completedAt: params.turn?.completedAt,
-        });
+      const transition = decodeTaskRunEvents(method, params, threadId);
+      for (const event of transition.events) updateTaskState(threadId, event);
+      if (terminal) {
         if (turnId && !notifiedTurnIdsRef.current.has(turnId)) {
           notifiedTurnIdsRef.current.add(turnId);
           const taskTitle = threads.find((thread) => thread.id === threadId)?.title || "Codex 任务";
           void window.relayDesktop.notify({ title: method === "turn/failed" ? "任务执行失败" : "任务已完成", body: taskTitle });
         }
         void refreshGoal(threadId);
-      } else if (method === "turn/plan/updated" && turnId) {
-        updateTaskState(threadId, {
-          type: "plan",
-          turnId,
-          plan: (params.plan || []).map((step: any, index: number) => ({ id: `${turnId}.${index}`, text: step.step, status: step.status || "pending" })),
-        });
-      } else if (method === "error") {
-        if (params.willRetry === true) updateTaskState(threadId, { type: "retrying", turnId, message: params.error?.message || params.message });
-        else if (params.willRetry === false) updateTaskState(threadId, { type: "terminal", turnId, phase: "failed" });
-      } else if (turnId && method.startsWith("item/")) {
-        updateTaskState(threadId, { type: "progress", turnId });
       }
     }
     if (threadId !== selectedRef.current) return;
@@ -804,6 +785,7 @@ export default function App() {
         if (placement && confirmed) userMessagePlacementsRef.current.set(clientId, { ...placement, turnId: confirmed });
         setMessages((current) => current.map((item) => item.id === clientId ? { ...item, turnId: confirmed } : item));
       } else {
+        updateTaskState(threadId, { type: "starting" });
         const result = await rpc.rpc("turn/start", {
           threadId, clientUserMessageId: clientId, input, summary: "detailed",
           sandboxPolicy: sandboxPolicy(access, selectedThread?.cwd || workspace),
@@ -817,6 +799,12 @@ export default function App() {
         }
       }
     } catch (reason) {
+      const failedThreadId = selectedRef.current;
+      if (failedThreadId) {
+        setTaskCore((current) => current.states[failedThreadId]?.phase === "starting"
+          ? reduceTaskStateCore(current, failedThreadId, { type: "terminal", phase: "failed" })
+          : current);
+      }
       if (submittedMessageId) userMessagePlacementsRef.current.delete(submittedMessageId);
       if (pendingStartMessageRef.current) {
         pendingStartMessageRef.current = undefined;

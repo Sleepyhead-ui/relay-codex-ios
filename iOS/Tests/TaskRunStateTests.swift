@@ -108,6 +108,23 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertNil(state.turnId)
     }
 
+    func testHydratedTerminalTurnRejectsLateProgressWithoutPriorLiveState() {
+        var states: [String: TaskRunState] = [:]
+        var core = TaskStateCore()
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .hydrate(running: false, turnId: "turn.1", startedAt: nil),
+            to: &states
+        ))
+        XCTAssertTrue(core.isCompleted("turn.1"))
+        XCTAssertFalse(core.apply(
+            threadId: "thread.1",
+            event: .progress(turnId: "turn.1", startedAt: nil),
+            to: &states
+        ))
+        XCTAssertFalse(states["thread.1"]?.isRunning == true)
+    }
+
     func testLateProgressCannotReviveCompletedTurn() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.started(turnId: "turn.1", startedAt: nil))
