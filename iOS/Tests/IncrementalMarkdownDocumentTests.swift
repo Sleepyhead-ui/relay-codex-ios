@@ -28,4 +28,17 @@ final class IncrementalMarkdownDocumentTests: XCTestCase {
         XCTAssertEqual(document.source, "完全不同的内容")
         XCTAssertEqual(document.blocks, MarkdownParser.parseUncached("完全不同的内容"))
     }
+
+    func testStreamingTailDoesNotRescanStableHistory() {
+        let prefix = String(repeating: "稳定段落\n\n", count: 1_000)
+        let document = IncrementalMarkdownDocument(source: "\(prefix)尾部")
+        let before = document.processedCharacters
+
+        for frame in 1...100 {
+            document.update(source: "\(prefix)尾部\(String(repeating: ".", count: frame))")
+        }
+
+        XCTAssertLessThan(document.processedCharacters - before, 20_000)
+        XCTAssertEqual(document.blocks, MarkdownParser.parseUncached(document.source))
+    }
 }

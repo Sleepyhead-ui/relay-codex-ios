@@ -403,6 +403,8 @@ final class IncrementalMarkdownDocument {
     private(set) var stablePrefix = ""
     private(set) var stableBlocks: [MarkdownBlock] = []
     private(set) var blocks: [MarkdownBlock] = []
+    private(set) var processedCharacters = 0
+    private var stableUTF16Length = 0
 
     init(source: String) {
         update(source: source)
@@ -417,11 +419,12 @@ final class IncrementalMarkdownDocument {
         }
 
         let normalizedUTF16 = normalized as NSString
-        let stableLength = (stablePrefix as NSString).length
-        let unstable = normalizedUTF16.substring(from: min(stableLength, normalizedUTF16.length))
+        let unstable = normalizedUTF16.substring(from: min(stableUTF16Length, normalizedUTF16.length))
+        processedCharacters += (unstable as NSString).length
         let promoted = Self.safeStablePrefix(in: unstable)
         if !promoted.isEmpty {
             stablePrefix += promoted
+            stableUTF16Length += (promoted as NSString).length
             stableBlocks.append(contentsOf: MarkdownParser.parseUncached(promoted))
         }
         let tail = (unstable as NSString).substring(from: (promoted as NSString).length)
@@ -437,6 +440,7 @@ final class IncrementalMarkdownDocument {
     private func reset(source: String) {
         self.source = ""
         stablePrefix = ""
+        stableUTF16Length = 0
         stableBlocks = []
         blocks = []
         update(source: source)

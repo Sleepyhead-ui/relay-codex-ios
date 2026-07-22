@@ -1050,7 +1050,7 @@ function ThreadRow({ thread, selected, needsApproval, pinned, archived, onSelect
   </div>;
 }
 
-function Transcript({ items, turns, activeTurnId, olderAvailable, loadingOlder, onLoadOlder }: {
+export function Transcript({ items, turns, activeTurnId, olderAvailable, loadingOlder, onLoadOlder }: {
   items: TranscriptItem[]; turns: Record<string, TurnMetadata>; activeTurnId?: string;
   olderAvailable: boolean; loadingOlder: boolean; onLoadOlder: () => Promise<number>;
 }) {
