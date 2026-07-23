@@ -2,6 +2,98 @@ import Foundation
 
 @MainActor
 extension RelayStore {
+    func restoreMessageToComposer(_ id: String) {
+        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
+        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
+            errorMessage = "请先发送或清空当前输入框，再恢复这条消息。"
+            return
+        }
+        composerText = draft.text
+        attachments = draft.attachments
+        messages.removeAll { $0.id == id }
+        userMessagePlacements.removeValue(forKey: id)
+        outboundDrafts.removeValue(forKey: id)
+        acceptedMessageIds.remove(id)
+    }
+
+    func confirmMessageDelivery(_ id: String) async {
+        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
+        await selectThread(draft.threadId, closeSidebar: false, showErrors: false)
+        if messages.contains(where: { $0.id == id && $0.deliveryState == nil }) {
+            outboundDrafts.removeValue(forKey: id)
+            acceptedMessageIds.remove(id)
+        } else {
+            updateDeliveryState(
+                id,
+                state: .failed("Windows 对话历史中暂未找到这条消息。"),
+                threadId: draft.threadId
+            )
+        }
+    }
+
+    func markMessageAccepted(_ id: String, threadId: String) {
+        acceptedMessageIds.insert(id)
+        sendingThreadIds.remove(threadId)
+        updateDeliveryState(id, state: .accepted, threadId: threadId)
+    }
+
+    func updateDeliveryState(
+        _ id: String,
+        state: MessageDeliveryState?,
+        threadId: String? = nil,
+        turnId: String? = nil
+    ) {
+        let targetThreadId = threadId ?? selectedThreadId
+        if targetThreadId == selectedThreadId,
+           let index = messages.firstIndex(where: { $0.id == id }) {
+            messages[index].deliveryState = state
+            if let turnId { messages[index].turnId = turnId }
+        }
+        guard let targetThreadId,
+              targetThreadId != selectedThreadId,
+              let snapshot = threadSnapshots[targetThreadId],
+              let index = snapshot.messages.firstIndex(where: { $0.id == id }) else { return }
+        var cachedMessages = snapshot.messages
+        cachedMessages[index].deliveryState = state
+        if let turnId { cachedMessages[index].turnId = turnId }
+        threadSnapshots[targetThreadId] = ThreadSnapshot(
+            messages: cachedMessages,
+            turnMetadata: snapshot.turnMetadata,
+            isRunning: snapshot.isRunning,
+            activeTurnId: snapshot.activeTurnId,
+            activePlan: snapshot.activePlan,
+            activePlanTurnId: snapshot.activePlanTurnId,
+            modelId: snapshot.modelId,
+            effort: snapshot.effort,
+            cachedAt: Date()
+        )
+    }
+
+    func isUncertainDeliveryError(_ error: Error) -> Bool {
+        guard let socketError = error as? RelaySocket.SocketError else { return socket.state != .connected }
+        switch socketError {
+        case .disconnected: return true
+        case .invalidEndpoint: return false
+        case .remote(let message):
+            let normalized = message.lowercased()
+            return normalized.contains("timed out") || normalized.contains("没有完成请求") || socket.state != .connected
+        }
+    }
+
+    func userInput(text: String, attachments: [PendingAttachment]) -> [JSONValue] {
+        var input: [JSONValue] = []
+        if !text.isEmpty { input.append(.object(["type": .string("text"), "text": .string(text)])) }
+        for attachment in attachments {
+            guard let path = attachment.remotePath else { continue }
+            if attachment.isImage {
+                input.append(.object(["type": .string("localImage"), "path": .string(path)]))
+            } else {
+                input.append(.object(["type": .string("mention"), "name": .string(attachment.name), "path": .string(path)]))
+            }
+        }
+        return input
+    }
+
     func sendPrompt() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let readyAttachments = attachments.filter { $0.state == .ready && $0.remotePath != nil }

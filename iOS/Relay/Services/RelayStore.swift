@@ -42,9 +42,9 @@ final class RelayStore: ObservableObject {
     @Published var goalStates: [String: GoalState] = [:]
     @Published var sendingThreadIds = Set<String>()
     @Published var isPreparingPrompt = false
-    @Published private(set) var codexProfiles: [CodexProfile] = []
-    @Published private(set) var activeCodexProfileId = ""
-    @Published private(set) var isSwitchingCodexProfile = false
+    @Published var codexProfiles: [CodexProfile] = []
+    @Published var activeCodexProfileId = ""
+    @Published var isSwitchingCodexProfile = false
     @Published private(set) var pinnedThreadIds = Set<String>()
     @Published private(set) var showingArchivedThreads = false
     @Published var showingDiagnostics = false
@@ -247,69 +247,6 @@ final class RelayStore: ObservableObject {
             self?.pendingApprovals.removeAll { $0.id == id }
         }
         socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
-    }
-
-    func refreshModels(showErrors: Bool = false) async {
-        guard socket.state == .connected else { return }
-        do {
-            let result = try await socket.rpc(method: "model/list", params: [
-                "limit": .number(100),
-                "includeHidden": .bool(false)
-            ])
-            let models = result["data"]?.arrayValue?.compactMap(CodexModelOption.init(json:)) ?? []
-            guard !models.isEmpty else { return }
-            modelOptions = models
-            if selectedModel == nil {
-                let preferred = models.first(where: \.isDefault) ?? models.first
-                selectedModelId = preferred?.model ?? ""
-            }
-            normalizeEffortForSelectedModel()
-            persistGenerationSettings()
-        } catch {
-            report(error, show: showErrors)
-        }
-    }
-
-    func refreshCodexProfiles(showErrors: Bool = false) async {
-        guard socket.state == .connected else { return }
-        do {
-            let result = try await socket.rpc(
-                method: "relay/codex/profiles/list",
-                params: [:],
-                timeoutSeconds: 12,
-                reconnectOnTimeout: false
-            )
-            codexProfiles = result["profiles"]?.arrayValue?.compactMap(CodexProfile.init(json:)) ?? []
-            activeCodexProfileId = result["activeProfileId"]?.stringValue
-                ?? codexProfiles.first(where: \.isActive)?.id
-                ?? ""
-        } catch {
-            report(error, show: showErrors)
-        }
-    }
-
-    func switchCodexProfile(_ profileId: String) async {
-        guard profileId != activeCodexProfileId, !isSwitchingCodexProfile else { return }
-        guard !isRunning, pendingApproval == nil else {
-            errorMessage = "请先结束当前任务并处理审批，再切换 Codex 实例。"
-            return
-        }
-        isSwitchingCodexProfile = true
-        do {
-            let result = try await socket.rpc(
-                method: "relay/codex/profiles/switch",
-                params: ["profileId": .string(profileId)],
-                timeoutSeconds: 20,
-                reconnectOnTimeout: false
-            )
-            activeCodexProfileId = result["profile"]?["id"]?.stringValue ?? profileId
-            // The Bridge's switching notification owns the reset. Resetting
-            // again here can erase conversations already restored by a fast
-            // ready notification that overtook this RPC response.
-        } catch {
-            isSwitchingCodexProfile = false
-            report(error)
-        }
     }
 
     func refreshThreads(showErrors: Bool = true) async {
@@ -763,98 +700,6 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    func restoreMessageToComposer(_ id: String) {
-        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
-        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
-            errorMessage = "请先发送或清空当前输入框，再恢复这条消息。"
-            return
-        }
-        composerText = draft.text
-        attachments = draft.attachments
-        messages.removeAll { $0.id == id }
-        userMessagePlacements.removeValue(forKey: id)
-        outboundDrafts.removeValue(forKey: id)
-        acceptedMessageIds.remove(id)
-    }
-
-    func confirmMessageDelivery(_ id: String) async {
-        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
-        await selectThread(draft.threadId, closeSidebar: false, showErrors: false)
-        if messages.contains(where: { $0.id == id && $0.deliveryState == nil }) {
-            outboundDrafts.removeValue(forKey: id)
-            acceptedMessageIds.remove(id)
-        } else {
-            updateDeliveryState(
-                id,
-                state: .failed("Windows 对话历史中暂未找到这条消息。"),
-                threadId: draft.threadId
-            )
-        }
-    }
-
-    func markMessageAccepted(_ id: String, threadId: String) {
-        acceptedMessageIds.insert(id)
-        sendingThreadIds.remove(threadId)
-        updateDeliveryState(id, state: .accepted, threadId: threadId)
-    }
-
-    func updateDeliveryState(
-        _ id: String,
-        state: MessageDeliveryState?,
-        threadId: String? = nil,
-        turnId: String? = nil
-    ) {
-        let targetThreadId = threadId ?? selectedThreadId
-        if targetThreadId == selectedThreadId,
-           let index = messages.firstIndex(where: { $0.id == id }) {
-            messages[index].deliveryState = state
-            if let turnId { messages[index].turnId = turnId }
-        }
-        guard let targetThreadId,
-              targetThreadId != selectedThreadId,
-              let snapshot = threadSnapshots[targetThreadId],
-              let index = snapshot.messages.firstIndex(where: { $0.id == id }) else { return }
-        var cachedMessages = snapshot.messages
-        cachedMessages[index].deliveryState = state
-        if let turnId { cachedMessages[index].turnId = turnId }
-        threadSnapshots[targetThreadId] = ThreadSnapshot(
-            messages: cachedMessages,
-            turnMetadata: snapshot.turnMetadata,
-            isRunning: snapshot.isRunning,
-            activeTurnId: snapshot.activeTurnId,
-            activePlan: snapshot.activePlan,
-            activePlanTurnId: snapshot.activePlanTurnId,
-            modelId: snapshot.modelId,
-            effort: snapshot.effort,
-            cachedAt: Date()
-        )
-    }
-
-    func isUncertainDeliveryError(_ error: Error) -> Bool {
-        guard let socketError = error as? RelaySocket.SocketError else { return socket.state != .connected }
-        switch socketError {
-        case .disconnected: return true
-        case .invalidEndpoint: return false
-        case .remote(let message):
-            let normalized = message.lowercased()
-            return normalized.contains("timed out") || normalized.contains("没有完成请求") || socket.state != .connected
-        }
-    }
-
-    func userInput(text: String, attachments: [PendingAttachment]) -> [JSONValue] {
-        var input: [JSONValue] = []
-        if !text.isEmpty { input.append(.object(["type": .string("text"), "text": .string(text)])) }
-        for attachment in attachments {
-            guard let path = attachment.remotePath else { continue }
-            if attachment.isImage {
-                input.append(.object(["type": .string("localImage"), "path": .string(path)]))
-            } else {
-                input.append(.object(["type": .string("mention"), "name": .string(attachment.name), "path": .string(path)]))
-            }
-        }
-        return input
-    }
-
     func selectWorkspaceAccess(_ access: WorkspaceAccessMode) async {
         workspaceAccess = access
         let directory = currentWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1126,7 +971,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func normalizeEffortForSelectedModel() {
+    func normalizeEffortForSelectedModel() {
         guard let model = selectedModel else { return }
         let ids = Set(model.efforts.map(\.id))
         if selectedEffort.isEmpty || (!ids.isEmpty && !ids.contains(selectedEffort)) {
