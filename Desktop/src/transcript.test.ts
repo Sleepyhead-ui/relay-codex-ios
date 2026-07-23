@@ -263,4 +263,26 @@ describe("desktop transcript", () => {
     expect(last.groups[0]!.items).toBe(stableItems);
     expect(last.groups.at(-1)?.items[0]?.text.endsWith(".".repeat(100))).toBe(true);
   });
+
+  it("keeps session patches incremental across one hundred streaming frames", () => {
+    let messages: TranscriptItem[] = Array.from({ length: 1_000 }, (_, index) => ({
+      id: `message.${index}`, turnId: `turn.${index}`, kind: "assistant", text: `${index}`,
+    }));
+    const index = new TranscriptGroupIndex();
+    const first = index.window(messages, 40);
+    const stableItems = first.groups[0]!.items;
+
+    for (let frame = 0; frame < 100; frame += 1) {
+      messages = mergeSessionPatch(messages, [{
+        id: "message.999", turnId: "turn.999", kind: "assistant", text: `999.${frame}`,
+      }], [], "turn.999");
+      index.window(messages, 40);
+    }
+
+    const last = index.window(messages, 40);
+    expect(index.fullRebuildCount).toBe(1);
+    expect(index.incrementalUpdateCount).toBe(100);
+    expect(last.groups[0]!.items).toBe(stableItems);
+    expect(last.groups.at(-1)?.items[0]?.text).toBe("999.99");
+  });
 });

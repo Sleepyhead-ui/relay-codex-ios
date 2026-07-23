@@ -149,7 +149,12 @@ extension RelayStore {
         if !upserts.isEmpty || !removedItemIds.isEmpty {
             flushPendingTextDeltas()
             flushPendingDetailDeltas()
-            messages = TranscriptReconciler.mergeSessionPatchItems(upserts, removedItemIds: removedItemIds, turnId: turnId, into: messages)
+            let nextMessages = TranscriptReconciler.mergeSessionPatchItems(upserts, removedItemIds: removedItemIds, turnId: turnId, into: messages)
+            let changedItemIds = Set(upserts.compactMap { incoming in
+                nextMessages.first(where: { $0.id == incoming.id })?.id
+                    ?? nextMessages.first(where: { $0.turnId == turnId && TranscriptReconciler.semanticallyMatches($0, incoming) })?.id
+            })
+            adoptReconciledSessionPatch(nextMessages, changedItemIds: changedItemIds, hasRemovals: !removedItemIds.isEmpty)
             applyUserMessagePlacements(turnId: turnId, threadId: threadId)
         }
         applySessionStatus(patch, threadId: threadId, turnId: turnId)
@@ -209,8 +214,29 @@ extension RelayStore {
         applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
     }
 
+    private func adoptReconciledSessionPatch(
+        _ nextMessages: [TranscriptItem],
+        changedItemIds: Set<String>,
+        hasRemovals: Bool
+    ) {
+        guard nextMessages != messages else { return }
+        let adopted = !hasRemovals && transcriptIndex.adoptReconciledUpserts(
+            nextMessages,
+            changedItemIds: changedItemIds
+        )
+        isApplyingIndexedTranscriptMutation = adopted
+        messages = nextMessages
+        isApplyingIndexedTranscriptMutation = false
+    }
+
     func applyUserMessagePlacements(turnId: String, threadId: String) {
-        messages = TranscriptReconciler.applyUserMessagePlacements(userMessagePlacements, turnId: turnId, threadId: threadId, to: messages)
+        let nextMessages = TranscriptReconciler.applyUserMessagePlacements(
+            userMessagePlacements,
+            turnId: turnId,
+            threadId: threadId,
+            to: messages
+        )
+        if nextMessages != messages { messages = nextMessages }
     }
 
     func cacheCurrentThread() {

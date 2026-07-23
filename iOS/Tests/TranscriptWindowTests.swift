@@ -56,4 +56,44 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(window.groups.count, 24)
         XCTAssertTrue(window.groups.last?.items.first?.text.hasSuffix(String(repeating: ".", count: 100)) == true)
     }
+
+    func testAdoptsOneHundredSessionPatchesWithoutRebuildingGroups() {
+        var messages = (0..<1_000).map { index in
+            TranscriptItem(id: "message.\(index)", turnId: "turn.\(index)", role: .assistant, kind: .message, text: "\(index)")
+        }
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+
+        for frame in 0..<100 {
+            let next = TranscriptReconciler.mergeSessionPatchItems(
+                [TranscriptItem(id: "message.999", turnId: "turn.999", role: .assistant, kind: .message, text: "999.\(frame)")],
+                removedItemIds: [],
+                turnId: "turn.999",
+                into: messages
+            )
+            XCTAssertTrue(index.adoptReconciledUpserts(next, changedItemIds: ["message.999"]))
+            messages = next
+        }
+
+        let window = index.window(messages: messages, metadata: [:], limit: 24)
+        XCTAssertEqual(index.fullRebuildCount, 1)
+        XCTAssertEqual(index.incrementalUpdateCount, 100)
+        XCTAssertEqual(window.groups.last?.items.first?.text, "999.99")
+    }
+
+    func testRejectsMiddleInsertionSoCallerCanRebuildSafely() {
+        let messages = [
+            TranscriptItem(id: "one", turnId: "turn.1", role: .assistant, kind: .message, text: "one"),
+            TranscriptItem(id: "two", turnId: "turn.2", role: .assistant, kind: .message, text: "two"),
+        ]
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+        let next = [
+            messages[0],
+            TranscriptItem(id: "middle", turnId: "turn.1", role: .tool, kind: .command, text: "command"),
+            messages[1],
+        ]
+
+        XCTAssertFalse(index.adoptReconciledUpserts(next, changedItemIds: ["middle"]))
+    }
 }

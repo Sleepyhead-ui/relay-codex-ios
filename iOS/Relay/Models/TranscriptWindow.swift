@@ -70,6 +70,32 @@ struct TranscriptIndex {
         return changed
     }
 
+    mutating func adoptReconciledUpserts(
+        _ nextMessages: [TranscriptItem],
+        changedItemIds: Set<String>
+    ) -> Bool {
+        guard nextMessages.count >= itemIndexes.count else { return false }
+        let previousCount = itemIndexes.count
+        let appendedItems = nextMessages.dropFirst(previousCount)
+        let appendedIds = Set(appendedItems.map(\.id))
+        guard appendedIds.count == appendedItems.count,
+              appendedIds.allSatisfy({ itemIndexes[$0] == nil }) else { return false }
+
+        for id in changedItemIds.subtracting(appendedIds) {
+            guard let index = itemIndexes[id], nextMessages.indices.contains(index),
+                  nextMessages[index].id == id,
+                  groupId(containing: index) == Self.groupKey(nextMessages[index]) else { return false }
+        }
+
+        for (offset, item) in appendedItems.enumerated() {
+            let index = previousCount + offset
+            itemIndexes[item.id] = index
+            appendRange(for: item, at: index)
+        }
+        incrementalUpdateCount += 1
+        return true
+    }
+
     func window(
         messages: [TranscriptItem],
         metadata: [String: TurnMetadata],
@@ -95,6 +121,10 @@ struct TranscriptIndex {
         } else {
             ranges.append(GroupRange(id: key, turnId: item.turnId, range: index..<(index + 1)))
         }
+    }
+
+    private func groupId(containing itemIndex: Int) -> String? {
+        ranges.first(where: { $0.range.contains(itemIndex) })?.id
     }
 
     private static func groupKey(_ item: TranscriptItem) -> String {

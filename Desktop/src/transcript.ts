@@ -269,11 +269,13 @@ export function mergeSessionPatch(existing: TranscriptItem[], upserts: Transcrip
   if (!upserts.length && !removedItemIds.length) return existing;
   const removed = new Set(removedItemIds);
   let next = removed.size ? existing.filter((item) => item.turnId !== turnId || !removed.has(item.id)) : [...existing];
+  const changedItemIds = new Set<string>();
   for (const incoming of upserts) {
     let index = next.findIndex((item) => item.id === incoming.id);
     if (index < 0) index = next.findIndex((item) => item.turnId === turnId && semanticMatch(item, incoming));
     if (index >= 0) {
       next[index] = mergeItem(next[index], incoming);
+      changedItemIds.add(next[index]!.id);
       continue;
     }
     let insertion = next.length;
@@ -281,8 +283,9 @@ export function mergeSessionPatch(existing: TranscriptItem[], upserts: Transcrip
       if (next[candidate]?.turnId === turnId) { insertion = candidate + 1; break; }
     }
     next.splice(insertion, 0, incoming);
+    changedItemIds.add(incoming.id);
   }
-  return arraysEqual(next, existing) ? existing : next;
+  return arraysEqual(next, existing) ? existing : markTranscriptUpserts(existing, next, changedItemIds);
 }
 
 function arraysEqual(left: TranscriptItem[], right: TranscriptItem[]) {
