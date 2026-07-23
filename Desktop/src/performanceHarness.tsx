@@ -106,7 +106,12 @@ function Harness() {
       const retainedStableMarkdown = stableMarkdownChunk === document
         .getElementById("relay-transcript-turn.turn.999")
         ?.querySelector(".markdown-chunk");
+      performanceObserver?.disconnect();
+      cancelAnimationFrame(animationFrame);
+      const streamingLongTaskCount = longTasks.length;
+      const streamingLongestTaskMs = Math.max(0, ...longTasks);
 
+      const interactionStartedAt = performance.now();
       transcript.scrollTop = Math.min(420, Math.max(0, transcript.scrollHeight - transcript.clientHeight));
       const anchor = document.getElementById("relay-transcript-turn.turn.960");
       const anchorTop = anchor?.getBoundingClientRect().top;
@@ -126,19 +131,18 @@ function Harness() {
         && imageBefore.width >= 100
         && Math.abs(imageBefore.width - imageAfter.width) <= 0.5
         && Math.abs(imageBefore.height - imageAfter.height) <= 0.5);
+      const interactionDurationMs = performance.now() - interactionStartedAt;
 
       stableTurnObserver.disconnect();
       stableMarkdownObserver.disconnect();
-      performanceObserver?.disconnect();
-      cancelAnimationFrame(animationFrame);
 
       const result = {
         complete: true,
         updates,
         durationMs,
         maximumFrameGapMs: maximumFrameGap,
-        longTaskCount: longTasks.length,
-        longestTaskMs: Math.max(0, ...longTasks),
+        longTaskCount: streamingLongTaskCount,
+        longestTaskMs: streamingLongestTaskMs,
         visibleTurnBlocks,
         markdownChunks,
         bottomDistance,
@@ -147,6 +151,7 @@ function Harness() {
         stableTurnMutations,
         stableMarkdownMutations,
         anchorDrift,
+        interactionDurationMs,
         commandPreviewCharacters: commandPreview.length,
         commandPreviewIncludesTail: commandPreview.includes("latest line"),
         imageSizeStable,
@@ -165,6 +170,7 @@ function Harness() {
           && result.stableTurnMutations === 0
           && result.stableMarkdownMutations === 0
           && result.anchorDrift <= 2
+          && result.interactionDurationMs < 2_500
           && result.commandPreviewCharacters > 0
           && result.commandPreviewCharacters < 40_000
           && result.commandPreviewIncludesTail
