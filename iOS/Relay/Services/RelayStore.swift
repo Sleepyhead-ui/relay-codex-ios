@@ -14,7 +14,7 @@ final class RelayStore: ObservableObject {
             }
         }
     }
-    @Published var composerText = ""
+    let composerDraft = ComposerDraftState()
     @Published var sidebarOpen = false
     @Published var showingConnection = false
     @Published var showingSettings = false
@@ -103,6 +103,10 @@ final class RelayStore: ObservableObject {
     private(set) var transcriptRevision = 0
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
+    var composerText: String {
+        get { composerDraft.text }
+        set { composerDraft.text = newValue }
+    }
     var selectedThread: ThreadSummary? { threads.first { $0.id == selectedThreadId } }
     var isSendingPrompt: Bool {
         if isPreparingPrompt { return true }

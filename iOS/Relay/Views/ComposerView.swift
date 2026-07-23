@@ -4,11 +4,16 @@ import PhotosUI
 
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
+    @ObservedObject private var draft: ComposerDraftState
     @FocusState private var focused: Bool
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
     @State private var isImportingAttachments = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
+
+    init(draft: ComposerDraftState) {
+        self.draft = draft
+    }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -89,7 +94,7 @@ struct ComposerView: View {
                     .disabled(isImportingAttachments)
                     .accessibilityLabel("添加照片或文件")
 
-                    TextField(store.isRunning ? "引导当前任务" : "Message Codex", text: $store.composerText, axis: .vertical)
+                    TextField(store.isRunning ? "引导当前任务" : "Message Codex", text: $draft.text, axis: .vertical)
                         .font(.system(size: 16))
                         .lineLimit(1...8)
                         .textFieldStyle(.plain)
@@ -458,7 +463,7 @@ struct ComposerView: View {
     }
 
     private var hasDraft: Bool {
-        let hasText = !store.composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
         return hasText || hasReadyFile
     }

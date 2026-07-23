@@ -20,7 +20,7 @@ struct ConversationView: View {
             if store.showingArchivedThreads {
                 archivedBar
             } else {
-                ComposerView()
+                ComposerView(draft: store.composerDraft)
             }
         }
         .background(RelayTheme.canvas)
