@@ -41,6 +41,9 @@ Relay 是一个面向 iOS 16 的非官方 Codex 远程客户端。它通过 Wind
 - 连接稳定后才重置指数退避，单条业务错误不会触发一秒一次的重连风暴
 - 结构化执行计划显示在输入框上方，以加载、勾选和待办状态实时更新
 - 最多八行的动态输入框，发送后自动收起键盘
+- 可保存并探测多个 Windows Relay 主机，在手机设置中直接切换在线电脑
+- 任务支持置顶、重命名、归档与恢复，文件修改使用专用 Diff 高亮视图
+- 诊断中心汇总连接、RPC、同步与渲染性能；Desktop 支持任务通知和安全延迟更新
 
 ## 架构
 
@@ -150,7 +153,7 @@ Relay Desktop 与 iPhone 连接同一个 Bridge 和 Codex App Server。通过任
 
 - iOS 被系统挂起后 WebSocket 不会持续保活。Windows 任务仍继续，重新打开 Relay 后会恢复历史；第一版没有 APNs 推送。
 - Relay Desktop 与 iPhone 使用同一活动 Turn；官方 Codex App 发起的 Turn 只能按写盘后的完整事件段落同步，无法取得官方进程内部的 token delta。
-- Git diff 专用高亮视图、语音和多主机切换留到后续版本。
+- 语音输入和 APNs 后台通知尚未提供。
 - 单个上传或下载文件上限为 50 MB；下载仅允许当前工作区和 Relay 上传目录中的文件。
 - Codex App Server 会演进。升级 `@openai/codex` 前，应重新生成 schema 并运行兼容测试。
 
