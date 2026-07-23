@@ -428,7 +428,7 @@ final class RelaySocket: ObservableObject {
                 state = .connected
                 if becameConnected {
                     startHeartbeat(generation: generation)
-        markConnectionStable(after: ConnectionRetryPolicy.stableResetSeconds, generation: generation)
+                    markConnectionStable(after: ConnectionRetryPolicy.stableResetSeconds, generation: generation)
                     onConnected?()
                 }
             } else if status == "codexExited" {
