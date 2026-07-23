@@ -10,6 +10,12 @@ import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
 import { PerformanceMetrics } from "./performanceMetrics.js";
+import {
+  codexRestartDelayMs,
+  codexStartupWatchdogMs,
+  shouldReplaceUnreadyCodex,
+  shouldScheduleCodexRestart,
+} from "./restartPolicy.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
@@ -699,9 +705,14 @@ function handleCodexExit(generation: number, code: number | null, signal: NodeJS
 }
 
 function scheduleCodexRestart(generation: number): void {
-  if (shuttingDown || generation !== codexGeneration || codexRestartTimer) return;
+  if (!shouldScheduleCodexRestart({
+    shuttingDown,
+    generation,
+    currentGeneration: codexGeneration,
+    timerPending: Boolean(codexRestartTimer),
+  })) return;
   codexRestartAttempt += 1;
-  const delay = Math.min(1_000 * Math.pow(1.8, codexRestartAttempt - 1), 30_000);
+  const delay = codexRestartDelayMs(codexRestartAttempt);
   diagnostics.record("warning", "codex", "Scheduled Codex App Server restart.", { attempt: codexRestartAttempt, retryInMs: delay });
   broadcast({ ...bridgeStatus("restarting"), restartAttempt: codexRestartAttempt, retryInMs: delay });
   codexRestartTimer = setTimeout(() => {
@@ -731,12 +742,17 @@ async function replaceCodex(stopCurrent: boolean): Promise<void> {
 function armCodexStartupWatchdog(generation: number): void {
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
   codexStartupTimer = setTimeout(() => {
-    if (shuttingDown || generation !== codexGeneration || codexReady) return;
+    if (!shouldReplaceUnreadyCodex({
+      shuttingDown,
+      generation,
+      currentGeneration: codexGeneration,
+      ready: codexReady,
+    })) return;
     console.error("[codex] initialization timed out; replacing App Server.");
     failPendingRequests("Codex 初始化超时，Relay 正在重新启动服务。", true);
     clearPendingApprovals("startup-timeout");
     void replaceCodex(true);
-  }, 30_000);
+  }, codexStartupWatchdogMs);
   codexStartupTimer.unref();
 }
 
