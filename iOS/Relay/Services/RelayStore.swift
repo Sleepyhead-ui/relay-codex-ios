@@ -19,7 +19,7 @@ final class RelayStore: ObservableObject {
     @Published var showingConnection = false
     @Published var showingSettings = false
     @Published var showingNewTask = false
-    @Published private(set) var pendingApprovals: [ApprovalRequest] = []
+    @Published var pendingApprovals: [ApprovalRequest] = []
     @Published var errorMessage: String?
     @Published var isLoadingThread = false
     @Published var isLoadingOlderTurns = false
@@ -39,7 +39,7 @@ final class RelayStore: ObservableObject {
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published var taskRunStates: [String: TaskRunState] = [:]
-    @Published private(set) var goalStates: [String: GoalState] = [:]
+    @Published var goalStates: [String: GoalState] = [:]
     @Published var sendingThreadIds = Set<String>()
     @Published var isPreparingPrompt = false
     @Published private(set) var codexProfiles: [CodexProfile] = []
@@ -48,25 +48,25 @@ final class RelayStore: ObservableObject {
     @Published private(set) var pinnedThreadIds = Set<String>()
     @Published private(set) var showingArchivedThreads = false
     @Published var showingDiagnostics = false
-    @Published private(set) var diagnosticsReport: DiagnosticsReport?
+    @Published var diagnosticsReport: DiagnosticsReport?
     @Published var notificationsEnabled = false
-    @Published private(set) var savedHosts: [RelayHostEntry] = []
+    @Published var savedHosts: [RelayHostEntry] = []
     @Published var hostAvailability: [String: Bool] = [:]
     @Published var currentHostId = ""
     @Published var isCheckingHosts = false
-    @Published private(set) var updateInfo: RelayUpdateInfo?
-    @Published private(set) var isCheckingUpdate = false
-    @Published private(set) var isDownloadingUpdate = false
-    @Published private(set) var updateDownloadProgress: Double?
+    @Published var updateInfo: RelayUpdateInfo?
+    @Published var isCheckingUpdate = false
+    @Published var isDownloadingUpdate = false
+    @Published var updateDownloadProgress: Double?
 
     let socket = RelaySocket()
-    private let hostDefaultsKey = "relay.host.configuration"
+    let hostDefaultsKey = "relay.host.configuration"
     private let modelDefaultsKey = "relay.model"
     private let effortDefaultsKey = "relay.reasoningEffort"
     private let accessDefaultsKey = "relay.workspaceAccess"
     private let projectAccessDefaultsKey = "relay.workspaceAccessByProject"
     private let lastThreadDefaultsKey = "relay.lastThreadId"
-    private let threadCacheDefaultsKey = "relay.cachedThreads"
+    let threadCacheDefaultsKey = "relay.cachedThreads"
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
     let notificationsDefaultsKey = "relay.notifications.enabled"
@@ -79,8 +79,8 @@ final class RelayStore: ObservableObject {
     var reconcilingThreadId: String?
     var queuedEvents: [(method: String, params: JSONValue)] = []
     var threadSnapshots = ThreadSnapshotCache()
-    private var olderTurnsCursorByThread: [String: String] = [:]
-    private var workingDirectoryOverrides: [String: String] = [:]
+    var olderTurnsCursorByThread: [String: String] = [:]
+    var workingDirectoryOverrides: [String: String] = [:]
     private var workspaceAccessByProject: [String: WorkspaceAccessMode] = [:]
     private var defaultWorkspaceAccess: WorkspaceAccessMode = .workspaceWrite
     var acceptedMessageIds = Set<String>()
@@ -88,7 +88,7 @@ final class RelayStore: ObservableObject {
     var userMessagePlacements: [String: UserMessagePlacement] = [:]
     var nextUserMessageSequence = 0
     var taskStateCore = TaskStateCore()
-    private var restorationTask: Task<Void, Never>?
+    var restorationTask: Task<Void, Never>?
     var liveSessionSyncTask: Task<Void, Never>?
     var subscribedSessionThreadId: String?
     var sessionRevisionTracker = SessionRevisionTracker()
@@ -247,134 +247,6 @@ final class RelayStore: ObservableObject {
             self?.pendingApprovals.removeAll { $0.id == id }
         }
         socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
-    }
-
-    func refreshDiagnostics() async {
-        guard socket.state == .connected else { return }
-        do {
-            let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
-            var combined = result.objectValue ?? [:]
-            combined["clientPerformance"] = socket.performanceMetrics.report()
-            diagnosticsReport = DiagnosticsReport(json: .object(combined))
-        } catch {
-            report(error)
-        }
-    }
-
-    func exportDiagnostics() {
-        guard let raw = diagnosticsReport?.raw.rawValue,
-              JSONSerialization.isValidJSONObject(raw),
-              let data = try? JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys]) else { return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Relay-Diagnostics-\(Int(Date().timeIntervalSince1970)).json")
-        do {
-            try data.write(to: url, options: .atomic)
-            sharedFile = SharedFile(url: url)
-        } catch {
-            report(error)
-        }
-    }
-
-    func checkForUpdate() async {
-        guard socket.state == .connected else { return }
-        isCheckingUpdate = true
-        defer { isCheckingUpdate = false }
-        do {
-            let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-            let result = try await socket.rpc(
-                method: "relay/update/check",
-                params: ["currentVersion": .string(currentVersion)],
-                timeoutSeconds: 20,
-                reconnectOnTimeout: false
-            )
-            updateInfo = RelayUpdateInfo(json: result)
-        } catch {
-            report(error)
-        }
-    }
-
-    func downloadLatestIPA() async {
-        guard updateInfo?.available == true, !isDownloadingUpdate else { return }
-        isDownloadingUpdate = true
-        updateDownloadProgress = 0
-        defer {
-            isDownloadingUpdate = false
-            updateDownloadProgress = nil
-        }
-        do {
-            let result = try await socket.rpc(
-                method: "relay/update/download-ios",
-                timeoutSeconds: 300,
-                reconnectOnTimeout: false
-            )
-            guard let path = result["path"]?.stringValue else {
-                throw RelaySocket.SocketError.remote("Bridge did not return the downloaded IPA path.")
-            }
-            let localURL = try await socket.downloadFile(at: path) { _ in }
-            sharedFile = SharedFile(url: localURL)
-        } catch {
-            report(error)
-        }
-    }
-
-    func forgetHost() {
-        restorationTask?.cancel()
-        restorationTask = nil
-        liveSessionSyncTask?.cancel()
-        liveSessionSyncTask = nil
-        disconnect()
-        if !currentHostId.isEmpty { KeychainStore.deleteToken(account: tokenAccount(for: currentHostId)) }
-        savedHosts.removeAll { $0.id == currentHostId }
-        persistHostRegistry()
-        token = ""
-        if let next = savedHosts.first {
-            currentHostId = next.id
-            host = next.configuration
-            token = KeychainStore.loadToken(account: tokenAccount(for: next.id)) ?? ""
-            UserDefaults.standard.set(next.id, forKey: currentHostDefaultsKey)
-        } else {
-            currentHostId = ""
-            host = HostConfiguration()
-            UserDefaults.standard.removeObject(forKey: hostDefaultsKey)
-            UserDefaults.standard.removeObject(forKey: currentHostDefaultsKey)
-        }
-        threads = []
-        UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
-        setSelectedThread(nil)
-        messages = []
-        turnMetadata = [:]
-        tokenUsageByThread = [:]
-        taskRunStates = [:]
-        taskStateCore.reset()
-        goalStates = [:]
-        sendingThreadIds = []
-        queuedFollowUps = []
-        pendingApprovals = []
-        acceptedMessageIds = []
-        outboundDrafts = [:]
-        threadSnapshots.removeAll()
-        olderTurnsCursorByThread = [:]
-        hasOlderTurns = false
-        workingDirectoryOverrides = [:]
-        showingSettings = false
-        showingConnection = true
-    }
-
-    func consumePairingURL(_ url: URL) {
-        guard url.scheme == "relay", url.host == "connect",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-        var values: [String: String] = [:]
-        for item in components.queryItems ?? [] {
-            if let value = item.value { values[item.name] = value }
-        }
-        if let endpoint = values["url"] { host.endpoint = endpoint }
-        if let name = values["name"] { host.name = name }
-        if let pairingToken = values["token"] { token = pairingToken }
-        if let existing = savedHosts.first(where: { $0.endpoint.caseInsensitiveCompare(host.endpoint) == .orderedSame }) {
-            currentHostId = existing.id
-        } else {
-            currentHostId = UUID().uuidString
-        }
-        showingConnection = true
     }
 
     func refreshModels(showErrors: Bool = false) async {
@@ -1158,7 +1030,7 @@ final class RelayStore: ObservableObject {
         try KeychainStore.saveToken(token, account: tokenAccount(for: currentHostId))
     }
 
-    private func persistHostRegistry() {
+    func persistHostRegistry() {
         if let data = try? JSONEncoder().encode(savedHosts) {
             UserDefaults.standard.set(data, forKey: hostRegistryDefaultsKey)
         }
@@ -1245,7 +1117,7 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    private func setSelectedThread(_ id: String?) {
+    func setSelectedThread(_ id: String?) {
         selectedThreadId = id
         if let id {
             UserDefaults.standard.set(id, forKey: lastThreadDefaultsKey)
