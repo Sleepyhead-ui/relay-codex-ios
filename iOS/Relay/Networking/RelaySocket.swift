@@ -428,7 +428,7 @@ final class RelaySocket: ObservableObject {
                 state = .connected
                 if becameConnected {
                     startHeartbeat(generation: generation)
-                    markConnectionStable(after: 10, generation: generation)
+        markConnectionStable(after: ConnectionRetryPolicy.stableResetSeconds, generation: generation)
                     onConnected?()
                 }
             } else if status == "codexExited" {
@@ -553,7 +553,7 @@ final class RelaySocket: ObservableObject {
         guard shouldReconnect, reconnectTask == nil else { return }
         reconnectAttempt += 1
         let attempt = reconnectAttempt
-        let delay = immediate ? 0.0 : min(pow(1.7, Double(max(0, attempt - 1))), 8.0)
+        let delay = ConnectionRetryPolicy.delaySeconds(attempt: attempt, immediate: immediate)
         state = .reconnecting(attempt)
 
         reconnectTask = Task { [weak self] in
