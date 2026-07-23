@@ -18,8 +18,8 @@ jobs:
       run:
         working-directory: Bridge
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -33,7 +33,7 @@ jobs:
     name: Build unsigned IPA for TrollStore
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate app icons and Xcode project
@@ -74,7 +74,7 @@ jobs:
           cp -R build/Build/Products/Release-iphoneos/Relay.app Payload/
           ditto -c -k --sequesterRsrc --keepParent Payload Relay.ipa
           shasum -a 256 Relay.ipa | awk '{print $1 "  Relay.ipa"}' > Relay.ipa.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Relay-unsigned-IPA
           path: |
@@ -97,8 +97,8 @@ jobs:
       run:
         working-directory: Desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -111,7 +111,7 @@ jobs:
       - run: npm test
       - run: npm run test:performance
       - run: npm run dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Relay-Desktop-Windows
           path: |
