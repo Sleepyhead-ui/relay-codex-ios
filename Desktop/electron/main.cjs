@@ -8,10 +8,12 @@ const { spawn } = require("node:child_process");
 const { WebSocket } = require("ws");
 const { autoUpdater } = require("electron-updater");
 const { serviceStateFromHealth, updateReadinessForService } = require("./update-policy.cjs");
+const { reconnectDelayMs, stableConnectionResetMs } = require("./connection-policy.cjs");
 
 let mainWindow;
 let socket;
 let reconnectTimer;
+let stableConnectionTimer;
 let reconnectAttempt = 0;
 let connectionConfig;
 let intentionalClose = false;
@@ -303,8 +305,9 @@ function publish(channel, payload) {
 
 function scheduleReconnect() {
   if (intentionalClose || reconnectTimer || !connectionConfig) return;
+  clearStableConnectionTimer();
   reconnectAttempt += 1;
-  const delay = Math.min(800 * Math.pow(1.7, reconnectAttempt - 1), 8000);
+  const delay = reconnectDelayMs(reconnectAttempt);
   publish("relay:state", { state: "reconnecting", attempt: reconnectAttempt });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
@@ -315,6 +318,7 @@ function scheduleReconnect() {
 function openSocket(config) {
   intentionalClose = false;
   connectionConfig = config;
+  clearStableConnectionTimer();
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
   if (socket) {
@@ -335,7 +339,12 @@ function openSocket(config) {
     try { message = JSON.parse(data.toString("utf8")); } catch { return; }
     publish("relay:message", message);
     if (message.type === "bridgeStatus" && message.status === "ready") {
-      reconnectAttempt = 0;
+      clearStableConnectionTimer();
+      stableConnectionTimer = setTimeout(() => {
+        stableConnectionTimer = undefined;
+        if (!intentionalClose && socket?.readyState === WebSocket.OPEN) reconnectAttempt = 0;
+      }, stableConnectionResetMs);
+      stableConnectionTimer.unref();
       serviceState = "running";
       serviceMessage = "远程服务已启动";
       publishService();
@@ -347,6 +356,11 @@ function openSocket(config) {
     scheduleReconnect();
   });
   socket.on("error", (error) => publish("relay:state", { state: "error", message: error.message }));
+}
+
+function clearStableConnectionTimer() {
+  if (stableConnectionTimer) clearTimeout(stableConnectionTimer);
+  stableConnectionTimer = undefined;
 }
 
 function createWindow() {
@@ -381,7 +395,7 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-app.on("before-quit", () => { intentionalClose = true; socket?.close(); });
+app.on("before-quit", () => { intentionalClose = true; clearStableConnectionTimer(); socket?.close(); });
 
 ipcMain.handle("relay:bootstrap", async () => {
   const service = await inspectRemoteService();
@@ -435,6 +449,7 @@ ipcMain.handle("relay:connect", (_event, config) => {
 });
 ipcMain.handle("relay:disconnect", () => {
   intentionalClose = true;
+  clearStableConnectionTimer();
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
   socket?.close();
