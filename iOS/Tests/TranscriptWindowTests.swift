@@ -96,4 +96,32 @@ final class TranscriptWindowTests: XCTestCase {
 
         XCTAssertFalse(index.adoptReconciledUpserts(next, changedItemIds: ["middle"]))
     }
+
+    func testSessionPatchStaysIncrementalAfterDeltaAppendsAnItem() {
+        var messages = [
+            TranscriptItem(id: "one", turnId: "turn.1", role: .assistant, kind: .message, text: "one")
+        ]
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+        let delta = TranscriptDeltaUpdate(
+            id: "command.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            title: "Run command",
+            text: "npm test",
+            detail: "running"
+        )
+        XCTAssertTrue(index.applyDeltaBatch([delta], to: &messages))
+
+        let next = TranscriptReconciler.mergeSessionPatchItems(
+            [TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "npm test", detail: "passed")],
+            removedItemIds: [],
+            turnId: "turn.1",
+            into: messages
+        )
+        XCTAssertTrue(index.adoptReconciledUpserts(next, changedItemIds: ["command.1"]))
+        XCTAssertEqual(index.fullRebuildCount, 1)
+        XCTAssertEqual(index.incrementalUpdateCount, 2)
+    }
 }

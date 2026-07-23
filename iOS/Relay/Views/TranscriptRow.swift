@@ -703,8 +703,9 @@ private struct CompactTechnicalDetail: View {
     let detail: String
 
     var body: some View {
+        let preview = TechnicalTextPreview.make(source: detail)
         ScrollView(.horizontal, showsIndicators: true) {
-            Text(preview.detail)
+            Text(preview.text)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .padding(9)
@@ -712,19 +713,6 @@ private struct CompactTechnicalDetail: View {
         .frame(height: CGFloat(preview.lineCount) * 14 + 18)
         .background(RelayTheme.codeFill)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var preview: (detail: String, lineCount: Int) {
-        let byteLimit = 24_000
-        let bytes = detail.utf8
-        let tail = bytes.count > byteLimit
-            ? String(decoding: bytes.suffix(byteLimit), as: UTF8.self)
-            : detail
-        let lines = tail.components(separatedBy: .newlines)
-        let visible = Array(lines.suffix(12))
-        let omitted = bytes.count > byteLimit || lines.count > visible.count
-        let text = (omitted ? ["... earlier output omitted ..."] : []) + visible
-        return (text.joined(separator: "\n"), max(1, text.count))
     }
 }
 

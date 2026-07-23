@@ -22,14 +22,17 @@ struct TranscriptIndex {
 
     private var ranges: [GroupRange] = []
     private var itemIndexes: [String: Int] = [:]
+    private var itemGroupIds: [String: String] = [:]
     private(set) var fullRebuildCount = 0
     private(set) var incrementalUpdateCount = 0
 
     mutating func rebuild(messages: [TranscriptItem]) {
         ranges.removeAll(keepingCapacity: true)
         itemIndexes.removeAll(keepingCapacity: true)
+        itemGroupIds.removeAll(keepingCapacity: true)
         for (index, item) in messages.enumerated() {
             itemIndexes[item.id] = index
+            itemGroupIds[item.id] = Self.groupKey(item)
             appendRange(for: item, at: index)
         }
         fullRebuildCount += 1
@@ -61,6 +64,7 @@ struct TranscriptIndex {
                 let index = messages.count
                 messages.append(item)
                 itemIndexes[item.id] = index
+                itemGroupIds[item.id] = Self.groupKey(item)
                 appendRange(for: item, at: index)
                 changed = true
             }
@@ -84,12 +88,13 @@ struct TranscriptIndex {
         for id in changedItemIds.subtracting(appendedIds) {
             guard let index = itemIndexes[id], nextMessages.indices.contains(index),
                   nextMessages[index].id == id,
-                  groupId(containing: index) == Self.groupKey(nextMessages[index]) else { return false }
+                  itemGroupIds[id] == Self.groupKey(nextMessages[index]) else { return false }
         }
 
         for (offset, item) in appendedItems.enumerated() {
             let index = previousCount + offset
             itemIndexes[item.id] = index
+            itemGroupIds[item.id] = Self.groupKey(item)
             appendRange(for: item, at: index)
         }
         incrementalUpdateCount += 1
@@ -121,10 +126,6 @@ struct TranscriptIndex {
         } else {
             ranges.append(GroupRange(id: key, turnId: item.turnId, range: index..<(index + 1)))
         }
-    }
-
-    private func groupId(containing itemIndex: Int) -> String? {
-        ranges.first(where: { $0.range.contains(itemIndex) })?.id
     }
 
     private static func groupKey(_ item: TranscriptItem) -> String {
