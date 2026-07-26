@@ -3,6 +3,7 @@ export interface PendingRequest<TSocket, TParams> {
   clientId: string;
   method: string;
   params: TParams;
+  deliveryKey?: string;
 }
 
 interface StoredRequest<TSocket, TParams> {
@@ -44,10 +45,21 @@ export class RequestLifecycle<TSocket, TParams> {
     return undefined;
   }
 
-  removeSocket(socket: TSocket): Array<[string, PendingRequest<TSocket, TParams>]> {
+  findClient(socket: TSocket, clientId: string): [string, PendingRequest<TSocket, TParams>] | undefined {
+    for (const [bridgeId, stored] of this.requests) {
+      if (stored.request.socket === socket && stored.request.clientId === clientId) return [bridgeId, stored.request];
+    }
+    return undefined;
+  }
+
+  removeSocket(
+    socket: TSocket,
+    retain: (request: PendingRequest<TSocket, TParams>) => boolean = () => false,
+  ): Array<[string, PendingRequest<TSocket, TParams>]> {
     const removed: Array<[string, PendingRequest<TSocket, TParams>]> = [];
     for (const [bridgeId, stored] of this.requests) {
       if (stored.request.socket !== socket) continue;
+      if (retain(stored.request)) continue;
       const request = this.take(bridgeId);
       if (request) removed.push([bridgeId, request]);
     }

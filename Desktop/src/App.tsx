@@ -153,7 +153,7 @@ export default function App() {
 
   useEffect(() => {
     if (connection !== "connected") return;
-    void initialize();
+    void rpc.resumeDurable().then(initialize).catch((reason) => setError(errorText(reason)));
   }, [connection]);
 
   useEffect(() => {

@@ -240,6 +240,9 @@ final class RelayStore: ObservableObject {
         socket.onPromptQueueUpdated = { [weak self] threadId, message in
             self?.applyPromptQueueUpdate(threadId: threadId, items: message["items"]?.arrayValue ?? [])
         }
+        socket.onDeliveryUpdated = { [weak self] message in
+            self?.handleDeliveryUpdate(message)
+        }
         socket.onUpdateProgress = { [weak self] message in
             guard let downloaded = message["downloadedBytes"]?.doubleValue,
                   let total = message["totalBytes"]?.doubleValue, total > 0 else { return }
@@ -1051,6 +1054,7 @@ final class RelayStore: ObservableObject {
         } else {
             setSelectedThread(nil)
         }
+        await reconcileOutboundDeliveries()
     }
 
     private func handleBridgeStatus(_ message: JSONValue) {
@@ -1145,4 +1149,7 @@ struct OutboundDraft {
     let threadId: String
     let text: String
     let attachments: [PendingAttachment]
+    var sandboxPolicy: JSONValue? = nil
+    var model: String? = nil
+    var effort: String? = nil
 }

@@ -32,3 +32,18 @@ test("cancels a request using the client-visible id", () => {
   assert.equal(lifecycle.cancelClient(socket, "mobile.7")?.[0], "bridge.7");
   assert.equal(lifecycle.size, 0);
 });
+
+test("retains durable requests when their socket disconnects", () => {
+  const lifecycle = new RequestLifecycle(() => {});
+  const socket = {};
+  lifecycle.add("bridge.9", {
+    socket,
+    clientId: "mobile.9",
+    method: "turn/start",
+    params: {},
+    deliveryKey: "default-message.9",
+  }, 10_000);
+  assert.equal(lifecycle.findClient(socket, "mobile.9")?.[0], "bridge.9");
+  assert.deepEqual(lifecycle.removeSocket(socket, (request) => Boolean(request.deliveryKey)), []);
+  assert.equal(lifecycle.size, 1);
+});

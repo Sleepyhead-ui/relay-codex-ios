@@ -2,6 +2,149 @@ import Foundation
 
 @MainActor
 extension RelayStore {
+    func handleDeliveryUpdate(_ message: JSONValue) {
+        guard message["profileId"]?.stringValue == activeCodexProfileId,
+              let id = message["clientUserMessageId"]?.stringValue,
+              outboundDrafts[id] != nil else { return }
+        applyDeliveryResolution(message, id: id)
+    }
+
+    func reconcileOutboundDeliveries() async {
+        guard socket.state == .connected, !outboundDrafts.isEmpty else { return }
+        let pending = outboundDrafts.map { ($0.key, $0.value.threadId) }
+        for (id, threadId) in pending {
+            guard outboundDrafts[id] != nil, socket.state == .connected else { continue }
+            do {
+                let result = try await socket.rpc(
+                    method: "relay/delivery/status",
+                    params: [
+                        "threadId": .string(threadId),
+                        "clientUserMessageId": .string(id)
+                    ],
+                    timeoutSeconds: 12,
+                    reconnectOnTimeout: false
+                )
+                if result["status"]?.stringValue == "unknown" {
+                    await retryOutboundDelivery(id: id, threadId: threadId)
+                } else {
+                    applyDeliveryResolution(result, id: id)
+                }
+            } catch {
+                updateDeliveryState(id, state: .uncertain("连接已恢复，仍在等待 Windows 确认。"), threadId: threadId)
+            }
+        }
+    }
+
+    private func retryOutboundDelivery(id: String, threadId: String) async {
+        guard let draft = outboundDrafts[id], socket.state == .connected else { return }
+        let expectedTurnId = userMessagePlacements[id]?.turnId
+        let runtime = try? await socket.rpc(
+            method: "relay/thread/runtime",
+            params: ["threadId": .string(threadId)],
+            timeoutSeconds: 12,
+            reconnectOnTimeout: false
+        )
+        let running = runtime?["isRunning"]?.boolValue == true
+        switch DeliveryRecoveryPolicy.action(
+            expectedTurnId: expectedTurnId,
+            runtimeRunning: running,
+            activeTurnId: runtime?["activeTurnId"]?.stringValue
+        ) {
+        case .waitForHistory:
+            updateDeliveryState(id, state: .uncertain("任务已经开始，正在等待对话记录确认消息。"), threadId: threadId)
+            return
+        case .rejectStaleSteer:
+            updateDeliveryState(id, state: .failed("原任务已经结束，未自动重发这条引导。"), threadId: threadId)
+            return
+        case .retry:
+            break
+        }
+
+        sendingThreadIds.insert(threadId)
+        updateDeliveryState(id, state: .sending, threadId: threadId)
+        defer { sendingThreadIds.remove(threadId) }
+        do {
+            let input = userInput(text: draft.text, attachments: draft.attachments)
+            let result: JSONValue
+            if let expectedTurnId {
+                result = try await socket.rpc(
+                    method: "turn/steer",
+                    params: [
+                        "threadId": .string(threadId),
+                        "expectedTurnId": .string(expectedTurnId),
+                        "clientUserMessageId": .string(id),
+                        "input": .array(input)
+                    ],
+                    timeoutSeconds: 120,
+                    reconnectOnTimeout: false,
+                    onAccepted: { [weak self] in self?.markMessageAccepted(id, threadId: threadId) }
+                )
+            } else {
+                var params: [String: JSONValue] = [
+                    "threadId": .string(threadId),
+                    "clientUserMessageId": .string(id),
+                    "input": .array(input),
+                    "summary": .string("detailed"),
+                    "sandboxPolicy": draft.sandboxPolicy
+                        ?? WorkspaceAccessMode.workspaceWrite.sandboxPolicy(
+                            workingDirectory: threads.first(where: { $0.id == threadId })?.cwd ?? host.workingDirectory
+                        )
+                ]
+                if let model = draft.model { params["model"] = .string(model) }
+                if let effort = draft.effort { params["effort"] = .string(effort) }
+                result = try await socket.rpc(
+                    method: "turn/start",
+                    params: params,
+                    timeoutSeconds: 120,
+                    reconnectOnTimeout: false,
+                    onAccepted: { [weak self] in self?.markMessageAccepted(id, threadId: threadId) }
+                )
+            }
+            let turnId = result["turn"]?["id"]?.stringValue ?? result["turnId"]?.stringValue ?? expectedTurnId
+            updateDeliveryState(id, state: nil, threadId: threadId, turnId: turnId)
+            if let turnId, selectedThreadId == threadId { bindUserPrompt(id, to: turnId, threadId: threadId) }
+            acceptedMessageIds.remove(id)
+            outboundDrafts.removeValue(forKey: id)
+        } catch {
+            let accepted = acceptedMessageIds.remove(id) != nil
+            updateDeliveryState(
+                id,
+                state: accepted || isUncertainDeliveryError(error)
+                    ? .uncertain("消息已重新交给 Windows，正在等待确认。")
+                    : .failed(error.localizedDescription),
+                threadId: threadId
+            )
+        }
+    }
+
+    private func applyDeliveryResolution(_ result: JSONValue, id: String) {
+        guard let draft = outboundDrafts[id] else { return }
+        let status = result["status"]?.stringValue
+        if status == "pending" {
+            acceptedMessageIds.insert(id)
+            updateDeliveryState(id, state: .accepted, threadId: draft.threadId)
+            return
+        }
+        guard status == "completed" else {
+            updateDeliveryState(id, state: .uncertain("Windows 尚未确认是否收到这条消息。"), threadId: draft.threadId)
+            return
+        }
+        if let error = result["error"]?["message"]?.stringValue {
+            acceptedMessageIds.remove(id)
+            updateDeliveryState(id, state: .failed(error), threadId: draft.threadId)
+            return
+        }
+        let turnId = result["turnId"]?.stringValue
+            ?? result["result"]?["turn"]?["id"]?.stringValue
+            ?? result["result"]?["turnId"]?.stringValue
+        updateDeliveryState(id, state: nil, threadId: draft.threadId, turnId: turnId)
+        if let turnId, selectedThreadId == draft.threadId {
+            bindUserPrompt(id, to: turnId, threadId: draft.threadId)
+        }
+        acceptedMessageIds.remove(id)
+        outboundDrafts.removeValue(forKey: id)
+    }
+
     func restoreMessageToComposer(_ id: String) {
         guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
         guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
@@ -134,7 +277,17 @@ extension RelayStore {
             afterItemId: nil,
             sequence: nextUserMessageSequence
         )
-        outboundDrafts[clientMessageId] = OutboundDraft(threadId: threadId, text: text, attachments: readyAttachments)
+        let sandboxPolicy = workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
+        let model = selectedModel?.model
+        let effort = selectedEffort.isEmpty ? nil : selectedEffort
+        outboundDrafts[clientMessageId] = OutboundDraft(
+            threadId: threadId,
+            text: text,
+            attachments: readyAttachments,
+            sandboxPolicy: sandboxPolicy,
+            model: model,
+            effort: effort
+        )
         sendingThreadIds.insert(threadId)
         applyTaskRunEvent(threadId: threadId, event: .starting(startedAt: Date()))
         setThreadStatus(threadId, status: "active")
@@ -155,10 +308,10 @@ extension RelayStore {
                 "clientUserMessageId": .string(clientMessageId),
                 "input": .array(userInput(text: text, attachments: readyAttachments)),
                 "summary": .string("detailed"),
-                "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
+                "sandboxPolicy": sandboxPolicy
             ]
-            if let model = selectedModel?.model { params["model"] = .string(model) }
-            if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
+            if let model { params["model"] = .string(model) }
+            if let effort { params["effort"] = .string(effort) }
             let result = try await socket.rpc(
                 method: "turn/start",
                 params: params,

@@ -6,6 +6,7 @@ import { resolveCodexExecutable } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
+import { DeliveryRegistry, isDurableDeliveryMethod, type DeliveryResponse } from "./deliveryRegistry.js";
 import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
@@ -67,6 +68,7 @@ const rpcDiagnostics = {
 const diagnostics = new DiagnosticsLog();
 const performanceMetrics = new PerformanceMetrics();
 const rpcStartedAt = new Map<string, number>();
+const deliveryRegistry = new DeliveryRegistry<WebSocket>();
 diagnostics.record("info", "bridge", "Relay Bridge started.");
 const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridgeId, request) => {
   const startedAt = rpcStartedAt.get(bridgeId);
@@ -75,10 +77,14 @@ const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridg
   rpcDiagnostics.lastErrorAt = new Date().toISOString();
   rpcDiagnostics.lastError = `Codex request timed out: ${request.method}`;
   diagnostics.record("error", "rpc", `Request timed out: ${request.method}`, { bridgeId });
-  send(request.socket, {
+  const response = {
+    error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
+  };
+  if (request.deliveryKey) completeDelivery(request.deliveryKey, response);
+  else send(request.socket, {
     type: "rpcResult",
     id: request.clientId,
-    error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
+    ...response,
   });
   cancelForwardedRequest(bridgeId);
 });
@@ -125,6 +131,7 @@ const httpServer = createServer((request, response) => {
       pendingRpcCount: pendingClientRequests.size,
       pendingApprovalCount: pendingServerRequests.size,
       queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
+      pendingDeliveryCount: deliveryRegistry.pendingCount,
       codexRestartAttempt,
       socket: socketDiagnostics,
       rpc: rpcDiagnostics,
@@ -195,7 +202,8 @@ webSocketServer.on("connection", (socket) => {
     sessionSubscriptions.delete(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
-    for (const [bridgeId] of pendingClientRequests.removeSocket(socket)) {
+    deliveryRegistry.removeWaiter(socket);
+    for (const [bridgeId] of pendingClientRequests.removeSocket(socket, (request) => Boolean(request.deliveryKey))) {
       rpcStartedAt.delete(bridgeId);
       cancelForwardedRequest(bridgeId);
     }
@@ -240,11 +248,19 @@ httpServer.listen(config.port, config.host, () => {
 async function handleClientMessage(socket: WebSocket, raw: string): Promise<void> {
   const message = parseClientMessage(raw);
   if (message.type === "rpcCancel") {
+    const existing = pendingClientRequests.findClient(socket, message.id);
+    if (existing?.[1].deliveryKey) {
+      deliveryRegistry.removeWaiter(socket, message.id);
+      diagnostics.record("info", "delivery", `Client detached from ${existing[1].method}; durable delivery continues.`);
+      return;
+    }
     const cancelled = pendingClientRequests.cancelClient(socket, message.id);
     if (cancelled) {
       rpcStartedAt.delete(cancelled[0]);
       diagnostics.record("info", "rpc", `Client cancelled ${cancelled[1].method}.`);
       cancelForwardedRequest(cancelled[0]);
+    } else {
+      deliveryRegistry.removeWaiter(socket, message.id);
     }
     return;
   }
@@ -285,6 +301,15 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       const result = await runtimeState.snapshotWithExternal(message.params.threadId, sessionActivity);
+      send(socket, { type: "rpcResult", id: message.id, result });
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
+    if (message.method === "relay/delivery/status") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      const result = await deliveryStatus(message.params);
       send(socket, { type: "rpcResult", id: message.id, result });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
@@ -457,28 +482,57 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       });
       return;
     }
+    const delivery = deliveryRegistry.register(activeCodexProfile.id, message.method, message.params, {
+      socket,
+      clientId: message.id,
+    });
+    if (delivery?.kind === "conflict") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      send(socket, {
+        type: "rpcResult",
+        id: message.id,
+        error: { message: "同一消息编号不能用于不同的任务或投递方式。" },
+      });
+      return;
+    }
+    if (delivery?.kind === "pending") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method, duplicate: true });
+      diagnostics.record("info", "delivery", `Attached a reconnected client to ${message.method}.`);
+      return;
+    }
+    if (delivery?.kind === "completed") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method, replayed: true });
+      send(socket, { type: "rpcResult", id: message.id, ...delivery.response });
+      diagnostics.record("info", "delivery", `Replayed completed ${message.method}.`);
+      return;
+    }
     const bridgeId = `relay.${nextRequestId++}`;
     const params = { ...message.params };
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
       params.cwd = config.defaultCwd;
     }
     const timeoutMs = message.method === "thread/turns/list" ? historyRpcTimeoutMs : defaultRpcTimeoutMs;
-    pendingClientRequests.add(bridgeId, { socket, clientId: message.id, method: message.method, params }, timeoutMs);
+    pendingClientRequests.add(bridgeId, {
+      socket,
+      clientId: message.id,
+      method: message.method,
+      params,
+      ...(delivery?.kind === "new" ? { deliveryKey: delivery.key } : {}),
+    }, timeoutMs);
+    if (delivery?.kind === "new") deliveryRegistry.bindBridgeRequest(delivery.key, bridgeId);
     rpcStartedAt.set(bridgeId, performance.now());
     try {
       codex.send({ method: message.method, id: bridgeId, params });
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
     } catch (error) {
-      pendingClientRequests.delete(bridgeId);
+      const pending = pendingClientRequests.take(bridgeId);
       rpcStartedAt.delete(bridgeId);
       rpcDiagnostics.lastErrorAt = new Date().toISOString();
       rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not forward RPC to Codex.";
-      send(socket, {
-        type: "rpcResult",
-        id: message.id,
-        error: { message: rpcDiagnostics.lastError },
-      });
+      const response = { error: { message: rpcDiagnostics.lastError } };
+      if (pending?.deliveryKey) completeDelivery(pending.deliveryKey, response);
+      else send(socket, { type: "rpcResult", id: message.id, ...response });
     }
     return;
   }
@@ -526,10 +580,11 @@ function handleCodexResponse(message: JsonObject): void {
   } else {
     rpcDiagnostics.lastError = null;
   }
-  const payload: JsonObject = { type: "rpcResult", id: pending.clientId };
-  if ("result" in message) payload.result = message.result;
-  if ("error" in message) payload.error = message.error;
-  send(pending.socket, payload);
+  const response: DeliveryResponse = {};
+  if ("result" in message) response.result = message.result;
+  if ("error" in message) response.error = message.error;
+  if (pending.deliveryKey) completeDelivery(pending.deliveryKey, response);
+  else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   if (pending.method === "thread/list" && "result" in message) {
     sessionActivity.observeThreadList(message.result);
   } else if (pending.method === "thread/resume" && "result" in message) {
@@ -630,6 +685,65 @@ function send(socket: WebSocket, message: JsonObject): void {
   socket.send(encoded);
 }
 
+function completeDelivery(key: string, response: DeliveryResponse): void {
+  const waiters = deliveryRegistry.complete(key, response);
+  for (const waiter of waiters) {
+    send(waiter.socket, { type: "rpcResult", id: waiter.clientId, ...response });
+  }
+  const separator = key.indexOf("\u0000");
+  const profileId = separator >= 0 ? key.slice(0, separator) : activeCodexProfile.id;
+  const clientUserMessageId = separator >= 0 ? key.slice(separator + 1) : key;
+  broadcast({
+    type: "deliveryUpdated",
+    profileId,
+    clientUserMessageId,
+    status: "completed",
+    ...response,
+  });
+}
+
+async function deliveryStatus(params: JsonObject): Promise<JsonObject> {
+  const clientUserMessageId = typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : "";
+  const threadId = typeof params.threadId === "string" ? params.threadId : "";
+  const tracked = deliveryRegistry.status(activeCodexProfile.id, clientUserMessageId);
+  if (tracked.known) return tracked;
+  if (!clientUserMessageId || !threadId) return tracked;
+
+  const queued = promptQueue.list(activeCodexProfile.id, threadId)
+    .find((item) => item.clientUserMessageId === clientUserMessageId);
+  if (queued) {
+    return {
+      known: true,
+      status: "pending",
+      source: "queue",
+      threadId,
+      clientUserMessageId,
+      updatedAt: queued.createdAt,
+    };
+  }
+
+  const snapshot = await sessionActivity.turnSnapshot(threadId);
+  const delivered = snapshot.items?.some((item) => item.clientId === clientUserMessageId || item.id === clientUserMessageId) === true;
+  if (delivered) {
+    return {
+      known: true,
+      status: "completed",
+      source: "session",
+      threadId,
+      clientUserMessageId,
+      ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+      updatedAt: snapshot.updatedAt,
+    };
+  }
+  return {
+    known: false,
+    status: "unknown",
+    threadId,
+    clientUserMessageId,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
 function sendError(socket: WebSocket, message: string): void {
   send(socket, { type: "bridgeError", message });
 }
@@ -647,6 +761,7 @@ function diagnosticsReport(): JsonObject {
     pendingRpcCount: pendingClientRequests.size,
     pendingApprovalCount: pendingServerRequests.size,
     queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
+    pendingDeliveryCount: deliveryRegistry.pendingCount,
     codexRestartAttempt,
     uptimeSeconds: Math.floor(process.uptime()),
     desktopSync: { ...desktopSync.status },
@@ -759,7 +874,10 @@ function armCodexStartupWatchdog(generation: number): void {
 function failPendingRequests(message: string, notifyClients: boolean): void {
   for (const [bridgeId, pending] of pendingClientRequests.clear()) {
     rpcStartedAt.delete(bridgeId);
-    if (notifyClients) send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message } });
+    if (!notifyClients) continue;
+    const response = { error: { message } };
+    if (pending.deliveryKey) completeDelivery(pending.deliveryKey, response);
+    else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   }
   for (const pending of pendingInternalRequests.values()) {
     clearTimeout(pending.timeout);

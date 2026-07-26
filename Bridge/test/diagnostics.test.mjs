@@ -11,6 +11,7 @@ function state(overrides = {}) {
     pendingRpcCount: 0,
     pendingApprovalCount: 0,
     queuedPromptCount: 0,
+    pendingDeliveryCount: 0,
     codexRestartAttempt: 0,
     uptimeSeconds: 90,
     desktopSync: {},

@@ -24,6 +24,7 @@ interface DiagnosticState {
   pendingRpcCount: number;
   pendingApprovalCount: number;
   queuedPromptCount: number;
+  pendingDeliveryCount: number;
   codexRestartAttempt: number;
   uptimeSeconds: number;
   desktopSync: Record<string, unknown>;
@@ -73,6 +74,12 @@ export class DiagnosticsLog {
         detail: state.pendingRpcCount > 0 ? `${state.pendingRpcCount} 个请求仍在等待` : "没有积压请求",
       },
       {
+        id: "delivery",
+        level: state.pendingDeliveryCount > 0 ? "warning" : "ok",
+        title: "可靠投递",
+        detail: state.pendingDeliveryCount > 0 ? `${state.pendingDeliveryCount} 条消息等待 Codex 确认` : "没有等待确认的消息",
+      },
+      {
         id: "approval",
         level: state.pendingApprovalCount > 0 ? "warning" : "ok",
         title: "待处理审批",
@@ -99,6 +106,7 @@ export class DiagnosticsLog {
         pendingRpcCount: state.pendingRpcCount,
         pendingApprovalCount: state.pendingApprovalCount,
         queuedPromptCount: state.queuedPromptCount,
+        pendingDeliveryCount: state.pendingDeliveryCount,
         uptimeSeconds: state.uptimeSeconds,
       },
       desktopSync: state.desktopSync,
