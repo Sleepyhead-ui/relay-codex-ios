@@ -44,6 +44,7 @@ Relay 是一个面向 iOS 16 的非官方 Codex 远程客户端。它通过 Wind
 - 可保存并探测多个 Windows Relay 主机，在手机设置中直接切换在线电脑
 - 任务支持置顶、重命名、归档与恢复，文件修改使用专用 Diff 高亮视图
 - 诊断中心汇总连接、RPC、同步与渲染性能；Desktop 支持任务通知和安全延迟更新
+- 独立 Service Host 在 Desktop 退出或更新后继续守护 Bridge；异常退出自动退避重启，持续失去健康响应时自动恢复
 
 ## 架构
 
@@ -107,6 +108,8 @@ Relay Desktop 与 iPhone 连接同一个 Bridge 和 Codex App Server。通过任
 - `Relay-Desktop-Portable-<version>-x64.exe`：便携版，无需安装。
 
 首次启动会自动读取当前 Windows 用户的 `~\.relay\token`，并连接本机 Tailscale 地址。也可以在设置中手动修改 Bridge 地址、Token、默认工作目录和访问权限。
+
+Relay Desktop 启动远程服务后会把 Bridge 交给独立的 Service Host。关闭 Desktop 不会停止手机连接或正在执行的任务；Bridge 异常退出会自动恢复。启用“开机启动远程服务”后，登录 Windows 时只会在后台启动 Host，不会弹出 Desktop 主窗口。设置页和诊断中心可以查看守护状态、版本与恢复次数。
 
 官方 Codex 仍可继续使用。官方 App 发起的任务通过 rollout 文件变更通知同步，完整进展通常在写盘后几十到几百毫秒出现；由于 rollout 不保存 token delta，只有 Relay Desktop 或 iPhone 发起的同一 app-server 任务才能逐字流式同步。
 

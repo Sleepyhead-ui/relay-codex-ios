@@ -2,7 +2,17 @@ export type ConnectionState = "disconnected" | "connecting" | "handshaking" | "r
 
 export interface ConnectionConfig { endpoint: string; token: string }
 export type ServiceState = "stopped" | "starting" | "running" | "degraded" | "failed";
-export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig }
+export interface ServiceSupervisorStatus {
+  running: boolean;
+  reason?: string;
+  pid?: number;
+  bridgePid?: number;
+  version?: string;
+  restartCount?: number;
+  state?: string;
+  updatedAt?: number;
+}
+export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig; supervisor?: ServiceSupervisorStatus }
 export interface DesktopPreferences { autoStart: boolean; notifications: boolean }
 export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "deferred" | "installing" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string; blockers?: string[] }
 export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
@@ -163,6 +173,7 @@ export interface DiagnosticReport {
   events: DiagnosticEvent[];
   performance?: BridgeDiagnosticPerformance;
   clientPerformance?: ClientDiagnosticPerformance;
+  serviceSupervisor?: ServiceSupervisorStatus;
   [key: string]: unknown;
 }
 

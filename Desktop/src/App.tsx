@@ -4,7 +4,7 @@ import { marked } from "marked";
 import {
   Activity, AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Copy,
   FileCode2, Folder, FolderOpen, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Target,
-  Power, RotateCcw, Server, Settings, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
+  Power, RotateCcw, Server, Settings, ShieldCheck, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
@@ -872,8 +872,11 @@ export default function App() {
   async function refreshDiagnostics() {
     setDiagnosticsLoading(true);
     try {
-      const report = await rpc.rpc("relay/diagnostics/report", {}, 12_000) as DiagnosticReport;
-      setDiagnostics({ ...report, clientPerformance: performanceMetricsRef.current.report() });
+      const [report, serviceStatus] = await Promise.all([
+        rpc.rpc("relay/diagnostics/report", {}, 12_000) as Promise<DiagnosticReport>,
+        window.relayDesktop.serviceStatus(),
+      ]);
+      setDiagnostics({ ...report, clientPerformance: performanceMetricsRef.current.report(), serviceSupervisor: serviceStatus.supervisor });
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -1257,7 +1260,7 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
         </> : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void onStartService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
       </div>
       <div className="settings-section"><h3>默认工作区</h3><label className="field"><span>目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>访问权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
-      <div className="settings-section"><h3>运行与通知</h3><label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后自动运行 Relay 与 Bridge</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label><label className="toggle-row"><span><strong>任务与审批通知</strong><small>窗口不在前台时显示系统通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button></div>
+      <div className="settings-section"><h3>运行与通知</h3>{service.supervisor?.running && <div className="profile-status"><ShieldCheck size={13}/><span>后台守护已启用 · 关闭 Desktop 后继续运行{service.supervisor.version ? ` · v${service.supervisor.version}` : ""}</span></div>}<label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后隐藏启动后台服务，不弹出 Desktop 窗口</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label><label className="toggle-row"><span><strong>任务与审批通知</strong><small>窗口不在前台时显示系统通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button></div>
       <div className="settings-section"><h3>应用更新</h3><div className="update-row"><div><strong>{update.message || "检查 Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" || update.state === "deferred" ? <button disabled={update.state === "deferred"} onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "安全重启安装" : update.state === "deferred" ? "等待任务结束" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading" || update.state === "installing"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : update.state === "installing" ? "安装中" : "检查"}</button>}</div></div>
       <details className="advanced-settings"><summary>高级连接</summary><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>Token</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label></details>
       <div className="drawer-actions"><button onClick={onClose}>关闭</button><button className="accent" onClick={() => void onSave()}>保存高级连接</button></div>
@@ -1290,6 +1293,7 @@ function DiagnosticsPanel({ report, loading, onRefresh, onClose }: {
           <div className="diagnostic-metrics">
             <DiagnosticMetric title="会话增量同步" value={`${report.clientPerformance.sessions.patches} 补丁 / ${report.clientPerformance.sessions.snapshots} 快照`} detail={`应用 P95 ${formatMilliseconds(report.clientPerformance.sessions.patchApplyLatency.p95Ms)} · ${report.clientPerformance.sessions.revisionGaps} 次修订缺口`}/>
             <DiagnosticMetric title="流式内容刷新" value={`P95 ${formatMilliseconds(report.clientPerformance.deltas.flushLatency.p95Ms)}`} detail={`${report.clientPerformance.deltas.frameFlushes} 帧 · 单帧最多 ${report.clientPerformance.deltas.maxItemsPerFrame} 项`}/>
+            {report.serviceSupervisor && <DiagnosticMetric title="后台守护" value={report.serviceSupervisor.running ? "运行中" : "未运行"} detail={report.serviceSupervisor.running ? `Host v${report.serviceSupervisor.version || "未知"} · 已恢复 ${report.serviceSupervisor.restartCount || 0} 次` : report.serviceSupervisor.reason || "无心跳"}/>}
             {report.performance && <DiagnosticMetric title="Bridge RPC" value={`P95 ${formatMilliseconds(report.performance.rpcLatency.p95Ms)}`} detail={`补丁/快照流量比 ${formatPercent(report.performance.sessions.patchToSnapshotByteRatio)}`}/>}
           </div>
         </section>}

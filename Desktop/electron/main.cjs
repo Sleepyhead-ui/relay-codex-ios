@@ -9,6 +9,7 @@ const { WebSocket } = require("ws");
 const { autoUpdater } = require("electron-updater");
 const { serviceStateFromHealth, updateReadinessForService } = require("./update-policy.cjs");
 const { reconnectDelayMs, stableConnectionResetMs } = require("./connection-policy.cjs");
+const { loginItemSettings, serviceHostStateFromHeartbeat, shouldReplaceServiceHost } = require("./service-host-policy.cjs");
 
 let mainWindow;
 let socket;
@@ -28,10 +29,16 @@ let updateState = { state: "idle", currentVersion: app.getVersion() };
 const configPath = () => path.join(app.getPath("userData"), "connection.json");
 const preferencesPath = () => path.join(app.getPath("userData"), "preferences.json");
 const resumeServicePath = () => path.join(app.getPath("userData"), "resume-service-after-update");
+const serviceHostHeartbeatPath = () => path.join(app.getPath("userData"), "service-host.json");
+const serviceHostPidPath = () => path.join(app.getPath("userData"), "service-host.pid");
+const bridgePidPath = () => path.join(os.homedir(), ".relay", "bridge.pid");
+const backgroundLaunch = process.argv.includes("--relay-background");
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
-app.on("second-instance", () => {
+app.on("second-instance", (_event, commandLine) => {
+  if (commandLine.includes("--relay-background")) return;
+  if (!mainWindow && app.isReady()) createWindow();
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
@@ -105,27 +112,117 @@ function bridgeRoot() {
 
 function ensureServiceRuntime() {
   if (!app.isPackaged) {
-    return { host: process.execPath, bridge: bridgeRoot(), helper: path.join(__dirname, "relaunch-helper.cjs") };
+    return {
+      host: process.execPath,
+      bridge: bridgeRoot(),
+      helper: path.join(__dirname, "relaunch-helper.cjs"),
+      serviceHost: path.join(__dirname, "service-host.cjs"),
+    };
   }
   const root = path.join(app.getPath("userData"), "service-runtime", app.getVersion());
   const bridge = path.join(root, "bridge");
   const host = path.join(bridge, "node.exe");
   const helper = path.join(root, "relaunch-helper.cjs");
+  const serviceHost = path.join(root, "service-host.cjs");
+  const serviceHostPolicy = path.join(root, "service-host-policy.cjs");
   const marker = path.join(root, ".complete");
   if (!fs.existsSync(marker) || !fs.existsSync(host)) {
     fs.rmSync(root, { recursive: true, force: true });
     fs.mkdirSync(root, { recursive: true });
     fs.cpSync(bridgeRoot(), bridge, { recursive: true, force: true });
     fs.copyFileSync(path.join(__dirname, "relaunch-helper.cjs"), helper);
+    fs.copyFileSync(path.join(__dirname, "service-host.cjs"), serviceHost);
+    fs.copyFileSync(path.join(__dirname, "service-host-policy.cjs"), serviceHostPolicy);
     fs.writeFileSync(marker, `${app.getVersion()}\n`, "utf8");
   }
-  return { host, bridge, helper };
+  return { host, bridge, helper, serviceHost };
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function inspectServiceSupervisor(endpoint) {
+  let heartbeat;
+  try { heartbeat = JSON.parse(fs.readFileSync(serviceHostHeartbeatPath(), "utf8")); } catch {}
+  return serviceHostStateFromHeartbeat(heartbeat, {
+    expectedEndpoint: endpoint,
+    processIsAlive,
+  });
+}
+
+function serviceEnvironment(runtime, endpoint, expectExisting) {
+  const url = new URL(endpoint);
+  return {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    RELAY_HOST: url.hostname,
+    RELAY_PORT: url.port || "8765",
+    RELAY_ADVERTISE_URL: endpoint,
+    RELAY_DESKTOP_SYNC: "false",
+    RELAY_DESKTOP_CDP_PORT: "9223",
+    RELAY_SERVICE_VERSION: app.getVersion(),
+    RELAY_SERVICE_STARTED_AT: String(Date.now()),
+    RELAY_SERVICE_EXPECT_EXISTING: expectExisting ? "1" : "0",
+    CODEX_BIN: path.join(runtime.bridge, "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
+  };
+}
+
+async function ensureServiceSupervisor(endpoint, expectExisting = false) {
+  let current = inspectServiceSupervisor(endpoint);
+  if (shouldReplaceServiceHost(current, app.getVersion())) {
+    try { process.kill(current.pid); } catch {}
+    for (let attempt = 0; attempt < 30 && processIsAlive(current.pid); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    current = inspectServiceSupervisor(endpoint);
+  }
+  if (current.running) return current;
+
+  const runtime = ensureServiceRuntime();
+  const entry = path.join(runtime.bridge, "dist", "index.cjs");
+  if (!fs.existsSync(entry)) throw new Error("Relay 内置远程服务缺失，请重新安装 Desktop。");
+  const logDirectory = path.join(app.getPath("userData"), "logs");
+  fs.mkdirSync(logDirectory, { recursive: true });
+  const log = fs.openSync(path.join(logDirectory, "bridge.log"), "a");
+  const child = spawn(runtime.host, [
+    runtime.serviceHost,
+    entry,
+    serviceHostHeartbeatPath(),
+    serviceHostPidPath(),
+    bridgePidPath(),
+  ], {
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", log, log],
+    env: serviceEnvironment(runtime, endpoint, expectExisting),
+  });
+  let launchError;
+  child.once("error", (error) => { launchError = error; });
+  child.unref();
+  fs.closeSync(log);
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (launchError) throw launchError;
+    const supervisor = inspectServiceSupervisor(endpoint);
+    if (supervisor.running) return supervisor;
+  }
+  throw new Error("Relay 后台守护进程启动超时，请查看诊断日志。");
 }
 
 function publishService() {
+  let endpoint;
+  try { endpoint = localServiceEndpoint(); } catch {}
   publish("relay:service", {
     state: serviceState,
     message: serviceMessage,
+    supervisor: endpoint ? inspectServiceSupervisor(endpoint) : { running: false, reason: "no-endpoint" },
     ...(connectionConfig ? { connection: connectionConfig } : {}),
   });
 }
@@ -155,49 +252,24 @@ async function inspectRemoteService() {
     return { state: serviceState, message: serviceMessage };
   }
   const health = await readHealth(endpoint).catch(() => undefined);
+  const supervisor = inspectServiceSupervisor(endpoint);
   serviceState = serviceStateFromHealth(health);
   serviceMessage = serviceState === "running" ? "远程服务已启动"
     : serviceState === "degraded" ? "远程服务在线，桌面端尚未接入"
     : health ? "Codex 正在初始化" : "远程服务未启动";
   publishService();
-  return { state: serviceState, message: serviceMessage, endpoint, health };
+  return { state: serviceState, message: serviceMessage, endpoint, health, supervisor };
 }
 
 async function startRemoteService() {
   const current = await inspectRemoteService();
   if (!current.endpoint) throw new Error(current.message || "请先连接 Tailscale。");
+  current.supervisor = await ensureServiceSupervisor(current.endpoint, Boolean(current.health));
   if (current.health) return finalizeLocalConnection(current.endpoint, current);
-
-  const runtime = ensureServiceRuntime();
-  const entry = path.join(runtime.bridge, "dist", "index.cjs");
-  if (!fs.existsSync(entry)) throw new Error("Relay 内置远程服务缺失，请重新安装 Desktop。");
   const endpoint = current.endpoint;
-  const url = new URL(endpoint);
-  const logDirectory = path.join(app.getPath("userData"), "logs");
-  fs.mkdirSync(logDirectory, { recursive: true });
-  const log = fs.openSync(path.join(logDirectory, "bridge.log"), "a");
   serviceState = "starting";
   serviceMessage = "正在启动远程服务";
   publishService();
-  const child = spawn(runtime.host, [entry], {
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", log, log],
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      RELAY_HOST: url.hostname,
-      RELAY_PORT: url.port || "8765",
-      RELAY_ADVERTISE_URL: endpoint,
-      RELAY_DESKTOP_SYNC: "false",
-      RELAY_DESKTOP_CDP_PORT: "9223",
-      CODEX_BIN: path.join(runtime.bridge, "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
-    },
-  });
-  child.unref();
-  fs.closeSync(log);
-  fs.mkdirSync(path.join(os.homedir(), ".relay"), { recursive: true });
-  fs.writeFileSync(path.join(os.homedir(), ".relay", "bridge.pid"), `${child.pid}\n`, "utf8");
 
   for (let attempt = 0; attempt < 50; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -388,9 +460,15 @@ app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
   const preferences = readPreferences();
   resumeServiceAfterUpdate = fs.existsSync(resumeServicePath());
-  app.setLoginItemSettings({ openAtLogin: Boolean(preferences.autoStart), path: process.execPath });
-  createWindow();
-  if (preferences.autoStart || resumeServiceAfterUpdate) scheduleAutomaticServiceStart();
+  app.setLoginItemSettings(loginItemSettings(preferences.autoStart, process.execPath));
+  if (!backgroundLaunch) createWindow();
+  if (backgroundLaunch) {
+    void startRemoteService()
+      .catch((error) => console.error(error instanceof Error ? error.message : error))
+      .finally(() => setTimeout(() => { if (!mainWindow) app.quit(); }, 500));
+  } else if (preferences.autoStart || resumeServiceAfterUpdate) {
+    scheduleAutomaticServiceStart();
+  }
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
@@ -401,6 +479,7 @@ ipcMain.handle("relay:bootstrap", async () => {
   const service = await inspectRemoteService();
   let connection = readConnectionConfig();
   if (service.health && service.endpoint) {
+    try { service.supervisor = await ensureServiceSupervisor(service.endpoint, true); } catch {}
     try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
   }
   return { connection, version: app.getVersion(), service, preferences: readPreferences() };
@@ -419,7 +498,7 @@ ipcMain.handle("relay:install-update", () => requestUpdateInstall());
 ipcMain.handle("relay:set-preferences", (_event, patch) => {
   const preferences = { ...readPreferences(), ...(patch || {}) };
   writePreferences(preferences);
-  app.setLoginItemSettings({ openAtLogin: Boolean(preferences.autoStart), path: process.execPath });
+  app.setLoginItemSettings(loginItemSettings(preferences.autoStart, process.execPath));
   if (preferences.autoStart) scheduleAutomaticServiceStart();
   else if (autoServiceTimer) { clearInterval(autoServiceTimer); autoServiceTimer = undefined; }
   return preferences;
