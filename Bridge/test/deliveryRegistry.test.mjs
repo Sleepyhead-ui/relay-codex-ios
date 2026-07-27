@@ -34,6 +34,18 @@ test("keeps a durable delivery alive after its socket disconnects", () => {
   assert.equal(registry.status("default", "message.2").status, "completed");
 });
 
+test("abandons an uncertain request so a restarted bridge can reconcile session history", () => {
+  const registry = new DeliveryRegistry();
+  const socket = {};
+  const params = { threadId: "thread.1", clientUserMessageId: "message.restart", input: [] };
+  const delivery = registry.register("default", "turn/start", params, { socket, clientId: "rpc.1" });
+  assert.equal(delivery?.kind, "new");
+
+  assert.deepEqual(registry.abandon(delivery.key), [{ socket, clientId: "rpc.1" }]);
+  assert.equal(registry.status("default", "message.restart").status, "unknown");
+  assert.equal(registry.register("default", "turn/start", params, { socket, clientId: "rpc.2" })?.kind, "new");
+});
+
 test("rejects reusing a message id for a different thread or method", () => {
   const registry = new DeliveryRegistry();
   const waiter = { socket: {}, clientId: "rpc.1" };

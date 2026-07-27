@@ -51,10 +51,13 @@ try {
   throw error;
 } finally {
   await stopBridge();
-  await Promise.all([
+  const cleanup = await Promise.allSettled([
     removeTree(filesRoot),
     removeTree(codexHome),
   ]);
+  for (const result of cleanup) {
+    if (result.status === "rejected") console.warn(`Relay E2E cleanup deferred: ${result.reason?.message ?? result.reason}`);
+  }
 }
 
 async function stopBridge() {
@@ -67,6 +70,9 @@ async function stopBridge() {
       });
       killer.once("exit", resolve);
     });
+    bridge.stdout.destroy();
+    bridge.stderr.destroy();
+    bridge.unref();
     return;
   }
   await new Promise((resolve) => {
@@ -81,8 +87,8 @@ async function removeTree(directory) {
       await rm(directory, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (attempt >= 20 || !["EBUSY", "EPERM"].includes(error?.code)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (attempt >= 50 || !["EBUSY", "EPERM"].includes(error?.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
   }
 }

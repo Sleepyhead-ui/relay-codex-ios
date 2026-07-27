@@ -19,6 +19,7 @@ export class CodexAppServer {
     private readonly executable: string,
     private readonly handlers: CodexMessageHandlers,
     private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly clientVersion = process.env.RELAY_SERVICE_VERSION ?? "1.0.0",
   ) {}
 
   async start(): Promise<void> {
@@ -50,7 +51,7 @@ export class CodexAppServer {
       method: "initialize",
       id: "relay.initialize",
       params: {
-        clientInfo: { name: "relay_ios", title: "Relay", version: "0.6.16" },
+        clientInfo: { name: "relay_ios", title: "Relay", version: this.clientVersion },
         capabilities: { experimentalApi: true },
       },
     });

@@ -7,6 +7,7 @@ const { serviceHostRestartDelayMs, serviceHostUnhealthyRestartThreshold } = requ
 
 const [bridgeEntry, heartbeatPath, hostPidPath, bridgePidPath] = process.argv.slice(2);
 const endpoint = process.env.RELAY_ADVERTISE_URL;
+const healthEndpoint = process.env.RELAY_HEALTH_URL || endpoint;
 const version = process.env.RELAY_SERVICE_VERSION || "unknown";
 const startedAt = Number(process.env.RELAY_SERVICE_STARTED_AT) || Date.now();
 
@@ -73,7 +74,7 @@ function readHealth() {
   return new Promise((resolve) => {
     let url;
     try {
-      url = new URL(endpoint);
+      url = new URL(healthEndpoint);
       url.protocol = url.protocol === "wss:" ? "https:" : "http:";
       url.pathname = "/health";
       url.search = "";

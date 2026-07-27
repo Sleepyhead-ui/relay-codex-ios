@@ -1,6 +1,15 @@
 const serviceHostHeartbeatStaleMs = 12_000;
 const serviceHostUnhealthyRestartThreshold = 15;
 
+function bridgeBindHost(advertisedHostname) {
+  const hostname = String(advertisedHostname || "").trim().toLowerCase();
+  if (hostname === "127.0.0.1" || hostname === "localhost") return "127.0.0.1";
+  if (hostname === "::1" || hostname === "[::1]") return "::1";
+  // Tailscale can briefly remove its adapter during network changes. Binding the
+  // service to the adapter address would terminate Bridge and its active Codex.
+  return "0.0.0.0";
+}
+
 function serviceHostRestartDelayMs(attempt) {
   const normalized = Math.max(1, Math.trunc(Number.isFinite(Number(attempt)) ? Number(attempt) : 1));
   return Math.min(1_000 * Math.pow(1.8, normalized - 1), 30_000);
@@ -50,6 +59,7 @@ function shouldReplaceServiceHost(supervisor, currentVersion) {
 }
 
 module.exports = {
+  bridgeBindHost,
   loginItemSettings,
   serviceHostHeartbeatStaleMs,
   serviceHostRestartDelayMs,

@@ -121,6 +121,7 @@ export default function App() {
 
   useEffect(() => { selectedRef.current = selectedThreadId; }, [selectedThreadId]);
   useEffect(() => { activeTurnRef.current = activeTurnId; }, [activeTurnId]);
+  useEffect(() => { rpc.setDeliveryScope(config.endpoint, activeProfileId); }, [rpc, config.endpoint, activeProfileId]);
   useEffect(() => { localStorage.setItem("relay.desktop.cwd", workspace); }, [workspace]);
   useEffect(() => { localStorage.setItem("relay.desktop.access", defaultAccess); }, [defaultAccess]);
   useEffect(() => { localStorage.setItem("relay.desktop.accessByProject", JSON.stringify(projectAccesses)); }, [projectAccesses]);
@@ -153,8 +154,13 @@ export default function App() {
 
   useEffect(() => {
     if (connection !== "connected") return;
-    void rpc.resumeDurable().then(initialize).catch((reason) => setError(errorText(reason)));
+    void initialize();
   }, [connection]);
+
+  useEffect(() => {
+    if (connection !== "connected" || !activeProfileId) return;
+    void rpc.resumeDurable().catch((reason) => setError(errorText(reason)));
+  }, [rpc, connection, config.endpoint, activeProfileId]);
 
   useEffect(() => {
     if (atBottom) transcriptEndRef.current?.scrollIntoView({ block: "end" });
@@ -213,9 +219,13 @@ export default function App() {
 
   function handleBridgeStatus(message: any) {
     if (message.codexProfile?.id) {
+      rpc.setDeliveryScope(config.endpoint, message.codexProfile.id);
       setActiveProfileId(message.codexProfile.id);
       setPinnedThreadIds(storedPinnedThreads(message.codexProfile.id));
       setCodexProfiles((current) => current.map((profile) => ({ ...profile, active: profile.id === message.codexProfile.id })));
+    }
+    if (message.status === "ready") {
+      void rpc.resumeDurable().catch((reason) => setError(errorText(reason)));
     }
     if (message.status === "switching") {
       profileSwitchingRef.current = true;

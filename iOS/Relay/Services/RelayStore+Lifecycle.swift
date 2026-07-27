@@ -70,6 +70,7 @@ extension RelayStore {
     }
 
     func forgetHost() {
+        let forgottenHostId = currentHostId
         restorationTask?.cancel()
         restorationTask = nil
         liveSessionSyncTask?.cancel()
@@ -104,6 +105,7 @@ extension RelayStore {
         pendingApprovals = []
         acceptedMessageIds = []
         outboundDrafts = [:]
+        forgetOutboundDeliveries(hostId: forgottenHostId)
         threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         hasOlderTurns = false

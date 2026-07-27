@@ -62,6 +62,49 @@ describe("Relay service host", () => {
     expect(["managed", "starting"]).toContain(heartbeat.state);
     expect(await healthReady(port)).toBe(true);
   }, 15_000);
+
+  it("monitors Bridge through loopback while the advertised Tailscale address is unavailable", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-host-loopback-"));
+    const heartbeatPath = path.join(directory, "heartbeat.json");
+    const hostPidPath = path.join(directory, "host.pid");
+    const bridgePidPath = path.join(directory, "bridge.pid");
+    const fakeBridgePath = path.join(directory, "fake-bridge.cjs");
+    const port = await availablePort();
+    fs.writeFileSync(fakeBridgePath, `
+      const http = require("node:http");
+      http.createServer((_request, response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ status: "ready", activeTurns: 1 }));
+      }).listen(Number(process.env.RELAY_PORT), "127.0.0.1");
+    `, "utf8");
+
+    const hostPath = path.resolve(process.cwd(), "electron/service-host.cjs");
+    const host = spawn(process.execPath, [hostPath, fakeBridgePath, heartbeatPath, hostPidPath, bridgePidPath], {
+      windowsHide: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        RELAY_HOST: "0.0.0.0",
+        RELAY_PORT: String(port),
+        RELAY_ADVERTISE_URL: `ws://100.64.0.99:${port}`,
+        RELAY_HEALTH_URL: `http://127.0.0.1:${port}/health`,
+        RELAY_SERVICE_VERSION: "test",
+      },
+    });
+    if (host.pid) spawnedPids.add(host.pid);
+
+    await waitFor(async () => {
+      try {
+        const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+        if (heartbeat.bridgePid) spawnedPids.add(Number(heartbeat.bridgePid));
+        return heartbeat.bridgeStatus === "ready" && heartbeat.activeTurns === 1;
+      } catch { return false; }
+    }, 8_000);
+
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+    expect(heartbeat.endpoint).toBe(`ws://100.64.0.99:${port}`);
+    expect(heartbeat.restartCount).toBe(0);
+  }, 10_000);
 });
 
 function readText(filePath: string): string {

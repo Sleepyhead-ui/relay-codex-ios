@@ -107,6 +107,13 @@ export class DeliveryRegistry<TSocket> {
     return waiters;
   }
 
+  abandon(key: string): DeliveryWaiter<TSocket>[] {
+    const record = this.records.get(key);
+    if (!record || record.state !== "pending") return [];
+    this.records.delete(key);
+    return record.waiters;
+  }
+
   removeWaiter(socket: TSocket, clientId?: string): void {
     for (const record of this.records.values()) {
       record.waiters = record.waiters.filter((waiter) => waiter.socket !== socket || (clientId !== undefined && waiter.clientId !== clientId));

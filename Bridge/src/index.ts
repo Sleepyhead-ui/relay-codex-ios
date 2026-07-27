@@ -80,7 +80,7 @@ const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridg
   const response = {
     error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
   };
-  if (request.deliveryKey) completeDelivery(request.deliveryKey, response);
+  if (request.deliveryKey) abandonDelivery(request.deliveryKey, response);
   else send(request.socket, {
     type: "rpcResult",
     id: request.clientId,
@@ -506,6 +506,19 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       diagnostics.record("info", "delivery", `Replayed completed ${message.method}.`);
       return;
     }
+    if (delivery?.kind === "new") {
+      const recovered = await untrackedDeliveryStatus(message.params);
+      if (recovered.status === "completed") {
+        send(socket, { type: "rpcAccepted", id: message.id, method: message.method, recovered: true });
+        const turnId = typeof recovered.turnId === "string" ? recovered.turnId : undefined;
+        const result = message.method === "turn/start"
+          ? { ...(turnId ? { turn: { id: turnId }, turnId } : {}) }
+          : { ...(turnId ? { turnId } : {}) };
+        completeDelivery(delivery.key, { result });
+        diagnostics.record("info", "delivery", `Recovered completed ${message.method} from session history.`);
+        return;
+      }
+    }
     const bridgeId = `relay.${nextRequestId++}`;
     const params = { ...message.params };
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
@@ -702,12 +715,35 @@ function completeDelivery(key: string, response: DeliveryResponse): void {
   });
 }
 
+function abandonDelivery(key: string, response: DeliveryResponse): void {
+  const waiters = deliveryRegistry.abandon(key);
+  for (const waiter of waiters) {
+    send(waiter.socket, { type: "rpcResult", id: waiter.clientId, deliveryUncertain: true, ...response });
+  }
+  const separator = key.indexOf("\u0000");
+  const profileId = separator >= 0 ? key.slice(0, separator) : activeCodexProfile.id;
+  const clientUserMessageId = separator >= 0 ? key.slice(separator + 1) : key;
+  broadcast({
+    type: "deliveryUpdated",
+    profileId,
+    clientUserMessageId,
+    status: "unknown",
+    ...response,
+  });
+}
+
 async function deliveryStatus(params: JsonObject): Promise<JsonObject> {
   const clientUserMessageId = typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : "";
-  const threadId = typeof params.threadId === "string" ? params.threadId : "";
   const tracked = deliveryRegistry.status(activeCodexProfile.id, clientUserMessageId);
   if (tracked.known) return tracked;
-  if (!clientUserMessageId || !threadId) return tracked;
+  return untrackedDeliveryStatus(params);
+}
+
+async function untrackedDeliveryStatus(params: JsonObject): Promise<JsonObject> {
+  const clientUserMessageId = typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : "";
+  const threadId = typeof params.threadId === "string" ? params.threadId : "";
+  const unknown = deliveryRegistry.status(activeCodexProfile.id, clientUserMessageId);
+  if (!clientUserMessageId || !threadId) return unknown;
 
   const queued = promptQueue.list(activeCodexProfile.id, threadId)
     .find((item) => item.clientUserMessageId === clientUserMessageId);
@@ -876,7 +912,7 @@ function failPendingRequests(message: string, notifyClients: boolean): void {
     rpcStartedAt.delete(bridgeId);
     if (!notifyClients) continue;
     const response = { error: { message } };
-    if (pending.deliveryKey) completeDelivery(pending.deliveryKey, response);
+    if (pending.deliveryKey) abandonDelivery(pending.deliveryKey, response);
     else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   }
   for (const pending of pendingInternalRequests.values()) {

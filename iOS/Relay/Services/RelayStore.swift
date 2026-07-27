@@ -72,6 +72,7 @@ final class RelayStore: ObservableObject {
     let notificationsDefaultsKey = "relay.notifications.enabled"
     private let hostRegistryDefaultsKey = "relay.host.registry"
     let currentHostDefaultsKey = "relay.host.currentId"
+    let outboundDeliveryOutboxDefaultsKey = "relay.outboundDeliveryOutbox.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
@@ -85,10 +86,12 @@ final class RelayStore: ObservableObject {
     private var defaultWorkspaceAccess: WorkspaceAccessMode = .workspaceWrite
     var acceptedMessageIds = Set<String>()
     var outboundDrafts: [String: OutboundDraft] = [:]
+    var persistedOutboundDeliveries: [String: OutboundDeliveryEnvelope] = [:]
     var userMessagePlacements: [String: UserMessagePlacement] = [:]
     var nextUserMessageSequence = 0
     var taskStateCore = TaskStateCore()
     var restorationTask: Task<Void, Never>?
+    var bridgeRecoveryPending = false
     var liveSessionSyncTask: Task<Void, Never>?
     var subscribedSessionThreadId: String?
     var sessionRevisionTracker = SessionRevisionTracker()
@@ -225,6 +228,12 @@ final class RelayStore: ObservableObject {
             followUpBehavior = behavior
         }
         notificationsEnabled = UserDefaults.standard.bool(forKey: notificationsDefaultsKey)
+        if let data = UserDefaults.standard.data(forKey: outboundDeliveryOutboxDefaultsKey),
+           let records = try? JSONDecoder().decode([OutboundDeliveryEnvelope].self, from: data) {
+            persistedOutboundDeliveries = OutboundDeliveryOutbox.pruned(
+                records.reduce(into: [:]) { $0[$1.id] = $1 }
+            )
+        }
 
         socket.onConnected = { [weak self] in
             self?.scheduleRestoration()
@@ -556,8 +565,10 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
-            let unresolvedMessages = messages.filter {
-                $0.deliveryState != nil && outboundDrafts[$0.id]?.threadId == id
+            let unresolvedMessages = outboundDrafts.compactMap { messageId, draft -> TranscriptItem? in
+                guard draft.threadId == id else { return nil }
+                return messages.first(where: { $0.id == messageId })
+                    ?? outboundTranscriptItem(id: messageId, draft: draft)
             }
             let placedMessages = messages.filter {
                 userMessagePlacements[$0.id]?.threadId == id
@@ -578,7 +589,7 @@ final class RelayStore: ObservableObject {
                 loadedMessages.append(preserved)
             }
             for deliveredId in unresolvedMessages.map(\.id).filter({ loadedIds.contains($0) }) {
-                outboundDrafts.removeValue(forKey: deliveredId)
+                removeOutboundDelivery(deliveredId)
                 acceptedMessageIds.remove(deliveredId)
             }
             if switchingThreads {
@@ -1041,6 +1052,7 @@ final class RelayStore: ObservableObject {
 
     private func handleConnectionRestored() async {
         await refreshCodexProfiles(showErrors: false)
+        restoreOutboundDeliveriesForCurrentScope()
         async let threadsRefresh: Void = refreshThreads(showErrors: false)
         async let queueRefresh: Void = refreshPromptQueue()
         _ = await (threadsRefresh, queueRefresh)
@@ -1077,13 +1089,19 @@ final class RelayStore: ObservableObject {
         case "switching":
             isSwitchingCodexProfile = true
             resetForCodexProfileSwitch()
+        case "restarting":
+            bridgeRecoveryPending = true
         case "ready" where isSwitchingCodexProfile:
             Task { [weak self] in
                 guard let self else { return }
                 await self.handleConnectionRestored()
                 self.isSwitchingCodexProfile = false
             }
+        case "ready" where bridgeRecoveryPending:
+            bridgeRecoveryPending = false
+            scheduleRestoration()
         default:
+            if status == "ready" { restoreOutboundDeliveriesForCurrentScope() }
             break
         }
     }
@@ -1143,13 +1161,4 @@ final class RelayStore: ObservableObject {
         guard shouldShow else { return }
         errorMessage = error.localizedDescription
     }
-}
-
-struct OutboundDraft {
-    let threadId: String
-    let text: String
-    let attachments: [PendingAttachment]
-    var sandboxPolicy: JSONValue? = nil
-    var model: String? = nil
-    var effort: String? = nil
 }

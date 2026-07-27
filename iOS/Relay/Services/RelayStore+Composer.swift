@@ -2,6 +2,80 @@ import Foundation
 
 @MainActor
 extension RelayStore {
+    func storeOutboundDelivery(
+        id: String,
+        draft: OutboundDraft,
+        placement: UserMessagePlacement
+    ) {
+        outboundDrafts[id] = draft
+        userMessagePlacements[id] = placement
+        guard !currentHostId.isEmpty, !activeCodexProfileId.isEmpty else { return }
+        persistedOutboundDeliveries[id] = OutboundDeliveryEnvelope(
+            id: id,
+            hostId: currentHostId,
+            profileId: activeCodexProfileId,
+            draft: draft,
+            sequence: placement.sequence,
+            createdAt: Date()
+        )
+        persistOutboundDeliveryOutbox()
+    }
+
+    func removeOutboundDelivery(_ id: String) {
+        outboundDrafts.removeValue(forKey: id)
+        persistedOutboundDeliveries.removeValue(forKey: id)
+        persistOutboundDeliveryOutbox()
+    }
+
+    func restoreOutboundDeliveriesForCurrentScope() {
+        guard !currentHostId.isEmpty, !activeCodexProfileId.isEmpty else { return }
+        let records = OutboundDeliveryOutbox.scoped(
+            persistedOutboundDeliveries,
+            hostId: currentHostId,
+            profileId: activeCodexProfileId
+        )
+        for record in records {
+            outboundDrafts[record.id] = record.draft
+            if userMessagePlacements[record.id] == nil {
+                userMessagePlacements[record.id] = UserMessagePlacement(
+                    threadId: record.draft.threadId,
+                    turnId: record.draft.expectedTurnId,
+                    afterItemId: nil,
+                    sequence: record.sequence
+                )
+            }
+            nextUserMessageSequence = max(nextUserMessageSequence, record.sequence)
+        }
+    }
+
+    func forgetOutboundDeliveries(hostId: String) {
+        persistedOutboundDeliveries = persistedOutboundDeliveries.filter { $0.value.hostId != hostId }
+        persistOutboundDeliveryOutbox()
+    }
+
+    func outboundTranscriptItem(id: String, draft: OutboundDraft) -> TranscriptItem {
+        let attachmentSummary = draft.attachments
+            .filter { !$0.isImage }
+            .map { "附件 \($0.name)" }
+            .joined(separator: "\n")
+        return TranscriptItem(
+            id: id,
+            turnId: draft.expectedTurnId,
+            role: .user,
+            kind: .message,
+            text: [draft.text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            deliveryState: .uncertain("正在等待 Windows 确认是否送达。"),
+            imagePaths: draft.attachments.filter(\.isImage).compactMap(\.remotePath)
+        )
+    }
+
+    private func persistOutboundDeliveryOutbox() {
+        persistedOutboundDeliveries = OutboundDeliveryOutbox.pruned(persistedOutboundDeliveries)
+        let records = persistedOutboundDeliveries.values.sorted { $0.createdAt < $1.createdAt }
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        UserDefaults.standard.set(data, forKey: outboundDeliveryOutboxDefaultsKey)
+    }
+
     func handleDeliveryUpdate(_ message: JSONValue) {
         guard message["profileId"]?.stringValue == activeCodexProfileId,
               let id = message["clientUserMessageId"]?.stringValue,
@@ -37,7 +111,7 @@ extension RelayStore {
 
     private func retryOutboundDelivery(id: String, threadId: String) async {
         guard let draft = outboundDrafts[id], socket.state == .connected else { return }
-        let expectedTurnId = userMessagePlacements[id]?.turnId
+        let expectedTurnId = draft.expectedTurnId ?? userMessagePlacements[id]?.turnId
         let runtime = try? await socket.rpc(
             method: "relay/thread/runtime",
             params: ["threadId": .string(threadId)],
@@ -104,7 +178,7 @@ extension RelayStore {
             updateDeliveryState(id, state: nil, threadId: threadId, turnId: turnId)
             if let turnId, selectedThreadId == threadId { bindUserPrompt(id, to: turnId, threadId: threadId) }
             acceptedMessageIds.remove(id)
-            outboundDrafts.removeValue(forKey: id)
+            removeOutboundDelivery(id)
         } catch {
             let accepted = acceptedMessageIds.remove(id) != nil
             updateDeliveryState(
@@ -142,7 +216,7 @@ extension RelayStore {
             bindUserPrompt(id, to: turnId, threadId: draft.threadId)
         }
         acceptedMessageIds.remove(id)
-        outboundDrafts.removeValue(forKey: id)
+        removeOutboundDelivery(id)
     }
 
     func restoreMessageToComposer(_ id: String) {
@@ -155,7 +229,7 @@ extension RelayStore {
         attachments = draft.attachments
         messages.removeAll { $0.id == id }
         userMessagePlacements.removeValue(forKey: id)
-        outboundDrafts.removeValue(forKey: id)
+        removeOutboundDelivery(id)
         acceptedMessageIds.remove(id)
     }
 
@@ -163,7 +237,7 @@ extension RelayStore {
         guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
         await selectThread(draft.threadId, closeSidebar: false, showErrors: false)
         if messages.contains(where: { $0.id == id && $0.deliveryState == nil }) {
-            outboundDrafts.removeValue(forKey: id)
+            removeOutboundDelivery(id)
             acceptedMessageIds.remove(id)
         } else {
             updateDeliveryState(
@@ -271,7 +345,7 @@ extension RelayStore {
     private func startTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
         let clientMessageId = UUID().uuidString
         nextUserMessageSequence += 1
-        userMessagePlacements[clientMessageId] = UserMessagePlacement(
+        let placement = UserMessagePlacement(
             threadId: threadId,
             turnId: nil,
             afterItemId: nil,
@@ -280,7 +354,7 @@ extension RelayStore {
         let sandboxPolicy = workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         let model = selectedModel?.model
         let effort = selectedEffort.isEmpty ? nil : selectedEffort
-        outboundDrafts[clientMessageId] = OutboundDraft(
+        let draft = OutboundDraft(
             threadId: threadId,
             text: text,
             attachments: readyAttachments,
@@ -288,6 +362,7 @@ extension RelayStore {
             model: model,
             effort: effort
         )
+        storeOutboundDelivery(id: clientMessageId, draft: draft, placement: placement)
         sendingThreadIds.insert(threadId)
         applyTaskRunEvent(threadId: threadId, event: .starting(startedAt: Date()))
         setThreadStatus(threadId, status: "active")
@@ -341,7 +416,7 @@ extension RelayStore {
             }
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
-            outboundDrafts.removeValue(forKey: clientMessageId)
+            removeOutboundDelivery(clientMessageId)
         } catch {
             let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
             let uncertain = wasAccepted || isUncertainDeliveryError(error)
@@ -368,13 +443,19 @@ extension RelayStore {
         }
         let clientMessageId = UUID().uuidString
         nextUserMessageSequence += 1
-        userMessagePlacements[clientMessageId] = UserMessagePlacement(
+        let placement = UserMessagePlacement(
             threadId: threadId,
             turnId: expectedTurnId,
             afterItemId: messages.last(where: { $0.turnId == expectedTurnId })?.id,
             sequence: nextUserMessageSequence
         )
-        outboundDrafts[clientMessageId] = OutboundDraft(threadId: threadId, text: text, attachments: readyAttachments)
+        let draft = OutboundDraft(
+            threadId: threadId,
+            text: text,
+            attachments: readyAttachments,
+            expectedTurnId: expectedTurnId
+        )
+        storeOutboundDelivery(id: clientMessageId, draft: draft, placement: placement)
         let attachmentSummary = readyAttachments.filter { !$0.isImage }.map { "📎 \($0.name)" }.joined(separator: "\n")
         let displayText = [text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n")
         composerText = ""
@@ -413,7 +494,7 @@ extension RelayStore {
             }
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
-            outboundDrafts.removeValue(forKey: clientMessageId)
+            removeOutboundDelivery(clientMessageId)
         } catch {
             let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
             let uncertain = wasAccepted || isUncertainDeliveryError(error)

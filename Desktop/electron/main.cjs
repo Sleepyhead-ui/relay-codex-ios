@@ -9,7 +9,7 @@ const { WebSocket } = require("ws");
 const { autoUpdater } = require("electron-updater");
 const { serviceStateFromHealth, updateReadinessForService } = require("./update-policy.cjs");
 const { reconnectDelayMs, stableConnectionResetMs } = require("./connection-policy.cjs");
-const { loginItemSettings, serviceHostStateFromHeartbeat, shouldReplaceServiceHost } = require("./service-host-policy.cjs");
+const { bridgeBindHost, loginItemSettings, serviceHostStateFromHeartbeat, shouldReplaceServiceHost } = require("./service-host-policy.cjs");
 
 let mainWindow;
 let socket;
@@ -158,12 +158,14 @@ function inspectServiceSupervisor(endpoint) {
 
 function serviceEnvironment(runtime, endpoint, expectExisting) {
   const url = new URL(endpoint);
+  const port = url.port || "8765";
   return {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
-    RELAY_HOST: url.hostname,
-    RELAY_PORT: url.port || "8765",
+    RELAY_HOST: bridgeBindHost(url.hostname),
+    RELAY_PORT: port,
     RELAY_ADVERTISE_URL: endpoint,
+    RELAY_HEALTH_URL: `http://127.0.0.1:${port}/health`,
     RELAY_DESKTOP_SYNC: "false",
     RELAY_DESKTOP_CDP_PORT: "9223",
     RELAY_SERVICE_VERSION: app.getVersion(),

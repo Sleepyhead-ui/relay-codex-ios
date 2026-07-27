@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 const {
+  bridgeBindHost,
   loginItemSettings,
   serviceHostHeartbeatStaleMs,
   serviceHostRestartDelayMs,
@@ -8,6 +9,7 @@ const {
   serviceHostUnhealthyRestartThreshold,
   shouldReplaceServiceHost,
 } = require("../electron/service-host-policy.cjs") as {
+  bridgeBindHost: (advertisedHostname: string) => string;
   loginItemSettings: (autoStart: boolean, executablePath: string) => { openAtLogin: boolean; path: string; args: string[] };
   serviceHostHeartbeatStaleMs: number;
   serviceHostRestartDelayMs: (attempt: number) => number;
@@ -20,6 +22,12 @@ const {
 };
 
 describe("Relay service host policy", () => {
+  it("keeps Bridge alive while a Tailscale adapter is temporarily unavailable", () => {
+    expect(bridgeBindHost("100.80.115.15")).toBe("0.0.0.0");
+    expect(bridgeBindHost("127.0.0.1")).toBe("127.0.0.1");
+    expect(bridgeBindHost("localhost")).toBe("127.0.0.1");
+  });
+
   it("keeps Bridge startup hidden at Windows login", () => {
     expect(loginItemSettings(true, "C:\\Relay Desktop.exe")).toEqual({
       openAtLogin: true,
