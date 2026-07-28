@@ -9,7 +9,7 @@ const { WebSocket } = require("ws");
 const { autoUpdater } = require("electron-updater");
 const { serviceStateFromHealth, updateReadinessForService } = require("./update-policy.cjs");
 const { reconnectDelayMs, stableConnectionResetMs } = require("./connection-policy.cjs");
-const { bridgeBindHost, loginItemSettings, serviceHostStateFromHeartbeat, shouldReplaceServiceHost } = require("./service-host-policy.cjs");
+const { bridgeBindHost, bridgeVersionMatches, loginItemSettings, serviceHostStateFromHeartbeat, shouldReplaceServiceHost } = require("./service-host-policy.cjs");
 
 let mainWindow;
 let socket;
@@ -24,6 +24,8 @@ let autoServiceTimer;
 let deferredInstallTimer;
 let checkingDeferredInstall = false;
 let resumeServiceAfterUpdate = false;
+let serviceSupervisorPromise;
+let startRemoteServicePromise;
 let updateState = { state: "idle", currentVersion: app.getVersion() };
 
 const configPath = () => path.join(app.getPath("userData"), "connection.json");
@@ -175,7 +177,15 @@ function serviceEnvironment(runtime, endpoint, expectExisting) {
   };
 }
 
-async function ensureServiceSupervisor(endpoint, expectExisting = false) {
+function ensureServiceSupervisor(endpoint, expectExisting = false) {
+  if (!serviceSupervisorPromise) {
+    serviceSupervisorPromise = ensureServiceSupervisorInternal(endpoint, expectExisting)
+      .finally(() => { serviceSupervisorPromise = undefined; });
+  }
+  return serviceSupervisorPromise;
+}
+
+async function ensureServiceSupervisorInternal(endpoint, expectExisting = false) {
   let current = inspectServiceSupervisor(endpoint);
   if (shouldReplaceServiceHost(current, app.getVersion())) {
     try { process.kill(current.pid); } catch {}
@@ -255,7 +265,10 @@ async function inspectRemoteService() {
   }
   const health = await readHealth(endpoint).catch(() => undefined);
   const supervisor = inspectServiceSupervisor(endpoint);
-  serviceState = serviceStateFromHealth(health);
+  const versionMatches = bridgeVersionMatches(health, app.getVersion());
+  serviceState = health && !versionMatches ? "starting" : serviceStateFromHealth(health);
+  if (health && !versionMatches) serviceMessage = "正在完成远程服务升级";
+  else
   serviceMessage = serviceState === "running" ? "远程服务已启动"
     : serviceState === "degraded" ? "远程服务在线，桌面端尚未接入"
     : health ? "Codex 正在初始化" : "远程服务未启动";
@@ -263,11 +276,21 @@ async function inspectRemoteService() {
   return { state: serviceState, message: serviceMessage, endpoint, health, supervisor };
 }
 
-async function startRemoteService() {
+function startRemoteService() {
+  if (!startRemoteServicePromise) {
+    startRemoteServicePromise = startRemoteServiceInternal()
+      .finally(() => { startRemoteServicePromise = undefined; });
+  }
+  return startRemoteServicePromise;
+}
+
+async function startRemoteServiceInternal() {
   const current = await inspectRemoteService();
   if (!current.endpoint) throw new Error(current.message || "请先连接 Tailscale。");
   current.supervisor = await ensureServiceSupervisor(current.endpoint, Boolean(current.health));
-  if (current.health) return finalizeLocalConnection(current.endpoint, current);
+  if (current.health && bridgeVersionMatches(current.health, app.getVersion())) {
+    return finalizeLocalConnection(current.endpoint, current);
+  }
   const endpoint = current.endpoint;
   serviceState = "starting";
   serviceMessage = "正在启动远程服务";
@@ -276,7 +299,7 @@ async function startRemoteService() {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     const health = await readHealth(endpoint).catch(() => undefined);
-    if (health?.status === "ready" || health?.status === "starting") {
+    if ((health?.status === "ready" || health?.status === "starting") && bridgeVersionMatches(health, app.getVersion())) {
       return finalizeLocalConnection(endpoint, { state: health.status === "ready" ? "running" : "starting", health });
     }
   }
@@ -413,6 +436,16 @@ function openSocket(config) {
     try { message = JSON.parse(data.toString("utf8")); } catch { return; }
     publish("relay:message", message);
     if (message.type === "bridgeStatus" && message.status === "ready") {
+      if (message.version !== app.getVersion()) {
+        serviceState = "starting";
+        serviceMessage = "正在完成远程服务升级";
+        publishService();
+        publish("relay:state", { state: "handshaking", message: serviceMessage });
+        setTimeout(() => {
+          if (!intentionalClose && socket?.readyState === WebSocket.OPEN) socket.close(1012, "Relay service upgrading");
+        }, 250).unref();
+        return;
+      }
       clearStableConnectionTimer();
       stableConnectionTimer = setTimeout(() => {
         stableConnectionTimer = undefined;
@@ -482,7 +515,9 @@ ipcMain.handle("relay:bootstrap", async () => {
   let connection = readConnectionConfig();
   if (service.health && service.endpoint) {
     try { service.supervisor = await ensureServiceSupervisor(service.endpoint, true); } catch {}
-    try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
+    if (bridgeVersionMatches(service.health, app.getVersion())) {
+      try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
+    }
   }
   return { connection, version: app.getVersion(), service, preferences: readPreferences() };
 });

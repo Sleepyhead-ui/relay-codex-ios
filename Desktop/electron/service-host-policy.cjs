@@ -35,6 +35,8 @@ function serviceHostStateFromHeartbeat(heartbeat, options = {}) {
     pid,
     bridgePid: Number.isInteger(Number(heartbeat.bridgePid)) ? Number(heartbeat.bridgePid) : undefined,
     version: typeof heartbeat.version === "string" ? heartbeat.version : undefined,
+    bridgeVersion: typeof heartbeat.bridgeVersion === "string" ? heartbeat.bridgeVersion : undefined,
+    activeTurns: Math.max(0, Number(heartbeat.activeTurns) || 0),
     restartCount: Math.max(0, Number(heartbeat.restartCount) || 0),
     state: typeof heartbeat.state === "string" ? heartbeat.state : "monitoring",
     updatedAt,
@@ -58,8 +60,29 @@ function shouldReplaceServiceHost(supervisor, currentVersion) {
   );
 }
 
+function bridgeVersionMatches(health, currentVersion) {
+  return Boolean(health?.version && currentVersion && health.version === currentVersion);
+}
+
+function bridgeUpgradeBlockers(health) {
+  if (!health || typeof health !== "object") return [];
+  const fields = [
+    ["activeTurns", "active-turns"],
+    ["activeTransferCount", "active-transfers"],
+    ["pendingRpcCount", "pending-rpc"],
+    ["pendingApprovalCount", "pending-approvals"],
+    ["queuedPromptCount", "queued-prompts"],
+    ["pendingDeliveryCount", "pending-deliveries"],
+  ];
+  return fields
+    .filter(([field]) => Math.max(0, Number(health[field]) || 0) > 0)
+    .map(([, label]) => label);
+}
+
 module.exports = {
   bridgeBindHost,
+  bridgeUpgradeBlockers,
+  bridgeVersionMatches,
   loginItemSettings,
   serviceHostHeartbeatStaleMs,
   serviceHostRestartDelayMs,

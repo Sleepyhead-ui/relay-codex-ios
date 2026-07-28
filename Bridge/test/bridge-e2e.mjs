@@ -19,6 +19,7 @@ const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
     RELAY_PORT: "8876",
     RELAY_ADVERTISE_URL: endpoint,
     RELAY_TOKEN: token,
+    RELAY_SERVICE_VERSION: "e2e-test",
     RELAY_FILES_ROOT: filesRoot,
     CODEX_HOME: codexHome,
   },
@@ -99,7 +100,11 @@ async function waitForHealth() {
     if (bridge.exitCode !== null) throw new Error(`Bridge exited with code ${bridge.exitCode}.`);
     try {
       const response = await fetch("http://127.0.0.1:8876/health");
-      if (response.ok) return;
+      if (response.ok) {
+        const health = await response.json();
+        if (health.version !== "e2e-test") throw new Error(`Unexpected Relay version ${health.version}.`);
+        return;
+      }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 350));
   }

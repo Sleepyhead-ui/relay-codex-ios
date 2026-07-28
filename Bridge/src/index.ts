@@ -40,6 +40,7 @@ interface PendingInternalRequest {
 const defaultRpcTimeoutMs = 2 * 60_000;
 const historyRpcTimeoutMs = 10 * 60_000;
 const approvalTimeoutMs = 30 * 60_000;
+const relayVersion = process.env.RELAY_SERVICE_VERSION ?? "unknown";
 
 async function main(): Promise<void> {
 const codexProfiles = await CodexProfileRegistry.create();
@@ -124,6 +125,7 @@ const httpServer = createServer((request, response) => {
     response.writeHead(codexReady ? 200 : 503, { "content-type": "application/json" });
     response.end(JSON.stringify({
       status: codexReady ? "ready" : "starting",
+      version: relayVersion,
       clients: clients.size,
       uptimeSeconds: Math.floor(process.uptime()),
       activeTurns: runtimeState.activeCount,
@@ -785,7 +787,7 @@ function sendError(socket: WebSocket, message: string): void {
 }
 
 function bridgeStatus(status: string, sync = desktopSync.status): JsonObject {
-  return { type: "bridgeStatus", status, desktopSync: sync, codexProfile: activeCodexProfile };
+  return { type: "bridgeStatus", status, version: relayVersion, desktopSync: sync, codexProfile: activeCodexProfile };
 }
 
 function diagnosticsReport(): JsonObject {

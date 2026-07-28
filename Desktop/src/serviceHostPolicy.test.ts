@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 const {
   bridgeBindHost,
+  bridgeUpgradeBlockers,
+  bridgeVersionMatches,
   loginItemSettings,
   serviceHostHeartbeatStaleMs,
   serviceHostRestartDelayMs,
@@ -10,6 +12,8 @@ const {
   shouldReplaceServiceHost,
 } = require("../electron/service-host-policy.cjs") as {
   bridgeBindHost: (advertisedHostname: string) => string;
+  bridgeUpgradeBlockers: (health?: Record<string, unknown>) => string[];
+  bridgeVersionMatches: (health: Record<string, unknown> | undefined, currentVersion: string) => boolean;
   loginItemSettings: (autoStart: boolean, executablePath: string) => { openAtLogin: boolean; path: string; args: string[] };
   serviceHostHeartbeatStaleMs: number;
   serviceHostRestartDelayMs: (attempt: number) => number;
@@ -73,5 +77,26 @@ describe("Relay service host policy", () => {
     expect(shouldReplaceServiceHost({ running: true, version: "0.9.0" }, "0.9.1")).toBe(true);
     expect(shouldReplaceServiceHost({ running: true, version: "0.9.1" }, "0.9.1")).toBe(false);
     expect(shouldReplaceServiceHost({ running: false, version: "0.9.0" }, "0.9.1")).toBe(false);
+  });
+
+  it("requires the running Bridge to match the Desktop version", () => {
+    expect(bridgeVersionMatches({ version: "1.0.1" }, "1.0.1")).toBe(true);
+    expect(bridgeVersionMatches({ version: "1.0.0" }, "1.0.1")).toBe(false);
+    expect(bridgeVersionMatches({}, "1.0.1")).toBe(false);
+  });
+
+  it("waits for all durable work before replacing an outdated Bridge", () => {
+    expect(bridgeUpgradeBlockers({
+      activeTurns: 1,
+      activeTransferCount: 2,
+      pendingRpcCount: 3,
+      pendingApprovalCount: 4,
+      queuedPromptCount: 5,
+      pendingDeliveryCount: 6,
+    })).toEqual([
+      "active-turns", "active-transfers", "pending-rpc",
+      "pending-approvals", "queued-prompts", "pending-deliveries",
+    ]);
+    expect(bridgeUpgradeBlockers({ status: "ready", activeTurns: 0 })).toEqual([]);
   });
 });

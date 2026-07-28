@@ -2,8 +2,8 @@ const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
-const { serviceHostRestartDelayMs, serviceHostUnhealthyRestartThreshold } = require("./service-host-policy.cjs");
+const { spawn, spawnSync } = require("node:child_process");
+const { bridgeUpgradeBlockers, bridgeVersionMatches, serviceHostRestartDelayMs, serviceHostUnhealthyRestartThreshold } = require("./service-host-policy.cjs");
 
 const [bridgeEntry, heartbeatPath, hostPidPath, bridgePidPath] = process.argv.slice(2);
 const endpoint = process.env.RELAY_ADVERTISE_URL;
@@ -23,8 +23,10 @@ let ticking = false;
 let shuttingDown = false;
 let hasSeenHealthy = process.env.RELAY_SERVICE_EXPECT_EXISTING === "1";
 let healthMisses = 0;
+const hostLockPath = `${hostPidPath}.lock`;
 
 if (!claimHostPid()) process.exit(0);
+terminateLegacyServiceHosts();
 
 function processIsAlive(pid) {
   try {
@@ -36,13 +38,43 @@ function processIsAlive(pid) {
 }
 
 function claimHostPid() {
-  try {
-    const existing = Number(fs.readFileSync(hostPidPath, "utf8").trim());
-    if (Number.isInteger(existing) && existing > 0 && existing !== process.pid && processIsAlive(existing)) return false;
-  } catch {}
   fs.mkdirSync(path.dirname(hostPidPath), { recursive: true });
-  fs.writeFileSync(hostPidPath, `${process.pid}\n`, "utf8");
-  return true;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      fs.mkdirSync(hostLockPath);
+      fs.writeFileSync(path.join(hostLockPath, "owner"), `${process.pid}\n`, "utf8");
+      fs.writeFileSync(hostPidPath, `${process.pid}\n`, "utf8");
+      return true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") return false;
+      let owner;
+      try { owner = Number(fs.readFileSync(path.join(hostLockPath, "owner"), "utf8").trim()); } catch {}
+      if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return false;
+      try {
+        const stalePath = `${hostLockPath}.stale-${process.pid}-${Date.now()}`;
+        fs.renameSync(hostLockPath, stalePath);
+        fs.rmSync(stalePath, { recursive: true, force: true });
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+function terminateLegacyServiceHosts() {
+  if (process.platform !== "win32") return;
+  const script = [
+    `$current = ${process.pid}`,
+    "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object { $_.ProcessId -ne $current -and $_.CommandLine -like '*relay-desktop*service-runtime*service-host.cjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  ].join("; ");
+  try {
+    spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      stdio: "ignore",
+      timeout: 5_000,
+    });
+  } catch {}
 }
 
 function writeHeartbeat(state, health) {
@@ -57,7 +89,11 @@ function writeHeartbeat(state, health) {
     updatedAt: Date.now(),
     startedAt,
     ...(lastExit ? { lastExit } : {}),
-    ...(health ? { bridgeStatus: health.status, activeTurns: Number(health.activeTurns) || 0 } : {}),
+    ...(health ? {
+      bridgeStatus: health.status,
+      bridgeVersion: typeof health.version === "string" ? health.version : undefined,
+      activeTurns: Number(health.activeTurns) || 0,
+    } : {}),
   };
   const temporaryPath = `${heartbeatPath}.${process.pid}.tmp`;
   try {
@@ -70,11 +106,11 @@ function writeHeartbeat(state, health) {
   }
 }
 
-function readHealth() {
+function readHealthAt(candidateEndpoint) {
   return new Promise((resolve) => {
     let url;
     try {
-      url = new URL(healthEndpoint);
+      url = new URL(candidateEndpoint);
       url.protocol = url.protocol === "wss:" ? "https:" : "http:";
       url.pathname = "/health";
       url.search = "";
@@ -94,6 +130,13 @@ function readHealth() {
     request.on("timeout", () => request.destroy());
     request.on("error", () => resolve(undefined));
   });
+}
+
+async function readHealth() {
+  const advertisedHealth = await readHealthAt(endpoint);
+  if (advertisedHealth) return advertisedHealth;
+  if (healthEndpoint === endpoint) return undefined;
+  return readHealthAt(healthEndpoint);
 }
 
 function spawnBridge() {
@@ -136,6 +179,20 @@ function terminateUnhealthyBridge() {
   if (!managed) recordExit(undefined, "health-timeout", true);
 }
 
+function terminateOutdatedBridge(health) {
+  const managed = Boolean(bridgeChild);
+  const pid = bridgePid;
+  if (!pid) return;
+  writeHeartbeat("upgrading-bridge", health);
+  try { process.kill(pid); } catch {}
+  if (!managed) {
+    recordExit(undefined, "version-upgrade", true);
+    nextStartAt = Date.now();
+    hasSeenHealthy = false;
+    healthMisses = 0;
+  }
+}
+
 function recordExit(code, signal, force = false) {
   if (!force && !bridgeChild && !bridgePid) return;
   bridgeChild = undefined;
@@ -157,6 +214,12 @@ async function tick() {
       hasSeenHealthy = true;
       healthMisses = 0;
       adoptBridgePid();
+      if (!bridgeVersionMatches(health, version)) {
+        const blockers = bridgeUpgradeBlockers(health);
+        if (blockers.length > 0) writeHeartbeat("waiting-for-idle-upgrade", health);
+        else terminateOutdatedBridge(health);
+        return;
+      }
       if (health.status === "ready") restartAttempt = 0;
       writeHeartbeat(bridgeChild ? "managed" : "monitoring", health);
       return;
@@ -179,17 +242,25 @@ function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   writeHeartbeat("stopping");
-  try { fs.unlinkSync(hostPidPath); } catch {}
+  releaseHostClaim();
   process.exit(0);
+}
+
+function releaseHostClaim() {
+  try {
+    const owner = Number(fs.readFileSync(path.join(hostLockPath, "owner"), "utf8").trim());
+    if (owner === process.pid) fs.rmSync(hostLockPath, { recursive: true, force: true });
+  } catch {}
+  try {
+    const current = Number(fs.readFileSync(hostPidPath, "utf8").trim());
+    if (current === process.pid) fs.unlinkSync(hostPidPath);
+  } catch {}
 }
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("exit", () => {
-  try {
-    const current = Number(fs.readFileSync(hostPidPath, "utf8").trim());
-    if (current === process.pid) fs.unlinkSync(hostPidPath);
-  } catch {}
+  releaseHostClaim();
 });
 
 writeHeartbeat("starting-host");

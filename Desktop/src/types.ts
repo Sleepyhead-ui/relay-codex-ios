@@ -8,6 +8,8 @@ export interface ServiceSupervisorStatus {
   pid?: number;
   bridgePid?: number;
   version?: string;
+  bridgeVersion?: string;
+  activeTurns?: number;
   restartCount?: number;
   state?: string;
   updatedAt?: number;
