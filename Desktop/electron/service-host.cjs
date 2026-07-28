@@ -40,13 +40,16 @@ function processIsAlive(pid) {
 function claimHostPid() {
   fs.mkdirSync(path.dirname(hostPidPath), { recursive: true });
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidatePath = `${hostLockPath}.candidate-${process.pid}-${attempt}`;
     try {
-      fs.mkdirSync(hostLockPath);
-      fs.writeFileSync(path.join(hostLockPath, "owner"), `${process.pid}\n`, "utf8");
+      fs.mkdirSync(candidatePath);
+      fs.writeFileSync(path.join(candidatePath, "owner"), `${process.pid}\n`, "utf8");
+      fs.renameSync(candidatePath, hostLockPath);
       fs.writeFileSync(hostPidPath, `${process.pid}\n`, "utf8");
       return true;
     } catch (error) {
-      if (error?.code !== "EEXIST") return false;
+      try { fs.rmSync(candidatePath, { recursive: true, force: true }); } catch {}
+      if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error?.code)) return false;
       let owner;
       try { owner = Number(fs.readFileSync(path.join(hostLockPath, "owner"), "utf8").trim()); } catch {}
       if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return false;
