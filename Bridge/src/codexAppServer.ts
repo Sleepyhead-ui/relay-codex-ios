@@ -19,7 +19,7 @@ export class CodexAppServer {
     private readonly executable: string,
     private readonly handlers: CodexMessageHandlers,
     private readonly environment: NodeJS.ProcessEnv = process.env,
-    private readonly clientVersion = process.env.RELAY_SERVICE_VERSION ?? "1.0.1",
+    private readonly clientVersion = process.env.RELAY_SERVICE_VERSION ?? "1.0.2",
   ) {}
 
   async start(): Promise<void> {

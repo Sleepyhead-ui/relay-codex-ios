@@ -200,14 +200,15 @@ describe("Relay service host", () => {
   }, 18_000);
 
   it("checks the advertised address before loopback during an upgrade", async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-host-advertised-"));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-desktop-service-host-advertised-"));
     const heartbeatPath = path.join(directory, "heartbeat.json");
     const hostPidPath = path.join(directory, "host.pid");
     const bridgePidPath = path.join(directory, "bridge.pid");
     const activityPath = path.join(directory, "active.txt");
-    const oldBridgePath = path.join(directory, "old-bridge.cjs");
+    const oldBridgePath = path.join(directory, "bridge", "dist", "index.cjs");
     const newBridgePath = path.join(directory, "new-bridge.cjs");
     const port = await availablePort();
+    fs.mkdirSync(path.dirname(oldBridgePath), { recursive: true });
     fs.writeFileSync(activityPath, "1");
     fs.writeFileSync(oldBridgePath, `
       const fs = require("node:fs"); const http = require("node:http");
@@ -218,7 +219,7 @@ describe("Relay service host", () => {
       http.createServer((_request, response) => response.end(JSON.stringify({ status: "ready", version: process.env.RELAY_SERVICE_VERSION, activeTurns: 0 }))).listen(Number(process.env.RELAY_PORT), "127.0.0.1");
     `, "utf8");
     const oldBridge = spawn(process.execPath, [oldBridgePath], { windowsHide: true, stdio: "ignore", env: { ...process.env, RELAY_PORT: String(port), ACTIVITY_PATH: activityPath } });
-    if (oldBridge.pid) { spawnedPids.add(oldBridge.pid); fs.writeFileSync(bridgePidPath, `${oldBridge.pid}\n`); }
+    if (oldBridge.pid) spawnedPids.add(oldBridge.pid);
     await waitFor(async () => (await health(port, "127.0.0.2"))?.version === "1.0.0", 5_000);
     const hostPath = path.resolve(process.cwd(), "electron/service-host.cjs");
     const host = spawn(process.execPath, [hostPath, newBridgePath, heartbeatPath, hostPidPath, bridgePidPath], {
@@ -228,6 +229,7 @@ describe("Relay service host", () => {
     if (host.pid) spawnedPids.add(host.pid);
 
     await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, 5_000);
+    expect(Number(readText(bridgePidPath).trim())).toBe(oldBridge.pid);
     expect(await health(port, "127.0.0.1")).toBeUndefined();
     fs.writeFileSync(activityPath, "0");
     await waitFor(async () => (await health(port, "127.0.0.1"))?.version === "1.0.1", 10_000);

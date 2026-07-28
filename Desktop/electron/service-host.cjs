@@ -171,6 +171,38 @@ function adoptBridgePid() {
     const candidate = Number(fs.readFileSync(bridgePidPath, "utf8").trim());
     if (Number.isInteger(candidate) && candidate > 0 && processIsAlive(candidate)) bridgePid = candidate;
   } catch {}
+  if (bridgePid) return;
+  const discovered = discoverRelayBridgePid();
+  if (!discovered) return;
+  bridgePid = discovered;
+  try {
+    fs.mkdirSync(path.dirname(bridgePidPath), { recursive: true });
+    fs.writeFileSync(bridgePidPath, `${bridgePid}\n`, "utf8");
+  } catch {}
+}
+
+function discoverRelayBridgePid() {
+  if (process.platform !== "win32") return undefined;
+  let port;
+  try { port = Number(new URL(endpoint).port || 8765); } catch { return undefined; }
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return undefined;
+  const script = [
+    `$port = ${port}`,
+    "Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $candidatePid = $_; $candidate = Get-CimInstance Win32_Process -Filter \"ProcessId = $candidatePid\" -ErrorAction SilentlyContinue; if ($candidate.CommandLine -like '*relay-desktop*bridge*dist*index*') { $candidatePid } }",
+  ].join("; ");
+  try {
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    return String(result.stdout || "")
+      .split(/\s+/)
+      .map(Number)
+      .find((candidate) => Number.isInteger(candidate) && candidate > 0 && candidate !== process.pid && processIsAlive(candidate));
+  } catch {
+    return undefined;
+  }
 }
 
 function terminateUnhealthyBridge() {
@@ -185,7 +217,10 @@ function terminateUnhealthyBridge() {
 function terminateOutdatedBridge(health) {
   const managed = Boolean(bridgeChild);
   const pid = bridgePid;
-  if (!pid) return;
+  if (!pid) {
+    writeHeartbeat("upgrade-blocked-missing-bridge-pid", health);
+    return;
+  }
   writeHeartbeat("upgrading-bridge", health);
   try { process.kill(pid); } catch {}
   if (!managed) {
