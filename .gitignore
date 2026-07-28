@@ -11,5 +11,13 @@ iOS/build/
 iOS/Payload/
 iOS/Relay.ipa
 iOS/Relay/Assets.xcassets/AppIcon.appiconset/*.png
+.playwright-cli/
+output/
+release-v*/
+Relay-v*-download/
+Relay-v*-artifact*/
+Relay-Desktop-*.exe
+Relay-v*.ipa
+Relay.ipa
 .DS_Store
 *.log
