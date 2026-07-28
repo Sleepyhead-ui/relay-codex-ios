@@ -1,4 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import type { JsonObject } from "./protocol.js";
+import { isObject } from "./protocol.js";
 
 export interface DeliveryWaiter<TSocket> {
   socket: TSocket;
@@ -16,10 +21,23 @@ interface DeliveryRecord<TSocket> {
   method: string;
   clientUserMessageId: string;
   threadId: string;
+  params: JsonObject;
   state: "pending" | "completed";
   bridgeId?: string;
+  forwardedAt?: number;
   response?: DeliveryResponse;
   waiters: DeliveryWaiter<TSocket>[];
+  updatedAt: number;
+}
+
+export interface RecoverableDelivery {
+  key: string;
+  profileId: string;
+  method: string;
+  clientUserMessageId: string;
+  threadId: string;
+  params: JsonObject;
+  forwardedAt?: number;
   updatedAt: number;
 }
 
@@ -42,19 +60,32 @@ export interface DeliveryStatus extends JsonObject {
 
 export class DeliveryRegistry<TSocket> {
   private readonly records = new Map<string, DeliveryRecord<TSocket>>();
+  private persistChain: Promise<void> = Promise.resolve();
 
-  constructor(
+  private constructor(
+    private readonly storagePath: string | undefined,
     private readonly limit = 500,
     private readonly completedTtlMs = 30 * 60_000,
     private readonly now: () => number = Date.now,
   ) {}
 
-  register(
+  static async create<TSocket>(
+    storagePath: string | null | undefined = path.join(homedir(), ".relay", "delivery-registry.json"),
+    limit = 500,
+    completedTtlMs = 30 * 60_000,
+    now: () => number = Date.now,
+  ): Promise<DeliveryRegistry<TSocket>> {
+    const registry = new DeliveryRegistry<TSocket>(storagePath ?? undefined, limit, completedTtlMs, now);
+    await registry.load();
+    return registry;
+  }
+
+  async register(
     profileId: string,
     method: string,
     params: JsonObject,
     waiter: DeliveryWaiter<TSocket>,
-  ): DeliveryRegistration<TSocket> | undefined {
+  ): Promise<DeliveryRegistration<TSocket> | undefined> {
     const clientUserMessageId = stringValue(params.clientUserMessageId);
     const threadId = stringValue(params.threadId);
     if (!clientUserMessageId || !threadId || !isDurableDeliveryMethod(method)) return undefined;
@@ -77,23 +108,27 @@ export class DeliveryRegistry<TSocket> {
       method,
       clientUserMessageId,
       threadId,
+      params: cloneObject(params),
       state: "pending",
       waiters: [waiter],
       updatedAt: this.now(),
     };
     this.records.set(key, record);
     this.prune();
+    await this.persist();
     return { kind: "new", key };
   }
 
-  bindBridgeRequest(key: string, bridgeId: string): void {
+  async bindBridgeRequest(key: string, bridgeId: string): Promise<void> {
     const record = this.records.get(key);
     if (!record || record.state !== "pending") return;
     record.bridgeId = bridgeId;
+    record.forwardedAt = this.now();
     record.updatedAt = this.now();
+    await this.persist();
   }
 
-  complete(key: string, response: DeliveryResponse): DeliveryWaiter<TSocket>[] {
+  async complete(key: string, response: DeliveryResponse): Promise<DeliveryWaiter<TSocket>[]> {
     const record = this.records.get(key);
     if (!record) return [];
     record.state = "completed";
@@ -104,14 +139,27 @@ export class DeliveryRegistry<TSocket> {
     record.waiters = [];
     this.touch(key, record);
     this.prune();
+    await this.persist();
     return waiters;
   }
 
-  abandon(key: string): DeliveryWaiter<TSocket>[] {
+  async abandon(key: string): Promise<DeliveryWaiter<TSocket>[]> {
     const record = this.records.get(key);
     if (!record || record.state !== "pending") return [];
     this.records.delete(key);
+    await this.persist();
     return record.waiters;
+  }
+
+  async suspend(key: string): Promise<DeliveryWaiter<TSocket>[]> {
+    const record = this.records.get(key);
+    if (!record || record.state !== "pending") return [];
+    delete record.bridgeId;
+    record.updatedAt = this.now();
+    const waiters = record.waiters;
+    record.waiters = [];
+    await this.persist();
+    return waiters;
   }
 
   removeWaiter(socket: TSocket, clientId?: string): void {
@@ -144,6 +192,31 @@ export class DeliveryRegistry<TSocket> {
     return count;
   }
 
+  pendingCountFor(profileId: string): number {
+    let count = 0;
+    for (const record of this.records.values()) {
+      if (record.state === "pending" && record.profileId === profileId) count += 1;
+    }
+    return count;
+  }
+
+  recoverable(profileId?: string): RecoverableDelivery[] {
+    this.prune();
+    return [...this.records.values()].flatMap((record) => {
+      if (record.state !== "pending" || (profileId && record.profileId !== profileId)) return [];
+      return [{
+        key: record.key,
+        profileId: record.profileId,
+        method: record.method,
+        clientUserMessageId: record.clientUserMessageId,
+        threadId: record.threadId,
+        params: cloneObject(record.params),
+        ...(record.forwardedAt ? { forwardedAt: record.forwardedAt } : {}),
+        updatedAt: record.updatedAt,
+      }];
+    });
+  }
+
   private addWaiter(record: DeliveryRecord<TSocket>, waiter: DeliveryWaiter<TSocket>): void {
     if (record.waiters.some((candidate) => candidate.socket === waiter.socket && candidate.clientId === waiter.clientId)) return;
     record.waiters.push(waiter);
@@ -165,6 +238,60 @@ export class DeliveryRegistry<TSocket> {
       if (record.state === "completed") this.records.delete(key);
     }
   }
+
+  private async load(): Promise<void> {
+    if (!this.storagePath) return;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.storagePath, "utf8"));
+      if (!Array.isArray(parsed)) return;
+      for (const value of parsed) {
+        if (!isObject(value) || typeof value.profileId !== "string" || typeof value.method !== "string"
+            || typeof value.clientUserMessageId !== "string" || typeof value.threadId !== "string"
+            || !isObject(value.params) || (value.state !== "pending" && value.state !== "completed")) continue;
+        const key = deliveryKey(value.profileId, value.clientUserMessageId);
+        const response = isObject(value.response) ? value.response as DeliveryResponse : undefined;
+        this.records.set(key, {
+          key,
+          profileId: value.profileId,
+          method: value.method,
+          clientUserMessageId: value.clientUserMessageId,
+          threadId: value.threadId,
+          params: cloneObject(value.params),
+          state: value.state,
+          ...(typeof value.forwardedAt === "number" ? { forwardedAt: value.forwardedAt } : {}),
+          ...(response ? { response } : {}),
+          waiters: [],
+          updatedAt: typeof value.updatedAt === "number" ? value.updatedAt : this.now(),
+        });
+      }
+      this.prune();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.storagePath) return;
+    const snapshot = `${JSON.stringify([...this.records.values()].map((record) => ({
+      profileId: record.profileId,
+      method: record.method,
+      clientUserMessageId: record.clientUserMessageId,
+      threadId: record.threadId,
+      params: record.params,
+      state: record.state,
+      ...(record.forwardedAt ? { forwardedAt: record.forwardedAt } : {}),
+      ...(record.response ? { response: record.response } : {}),
+      updatedAt: record.updatedAt,
+    })), null, 2)}\n`;
+    const operation = this.persistChain.then(async () => {
+      await mkdir(path.dirname(this.storagePath!), { recursive: true });
+      const temporary = `${this.storagePath}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(temporary, snapshot, { encoding: "utf8", mode: 0o600 });
+      await rename(temporary, this.storagePath!);
+    });
+    this.persistChain = operation.catch(() => {});
+    await operation;
+  }
 }
 
 export function isDurableDeliveryMethod(method: string): boolean {
@@ -177,4 +304,8 @@ function deliveryKey(profileId: string, clientUserMessageId: string): string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function cloneObject(value: JsonObject): JsonObject {
+  return JSON.parse(JSON.stringify(value)) as JsonObject;
 }

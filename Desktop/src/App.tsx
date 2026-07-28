@@ -99,6 +99,10 @@ export default function App() {
   const plan = selectedTaskState && selectedTaskState.planTurnId === activeTurnId ? selectedTaskState.plan : [];
   const upstreamRetrying = selectedTaskState?.phase === "retrying";
   const running = isTaskRunning(selectedTaskState) || (!selectedTaskState && isRunningStatus(selectedThread?.status));
+  const profileSwitchBlocked = Object.values(taskStates).some(isTaskRunning)
+    || approvals.length > 0
+    || sending
+    || rpc.pendingDurableCount > 0;
   const selectedModelOption = models.find((model) => model.model === selectedModel || model.id === selectedModel);
   const activeCodexProfile = codexProfiles.find((profile) => profile.id === activeProfileId);
   const selectedApprovals = approvals.filter((item) => item.threadId === selectedThreadId || !item.threadId);
@@ -269,7 +273,7 @@ export default function App() {
   }
 
   async function switchCodexProfile(profileId: string) {
-    if (!profileId || profileId === activeProfileId) return;
+    if (!profileId || profileId === activeProfileId || profileSwitchBlocked) return;
     try {
       profileSwitchingRef.current = true;
       setProfileSwitching(true);
@@ -1021,7 +1025,7 @@ export default function App() {
         </main>
       </div>
 
-      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={running || Boolean(approval)} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
+      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={profileSwitchBlocked} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
       {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}

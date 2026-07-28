@@ -43,8 +43,13 @@ extension RelayStore {
 
     func switchCodexProfile(_ profileId: String) async {
         guard profileId != activeCodexProfileId, !isSwitchingCodexProfile else { return }
-        guard !isRunning, pendingApproval == nil else {
-            errorMessage = "请先结束当前任务并处理审批，再切换 Codex 实例。"
+        guard ProfileSwitchPolicy.canSwitch(
+            taskStates: taskRunStates,
+            sendingThreadIds: sendingThreadIds,
+            pendingApprovalCount: pendingApprovals.count,
+            pendingDeliveryCount: outboundDrafts.count
+        ) else {
+            errorMessage = "请先结束所有任务，并处理等待确认的消息和审批，再切换 Codex 实例。"
             return
         }
         isSwitchingCodexProfile = true

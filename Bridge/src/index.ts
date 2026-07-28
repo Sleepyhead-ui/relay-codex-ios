@@ -69,7 +69,7 @@ const rpcDiagnostics = {
 const diagnostics = new DiagnosticsLog();
 const performanceMetrics = new PerformanceMetrics();
 const rpcStartedAt = new Map<string, number>();
-const deliveryRegistry = new DeliveryRegistry<WebSocket>();
+const deliveryRegistry = await DeliveryRegistry.create<WebSocket>(process.env.RELAY_DELIVERY_STORE?.trim() || undefined);
 diagnostics.record("info", "bridge", "Relay Bridge started.");
 const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridgeId, request) => {
   const startedAt = rpcStartedAt.get(bridgeId);
@@ -81,7 +81,7 @@ const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridg
   const response = {
     error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
   };
-  if (request.deliveryKey) abandonDelivery(request.deliveryKey, response);
+  if (request.deliveryKey) void suspendDelivery(request.deliveryKey, response);
   else send(request.socket, {
     type: "rpcResult",
     id: request.clientId,
@@ -96,6 +96,7 @@ let codexGeneration = 1;
 let codexRestartAttempt = 0;
 let codexRestartTimer: NodeJS.Timeout | undefined;
 let codexStartupTimer: NodeJS.Timeout | undefined;
+let recoveringDeliveries = false;
 let shuttingDown = false;
 let activeCodexProfile = (await codexProfiles.list()).find((profile) => profile.active)!;
 const desktopSync = new DesktopSync(
@@ -484,7 +485,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       });
       return;
     }
-    const delivery = deliveryRegistry.register(activeCodexProfile.id, message.method, message.params, {
+    const delivery = await deliveryRegistry.register(activeCodexProfile.id, message.method, message.params, {
       socket,
       clientId: message.id,
     });
@@ -516,7 +517,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         const result = message.method === "turn/start"
           ? { ...(turnId ? { turn: { id: turnId }, turnId } : {}) }
           : { ...(turnId ? { turnId } : {}) };
-        completeDelivery(delivery.key, { result });
+        await completeDelivery(delivery.key, { result });
         diagnostics.record("info", "delivery", `Recovered completed ${message.method} from session history.`);
         return;
       }
@@ -534,7 +535,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       params,
       ...(delivery?.kind === "new" ? { deliveryKey: delivery.key } : {}),
     }, timeoutMs);
-    if (delivery?.kind === "new") deliveryRegistry.bindBridgeRequest(delivery.key, bridgeId);
+    if (delivery?.kind === "new") await deliveryRegistry.bindBridgeRequest(delivery.key, bridgeId);
     rpcStartedAt.set(bridgeId, performance.now());
     try {
       codex.send({ method: message.method, id: bridgeId, params });
@@ -546,7 +547,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastErrorAt = new Date().toISOString();
       rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not forward RPC to Codex.";
       const response = { error: { message: rpcDiagnostics.lastError } };
-      if (pending?.deliveryKey) completeDelivery(pending.deliveryKey, response);
+      if (pending?.deliveryKey) await completeDelivery(pending.deliveryKey, response);
       else send(socket, { type: "rpcResult", id: message.id, ...response });
     }
     return;
@@ -565,7 +566,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
   broadcast({ type: "serverRequestResolved", id: message.id });
 }
 
-function handleCodexResponse(message: JsonObject): void {
+async function handleCodexResponse(message: JsonObject): Promise<void> {
   const id = String(message.id);
   const internal = pendingInternalRequests.get(id);
   if (internal) {
@@ -598,7 +599,7 @@ function handleCodexResponse(message: JsonObject): void {
   const response: DeliveryResponse = {};
   if ("result" in message) response.result = message.result;
   if ("error" in message) response.error = message.error;
-  if (pending.deliveryKey) completeDelivery(pending.deliveryKey, response);
+  if (pending.deliveryKey) await completeDelivery(pending.deliveryKey, response);
   else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   if (pending.method === "thread/list" && "result" in message) {
     sessionActivity.observeThreadList(message.result);
@@ -700,8 +701,8 @@ function send(socket: WebSocket, message: JsonObject): void {
   socket.send(encoded);
 }
 
-function completeDelivery(key: string, response: DeliveryResponse): void {
-  const waiters = deliveryRegistry.complete(key, response);
+async function completeDelivery(key: string, response: DeliveryResponse): Promise<void> {
+  const waiters = await deliveryRegistry.complete(key, response);
   for (const waiter of waiters) {
     send(waiter.socket, { type: "rpcResult", id: waiter.clientId, ...response });
   }
@@ -717,8 +718,8 @@ function completeDelivery(key: string, response: DeliveryResponse): void {
   });
 }
 
-function abandonDelivery(key: string, response: DeliveryResponse): void {
-  const waiters = deliveryRegistry.abandon(key);
+async function suspendDelivery(key: string, response: DeliveryResponse): Promise<void> {
+  const waiters = await deliveryRegistry.suspend(key);
   for (const waiter of waiters) {
     send(waiter.socket, { type: "rpcResult", id: waiter.clientId, deliveryUncertain: true, ...response });
   }
@@ -729,7 +730,8 @@ function abandonDelivery(key: string, response: DeliveryResponse): void {
     type: "deliveryUpdated",
     profileId,
     clientUserMessageId,
-    status: "unknown",
+    status: "pending",
+    deliveryUncertain: true,
     ...response,
   });
 }
@@ -815,7 +817,7 @@ function createCodexAppServer(generation: number): CodexAppServer {
   console.log(`[codex] Starting App Server with ${executable}`);
   return new CodexAppServer(executable, {
     onResponse: (message) => {
-      if (generation === codexGeneration) handleCodexResponse(message);
+      if (generation === codexGeneration) void handleCodexResponse(message);
     },
     onNotification: (message) => {
       if (generation === codexGeneration) handleCodexNotification(message);
@@ -833,22 +835,23 @@ function createCodexAppServer(generation: number): CodexAppServer {
         codexStartupTimer = undefined;
         diagnostics.record("info", "codex", "Codex App Server is ready.", { profileId: activeCodexProfile.id });
         broadcast(bridgeStatus("ready"));
+        void recoverPendingDeliveries();
         void dispatchAllQueuedPrompts();
       }
     },
     onExit: (code, signal) => {
       if (generation !== codexGeneration) return;
-      handleCodexExit(generation, code, signal);
+      void handleCodexExit(generation, code, signal);
     },
   }, { CODEX_HOME: codexProfiles.activeCodexHome });
 }
 
-function handleCodexExit(generation: number, code: number | null, signal: NodeJS.Signals | null): void {
+async function handleCodexExit(generation: number, code: number | null, signal: NodeJS.Signals | null): Promise<void> {
   if (generation !== codexGeneration || shuttingDown) return;
   codexReady = false;
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
   codexStartupTimer = undefined;
-  failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
+  await failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
   clearPendingApprovals("codex-exited");
   runtimeState.stopAll("Codex App Server exited.");
   diagnostics.record("error", "codex", "Codex App Server exited.", { code, signal });
@@ -902,19 +905,22 @@ function armCodexStartupWatchdog(generation: number): void {
       ready: codexReady,
     })) return;
     console.error("[codex] initialization timed out; replacing App Server.");
-    failPendingRequests("Codex 初始化超时，Relay 正在重新启动服务。", true);
-    clearPendingApprovals("startup-timeout");
-    void replaceCodex(true);
+    void (async () => {
+      await failPendingRequests("Codex 初始化超时，Relay 正在重新启动服务。", true);
+      clearPendingApprovals("startup-timeout");
+      await replaceCodex(true);
+    })();
   }, codexStartupWatchdogMs);
   codexStartupTimer.unref();
 }
 
-function failPendingRequests(message: string, notifyClients: boolean): void {
+async function failPendingRequests(message: string, notifyClients: boolean): Promise<void> {
+  const deliveries: Promise<void>[] = [];
   for (const [bridgeId, pending] of pendingClientRequests.clear()) {
     rpcStartedAt.delete(bridgeId);
     if (!notifyClients) continue;
     const response = { error: { message } };
-    if (pending.deliveryKey) abandonDelivery(pending.deliveryKey, response);
+    if (pending.deliveryKey) deliveries.push(suspendDelivery(pending.deliveryKey, response));
     else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   }
   for (const pending of pendingInternalRequests.values()) {
@@ -922,6 +928,7 @@ function failPendingRequests(message: string, notifyClients: boolean): void {
     pending.reject(new Error(message));
   }
   pendingInternalRequests.clear();
+  await Promise.all(deliveries);
 }
 
 function clearPendingApprovals(reason: string): void {
@@ -950,6 +957,61 @@ function codexRequest(method: string, params: JsonObject, timeoutMs = defaultRpc
       reject(error);
     }
   });
+}
+
+async function recoverPendingDeliveries(): Promise<void> {
+  if (recoveringDeliveries || shuttingDown || !codexReady) return;
+  const deliveries = deliveryRegistry.recoverable(activeCodexProfile.id);
+  if (deliveries.length === 0) return;
+  recoveringDeliveries = true;
+  diagnostics.record("warning", "delivery", `Recovering ${deliveries.length} durable delivery request(s).`);
+  try {
+    try {
+      const listed = await codexRequest("thread/list", { limit: 100, sortKey: "updated_at" }, 30_000);
+      sessionActivity.observeThreadList(listed);
+    } catch {}
+
+    for (const delivery of deliveries) {
+      if (shuttingDown || !codexReady || delivery.profileId !== activeCodexProfile.id) break;
+      try {
+        try {
+          const read = await codexRequest("thread/read", { threadId: delivery.threadId, includeTurns: true }, 30_000);
+          sessionActivity.observeThreadResume(read);
+        } catch {}
+        const status = await untrackedDeliveryStatus(delivery.params);
+        if (status.status === "completed") {
+          const turnId = typeof status.turnId === "string" ? status.turnId : undefined;
+          const snapshot = await sessionActivity.turnSnapshot(delivery.threadId);
+          if (snapshot.isRunning && turnId) runtimeState.observeTurnStart(delivery.threadId, { id: turnId });
+          const result = delivery.method === "turn/start"
+            ? { ...(turnId ? { turn: { id: turnId }, turnId } : {}) }
+            : { ...(turnId ? { turnId } : {}) };
+          await completeDelivery(delivery.key, { result });
+          diagnostics.record("info", "delivery", `Recovered completed ${delivery.method} from session history.`);
+          continue;
+        }
+
+        await deliveryRegistry.bindBridgeRequest(delivery.key, `recovery.${nextInternalRequestId}`);
+        const result = await codexRequest(delivery.method, delivery.params);
+        await completeDelivery(delivery.key, { result });
+        if (delivery.method === "turn/start") {
+          runtimeState.observeTurnStart(delivery.threadId, result.turn);
+          desktopSync.activateThread(delivery.threadId, "turn-started");
+        } else if (delivery.method === "turn/steer") {
+          runtimeState.observeTurnStart(delivery.threadId, { id: result.turnId });
+          desktopSync.activateThread(delivery.threadId, "turn-steered");
+        }
+        diagnostics.record("info", "delivery", `Resumed ${delivery.method} after service recovery.`);
+      } catch (error) {
+        if (!codexReady || shuttingDown) break;
+        const message = error instanceof Error ? error.message : "Could not recover the durable delivery.";
+        await completeDelivery(delivery.key, { error: { message } });
+        diagnostics.record("error", "delivery", message, { method: delivery.method, threadId: delivery.threadId });
+      }
+    }
+  } finally {
+    recoveringDeliveries = false;
+  }
 }
 
 async function dispatchAllQueuedPrompts(): Promise<void> {
@@ -1008,6 +1070,7 @@ function broadcastPromptQueue(threadId: string): void {
 async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   if (runtimeState.activeCount > 0) throw new Error("任务运行期间不能切换 Codex 实例，请先等待完成或停止任务。");
   if (pendingClientRequests.size > 0) throw new Error("仍有请求正在处理，请稍后再切换 Codex 实例。");
+  if (deliveryRegistry.pendingCountFor(activeCodexProfile.id) > 0) throw new Error("仍有消息等待 Codex 确认，请稍后再切换 Codex 实例。");
   if (pendingServerRequests.size > 0) throw new Error("请先处理当前审批，再切换 Codex 实例。");
 
   const available = await codexProfiles.list();
@@ -1048,11 +1111,14 @@ function shutdown(): void {
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
   for (const timer of queueRetryTimers.values()) clearTimeout(timer);
   queueRetryTimers.clear();
-  failPendingRequests("Relay Bridge 正在关闭。", true);
   clearPendingApprovals("bridge-shutdown");
   for (const client of clients) client.close(1001, "Bridge shutting down");
   sessionActivity.dispose();
-  void Promise.all([fileTransfer.dispose(), codex.stop()])
+  void Promise.all([
+    failPendingRequests("Relay Bridge 正在关闭。", true),
+    fileTransfer.dispose(),
+    codex.stop(),
+  ])
     .finally(() => httpServer.close(() => process.exit(0)));
 }
 
