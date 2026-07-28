@@ -22,6 +22,7 @@ const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
     RELAY_SERVICE_VERSION: "e2e-test",
     RELAY_FILES_ROOT: filesRoot,
     RELAY_DELIVERY_STORE: path.join(filesRoot, "delivery-registry.json"),
+    RELAY_DIAGNOSTICS_STORE: path.join(filesRoot, "diagnostics.json"),
     CODEX_HOME: codexHome,
   },
   stdio: ["ignore", "pipe", "pipe"],

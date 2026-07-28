@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { homedir } from "node:os";
+import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
@@ -66,7 +68,11 @@ const rpcDiagnostics = {
   lastErrorAt: null as string | null,
   lastError: null as string | null,
 };
-const diagnostics = new DiagnosticsLog();
+const diagnostics = new DiagnosticsLog(
+  100,
+  process.env.RELAY_DIAGNOSTICS_STORE?.trim() || path.join(homedir(), ".relay", "diagnostics.json"),
+);
+await diagnostics.restore();
 const performanceMetrics = new PerformanceMetrics();
 const rpcStartedAt = new Map<string, number>();
 const deliveryRegistry = await DeliveryRegistry.create<WebSocket>(process.env.RELAY_DELIVERY_STORE?.trim() || undefined);
@@ -1118,6 +1124,7 @@ function shutdown(): void {
     failPendingRequests("Relay Bridge 正在关闭。", true),
     fileTransfer.dispose(),
     codex.stop(),
+    diagnostics.flush(),
   ])
     .finally(() => httpServer.close(() => process.exit(0)));
 }

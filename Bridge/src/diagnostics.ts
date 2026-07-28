@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 export type DiagnosticLevel = "info" | "warning" | "error";
 
 export interface DiagnosticEvent {
@@ -37,14 +41,63 @@ interface DiagnosticState {
 export class DiagnosticsLog {
   private events: DiagnosticEvent[] = [];
   private nextId = 1;
+  private persistChain: Promise<void> = Promise.resolve();
+  private persistTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly limit = 100) {}
+  constructor(private readonly limit = 100, private readonly storagePath?: string) {}
+
+  async restore(): Promise<void> {
+    if (!this.storagePath) return;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(this.storagePath, "utf8"));
+      if (!Array.isArray(parsed)) return;
+      this.events = parsed.flatMap((value) => isDiagnosticEvent(value) ? [value] : []).slice(-this.limit);
+      this.nextId = this.events.reduce((highest, event) => Math.max(highest, event.id), 0) + 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.events = [];
+        this.nextId = 1;
+      }
+    }
+  }
+
+  async flush(): Promise<void> {
+    if (!this.storagePath) return;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    await this.persist();
+  }
 
   record(level: DiagnosticLevel, category: string, message: string, details?: Record<string, unknown>): void {
     const event: DiagnosticEvent = { id: this.nextId++, at: new Date().toISOString(), level, category, message };
     if (details) event.details = details;
     this.events.push(event);
     if (this.events.length > this.limit) this.events.splice(0, this.events.length - this.limit);
+    this.schedulePersist();
+  }
+
+  private schedulePersist(): void {
+    if (!this.storagePath || this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      void this.persist();
+    }, 250);
+    this.persistTimer.unref();
+  }
+
+  private async persist(): Promise<void> {
+    if (!this.storagePath) return;
+    const operation = this.persistChain.then(async () => {
+      const snapshot = `${JSON.stringify(this.events, null, 2)}\n`;
+      await mkdir(path.dirname(this.storagePath!), { recursive: true });
+      const temporary = `${this.storagePath}.${process.pid}.${randomUUID()}.tmp`;
+      await writeFile(temporary, snapshot, { encoding: "utf8", mode: 0o600 });
+      await rename(temporary, this.storagePath!);
+    });
+    this.persistChain = operation.catch(() => {});
+    await operation;
   }
 
   report(state: DiagnosticState): Record<string, unknown> {
@@ -117,6 +170,16 @@ export class DiagnosticsLog {
       events: [...this.events].reverse(),
     };
   }
+}
+
+function isDiagnosticEvent(value: unknown): value is DiagnosticEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<DiagnosticEvent>;
+  return typeof event.id === "number"
+    && typeof event.at === "string"
+    && ["info", "warning", "error"].includes(String(event.level))
+    && typeof event.category === "string"
+    && typeof event.message === "string";
 }
 
 function formatDuration(seconds: number): string {

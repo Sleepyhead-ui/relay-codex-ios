@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { DiagnosticsLog } from "../dist/diagnostics.js";
 
 function state(overrides = {}) {
@@ -44,4 +47,40 @@ test("reports an error when Codex is unavailable without a restart attempt", () 
   const report = new DiagnosticsLog().report(state({ codexReady: false }));
   assert.equal(report.summary, "error");
   assert.equal(report.checks.find((check) => check.id === "codex").level, "error");
+});
+
+test("restores diagnostic history after a Bridge restart", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-diagnostics-"));
+  const storage = path.join(directory, "diagnostics.json");
+  try {
+    const first = new DiagnosticsLog(10, storage);
+    first.record("warning", "codex", "Codex restarted");
+    first.record("error", "socket", "Client disconnected");
+    await first.flush();
+
+    const restored = new DiagnosticsLog(10, storage);
+    await restored.restore();
+    const report = restored.report(state());
+    assert.deepEqual(report.events.map((event) => event.message), ["Client disconnected", "Codex restarted"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("truncates restored diagnostic history to the configured limit", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-diagnostics-limit-"));
+  const storage = path.join(directory, "diagnostics.json");
+  try {
+    const first = new DiagnosticsLog(2, storage);
+    first.record("info", "test", "one");
+    first.record("info", "test", "two");
+    first.record("info", "test", "three");
+    await first.flush();
+
+    const restored = new DiagnosticsLog(2, storage);
+    await restored.restore();
+    assert.deepEqual(restored.report(state()).events.map((event) => event.message), ["three", "two"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

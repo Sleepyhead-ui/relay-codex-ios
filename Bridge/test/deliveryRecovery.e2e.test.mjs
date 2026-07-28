@@ -28,6 +28,7 @@ test("recovers an accepted delivery exactly once after Bridge and Codex process 
     RELAY_SERVICE_VERSION: "delivery-e2e",
     RELAY_FILES_ROOT: path.join(directory, "files"),
     RELAY_DELIVERY_STORE: path.join(directory, "delivery-registry.json"),
+    RELAY_DIAGNOSTICS_STORE: path.join(directory, "diagnostics.json"),
     CODEX_HOME: path.join(directory, "codex-home"),
     CODEX_BIN: path.join(root, "test", "fixtures", "fake-codex.js"),
     FAKE_CODEX_ROLLOUT: rollout,
