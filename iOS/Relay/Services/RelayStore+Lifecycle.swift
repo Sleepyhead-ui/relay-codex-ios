@@ -14,16 +14,25 @@ extension RelayStore {
         }
     }
 
-    func exportDiagnostics() {
-        guard let raw = diagnosticsReport?.raw.rawValue,
-              JSONSerialization.isValidJSONObject(raw),
-              let data = try? JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys]) else { return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Relay-Diagnostics-\(Int(Date().timeIntervalSince1970)).json")
+    func prepareDiagnosticsExport() async -> SharedFile? {
+        guard let snapshot = diagnosticsReport?.raw else { return nil }
         do {
-            try data.write(to: url, options: .atomic)
-            sharedFile = SharedFile(url: url)
+            let url = try await Task.detached(priority: .userInitiated) {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(snapshot)
+                guard data.count <= 8 * 1_024 * 1_024 else {
+                    throw DiagnosticsExportError.reportTooLarge
+                }
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Relay-Diagnostics-\(UUID().uuidString).json")
+                try data.write(to: url, options: .atomic)
+                return url
+            }.value
+            return SharedFile(url: url)
         } catch {
             report(error)
+            return nil
         }
     }
 
@@ -130,5 +139,16 @@ extension RelayStore {
             currentHostId = UUID().uuidString
         }
         showingConnection = true
+    }
+}
+
+private enum DiagnosticsExportError: LocalizedError {
+    case reportTooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .reportTooLarge:
+            return "The diagnostics report is too large to share."
+        }
     }
 }

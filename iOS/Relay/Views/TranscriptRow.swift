@@ -108,7 +108,7 @@ struct TranscriptRow: View {
         switch item.role {
         case .user:
             HStack {
-                Spacer(minLength: 46)
+                Spacer(minLength: 34)
                 VStack(alignment: .trailing, spacing: 4) {
                     if isFollowUp {
                         Text("引导")
@@ -120,17 +120,14 @@ struct TranscriptRow: View {
                         InlineImageGrid(paths: item.imagePaths)
                     }
                     if !item.text.isEmpty {
-                        MarkdownContentView(source: item.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 11)
-                            .background(RelayTheme.softFill)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        UserMessageBubble(text: item.text)
                     }
                     if let deliveryState = item.deliveryState {
                         deliveryStatus(deliveryState)
                     }
                 }
             }
+            .padding(.trailing, -6)
         case .assistant:
             if item.isCommentary {
                 MarkdownContentView(source: item.text, baseFontSize: 13, blockSpacing: 6, lineSpacing: 2)
@@ -194,6 +191,54 @@ struct TranscriptRow: View {
         case .uncertain(_): return .orange
         case .sending, .accepted: return .secondary
         }
+    }
+}
+
+private struct UserMessageBubble: View {
+    let text: String
+
+    var body: some View {
+        Group {
+            if canAttemptSingleLineLayout {
+                ViewThatFits(in: .horizontal) {
+                    singleLineBubble
+                    multiLineBubble
+                }
+            } else {
+                multiLineBubble
+            }
+        }
+        .frame(maxWidth: 320, alignment: .trailing)
+    }
+
+    private var singleLineBubble: some View {
+        InlineMarkdownText(
+            text,
+            size: 16,
+            lineSpacing: 4,
+            expandsHorizontally: false
+        )
+        .lineLimit(1)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(RelayTheme.softFill)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var multiLineBubble: some View {
+        MarkdownContentView(source: text)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(RelayTheme.softFill)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var canAttemptSingleLineLayout: Bool {
+        guard !text.contains(where: \.isNewline) else { return false }
+        let blocks = MarkdownParser.parse(text)
+        guard blocks.count == 1, case .paragraph = blocks[0] else { return false }
+        return true
     }
 }
 

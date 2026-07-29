@@ -3,6 +3,9 @@ import SwiftUI
 struct DiagnosticsView: View {
     @EnvironmentObject private var store: RelayStore
     @Environment(\.dismiss) private var dismiss
+    @State private var diagnosticsExport: SharedFile?
+    @State private var exportURLToRemove: URL?
+    @State private var isExporting = false
 
     var body: some View {
         NavigationStack {
@@ -76,14 +79,42 @@ struct DiagnosticsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { store.exportDiagnostics() } label: { Image(systemName: "square.and.arrow.up") }
-                        .disabled(store.diagnosticsReport == nil)
+                    Button { beginExport() } label: {
+                        if isExporting {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "square.and.arrow.up")
+                        }
+                    }
+                    .disabled(store.diagnosticsReport == nil || isExporting)
                 }
                 ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
             }
             .refreshable { await store.refreshDiagnostics() }
             .task { await store.refreshDiagnostics() }
+            .sheet(item: $diagnosticsExport, onDismiss: removeExportedFile) { file in
+                ShareSheet(items: [file.url])
+            }
         }
+    }
+
+    private func beginExport() {
+        guard !isExporting else { return }
+        isExporting = true
+        Task {
+            let file = await store.prepareDiagnosticsExport()
+            isExporting = false
+            guard let file else { return }
+            removeExportedFile()
+            exportURLToRemove = file.url
+            diagnosticsExport = file
+        }
+    }
+
+    private func removeExportedFile() {
+        guard let url = exportURLToRemove else { return }
+        exportURLToRemove = nil
+        try? FileManager.default.removeItem(at: url)
     }
 
     private func color(for level: String) -> Color {

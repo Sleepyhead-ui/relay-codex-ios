@@ -208,13 +208,6 @@ struct ComposerView: View {
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
         .animation(.easeOut(duration: 0.18), value: focused)
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Done") { focused = false }
-                    .fontWeight(.semibold)
-            }
-        }
         .photosPicker(
             isPresented: $showingPhotoPicker,
             selection: $selectedPhotos,

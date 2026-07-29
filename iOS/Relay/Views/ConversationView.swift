@@ -8,6 +8,7 @@ struct ConversationView: View {
     @State private var autoScrollScheduled = false
     @State private var visibleGroupLimit = 24
     @State private var activityPresentation: MobileActivityPresentation?
+    @State private var keyboardTransitionID: UUID?
 
     private let bottomAnchor = "relay-conversation-bottom"
 
@@ -194,7 +195,9 @@ struct ConversationView: View {
                                 .frame(height: 1)
                                 .id(bottomAnchor)
                                 .onAppear { isAtBottom = true }
-                                .onDisappear { isAtBottom = false }
+                                .onDisappear {
+                                    if keyboardTransitionID == nil { isAtBottom = false }
+                                }
                         }
                         .frame(maxWidth: RelayTheme.contentWidth)
                         .padding(.horizontal, RelayTheme.horizontalPadding)
@@ -258,17 +261,16 @@ struct ConversationView: View {
                         scrollToBottom(proxy, animated: !store.isRunning)
                     }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-                    guard isAtBottom else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                        guard isAtBottom else { return }
-                        scrollToBottom(proxy, animated: false)
-                    }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
+                    pinBottomDuringKeyboardTransition(notification, proxy: proxy)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
+                    pinBottomDuringKeyboardTransition(notification, proxy: proxy)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: Notification.Name("relay.composer.layoutChanged"))) { _ in
-                    guard isAtBottom else { return }
+                    let shouldKeepBottomVisible = isAtBottom || keyboardTransitionID != nil
+                    guard shouldKeepBottomVisible else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        guard isAtBottom else { return }
                         scrollToBottom(proxy, animated: false)
                     }
                 }
@@ -306,6 +308,25 @@ struct ConversationView: View {
             await store.loadOlderTurns()
             visibleGroupLimit += 12
             restore(anchor: anchor, proxy: proxy)
+        }
+    }
+
+    private func pinBottomDuringKeyboardTransition(
+        _ notification: Notification,
+        proxy: ScrollViewProxy
+    ) {
+        guard isAtBottom || keyboardTransitionID != nil else { return }
+        let transitionID = UUID()
+        keyboardTransitionID = transitionID
+        let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
+            .doubleValue ?? 0.25
+
+        DispatchQueue.main.async { scrollToBottom(proxy, animated: false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.04) {
+            guard keyboardTransitionID == transitionID else { return }
+            scrollToBottom(proxy, animated: false)
+            isAtBottom = true
+            keyboardTransitionID = nil
         }
     }
 

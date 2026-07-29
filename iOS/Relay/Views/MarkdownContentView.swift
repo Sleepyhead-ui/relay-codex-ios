@@ -115,12 +115,20 @@ struct InlineMarkdownText: View {
     let size: CGFloat
     let weight: Font.Weight
     let lineSpacing: CGFloat
+    let expandsHorizontally: Bool
 
-    init(_ text: String, size: CGFloat, weight: Font.Weight = .regular, lineSpacing: CGFloat = 4) {
+    init(
+        _ text: String,
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        lineSpacing: CGFloat = 4,
+        expandsHorizontally: Bool = true
+    ) {
         self.text = text
         self.size = size
         self.weight = weight
         self.lineSpacing = lineSpacing
+        self.expandsHorizontally = expandsHorizontally
     }
 
     var body: some View {
@@ -129,14 +137,14 @@ struct InlineMarkdownText: View {
                 .font(.system(size: size, weight: weight))
                 .lineSpacing(lineSpacing)
                 .tint(RelayTheme.accent)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: expandsHorizontally ? .infinity : nil, alignment: .leading)
+                .fixedSize(horizontal: !expandsHorizontally, vertical: true)
         } else {
             Text(text)
                 .font(.system(size: size, weight: weight))
                 .lineSpacing(lineSpacing)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: expandsHorizontally ? .infinity : nil, alignment: .leading)
+                .fixedSize(horizontal: !expandsHorizontally, vertical: true)
         }
     }
 
