@@ -54,7 +54,9 @@ struct TurnGroupView: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: activityExpanded) { expanded in
-            renderedActivitySectionCount = expanded ? min(max(renderedActivitySectionCount, 8), totalActivitySectionCount) : 0
+            if expanded {
+                renderedActivitySectionCount = min(max(renderedActivitySectionCount, 8), totalActivitySectionCount)
+            }
         }
         .onChange(of: isLive) { running in
             if running {
@@ -62,7 +64,6 @@ struct TurnGroupView: View, Equatable {
                 renderedActivitySectionCount = min(max(renderedActivitySectionCount, 8), totalActivitySectionCount)
             } else {
                 activityExpanded = false
-                renderedActivitySectionCount = 0
             }
         }
     }
@@ -317,6 +318,86 @@ private struct DownloadFileLinks: View {
     }
 }
 
+private struct DisclosureHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct StableDisclosureContent<Content: View>: View {
+    let expanded: Bool
+    let duration: Double
+    private let content: () -> Content
+    @State private var measuredHeight: CGFloat = 0
+    @State private var mounted: Bool
+    @State private var revealed: Bool
+    @State private var transitionGeneration = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(expanded: Bool, duration: Double = 0.16, @ViewBuilder content: @escaping () -> Content) {
+        self.expanded = expanded
+        self.duration = duration
+        self.content = content
+        _mounted = State(initialValue: expanded)
+        _revealed = State(initialValue: expanded)
+    }
+
+    var body: some View {
+        Group {
+            if mounted {
+                content()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: DisclosureHeightPreferenceKey.self, value: proxy.size.height)
+                        }
+                    }
+                    .frame(height: revealed ? measuredHeight : 0, alignment: .top)
+                    .clipped()
+                    .opacity(revealed ? 1 : 0)
+                    .allowsHitTesting(revealed)
+                    .accessibilityHidden(!revealed)
+                    .animation(reduceMotion ? nil : .easeOut(duration: duration), value: revealed)
+            }
+        }
+        .onChange(of: expanded) { shouldExpand in
+            transitionGeneration += 1
+            let generation = transitionGeneration
+            if shouldExpand {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { mounted = true }
+            } else {
+                revealed = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0 : duration + 0.03)) {
+                    guard generation == transitionGeneration, !revealed else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        mounted = false
+                        measuredHeight = 0
+                    }
+                }
+            }
+        }
+        .onPreferenceChange(DisclosureHeightPreferenceKey.self) { height in
+            guard mounted, height > 0, abs(height - measuredHeight) > 0.5 else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { measuredHeight = height }
+            if expanded, !revealed {
+                let generation = transitionGeneration
+                DispatchQueue.main.async {
+                    guard generation == transitionGeneration, expanded, mounted else { return }
+                    revealed = true
+                }
+            }
+        }
+    }
+}
+
 private struct RunActivityView: View {
     let items: [TranscriptItem]
     let metadata: TurnMetadata
@@ -368,6 +449,7 @@ private struct RunActivityView: View {
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundStyle(.tertiary)
                                 .rotationEffect(.degrees(expanded ? 180 : 0))
+                                .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: expanded)
                                 .frame(height: 16, alignment: .center)
                         }
                     }
@@ -377,7 +459,7 @@ private struct RunActivityView: View {
                 .buttonStyle(.plain)
             }
 
-            if expanded {
+            StableDisclosureContent(expanded: expanded) {
                 VStack(alignment: .leading, spacing: 5) {
                     if visibleSectionCount > 0 {
                         RunActivityDetails(items: items, visibleSectionCount: visibleSectionCount, isLive: isLive)
@@ -396,14 +478,12 @@ private struct RunActivityView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
 
     private func toggleExpanded() {
-        if reduceMotion { expanded.toggle() }
-        else { withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() } }
+        expanded.toggle()
     }
 
     private var elapsedMilliseconds: Int {
@@ -637,13 +717,14 @@ private struct ExecutionGroupView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(expanded ? 180 : 0))
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: expanded)
                 }
                 .contentShape(Rectangle())
                 .padding(.vertical, 5)
             }
             .buttonStyle(.plain)
 
-            if expanded {
+            StableDisclosureContent(expanded: expanded, duration: 0.14) {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(items) { item in
                         if item.kind == .command {
@@ -654,14 +735,12 @@ private struct ExecutionGroupView: View {
                     }
                 }
                 .padding(.leading, 18)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
 
     private func toggleExpanded() {
-        if reduceMotion { expanded.toggle() }
-        else { withAnimation(.easeOut(duration: 0.14)) { expanded.toggle() } }
+        expanded.toggle()
     }
 
     @ViewBuilder
@@ -700,8 +779,7 @@ private struct CompactCommandRow: View {
         VStack(alignment: .leading, spacing: 3) {
             Button {
                 guard hasDetails else { return }
-                if reduceMotion { expanded.toggle() }
-                else { withAnimation(.easeOut(duration: 0.14)) { expanded.toggle() } }
+                expanded.toggle()
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "terminal")
@@ -726,6 +804,7 @@ private struct CompactCommandRow: View {
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: expanded)
                     }
                 }
                 .contentShape(Rectangle())
@@ -733,7 +812,7 @@ private struct CompactCommandRow: View {
             }
             .buttonStyle(.plain)
 
-            if expanded {
+            StableDisclosureContent(expanded: expanded, duration: 0.14) {
                 VStack(alignment: .leading, spacing: 3) {
                     if let error = item.errorMessage?.nonEmpty {
                         Text(error)
@@ -752,7 +831,6 @@ private struct CompactCommandRow: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -795,8 +873,7 @@ private struct ToolEventRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 guard hasExpandableContent else { return }
-                if reduceMotion { expanded.toggle() }
-                else { withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() } }
+                expanded.toggle()
             } label: {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon)
@@ -855,6 +932,7 @@ private struct ToolEventRow: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10, weight: .semibold))
                             .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: expanded)
                             .foregroundStyle(.tertiary)
                             .padding(.top, 4)
                     }
@@ -889,17 +967,18 @@ private struct ToolEventRow: View {
                 .padding(.bottom, 8)
             }
 
-            if expanded, let detail = item.detail, !detail.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("技术详情")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    detailView(detail)
+            if let detail = item.detail, !detail.isEmpty {
+                StableDisclosureContent(expanded: expanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("技术详情")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                        detailView(detail)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, item.kind == .fileChange ? 0 : 29)
+                    .padding(.bottom, 10)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, item.kind == .fileChange ? 0 : 29)
-                .padding(.bottom, 10)
-                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
