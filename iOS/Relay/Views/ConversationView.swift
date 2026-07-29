@@ -194,6 +194,7 @@ struct ConversationView: View {
                                 .frame(height: 1)
                                 .id(bottomAnchor)
                                 .onAppear { isAtBottom = true }
+                                .onDisappear { isAtBottom = false }
                         }
                         .frame(maxWidth: RelayTheme.contentWidth)
                         .padding(.horizontal, RelayTheme.horizontalPadding)
@@ -206,7 +207,6 @@ struct ConversationView: View {
                         DragGesture(minimumDistance: 4)
                             .onChanged { _ in
                                 if !isUserScrolling { isUserScrolling = true }
-                                if isAtBottom { isAtBottom = false }
                             }
                             .onEnded { _ in
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
