@@ -2,6 +2,25 @@ import XCTest
 @testable import Relay
 
 final class TranscriptReconcilerTests: XCTestCase {
+    func testUnknownAssistantDeltaDoesNotBecomeCommentary() throws {
+        let update = TranscriptDeltaUpdate(
+            id: "answer.1",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            title: nil,
+            text: "正在流式显示正式回复",
+            detail: "",
+            phase: nil
+        )
+
+        let item = try XCTUnwrap(TranscriptReconciler.applyDeltaBatch([update], to: []).first)
+
+        XCTAssertNil(item.phase)
+        XCTAssertTrue(item.isFinalAnswer)
+        XCTAssertFalse(item.isCommentary)
+    }
+
     func testSessionPatchUpdatesAddsAndRemovesOnlyTheCurrentTurn() {
         let existing = [
             TranscriptItem(id: "older", turnId: "turn.0", role: .assistant, kind: .message, text: "older"),

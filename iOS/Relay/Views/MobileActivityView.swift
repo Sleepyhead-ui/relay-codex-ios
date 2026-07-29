@@ -8,62 +8,79 @@ struct MobileActivityPresentation: Identifiable {
     let plan: [ExecutionPlanStep]
 }
 
-struct MobileActivityBar: View {
+struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
-    let action: () -> Void
+    let showTimeline: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
+        VStack(spacing: 0) {
+            HStack(spacing: 9) {
                 ProgressView()
                     .controlSize(.small)
                     .tint(RelayTheme.accent)
-                    .frame(width: 20, height: 20)
+                    .frame(width: 18, height: 18)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text("正在处理 \(elapsedText(at: context.date))")
-                        }
-                        .font(.system(size: 12, weight: .semibold))
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("正在处理 \(elapsedText(at: context.date))")
+                }
+                .font(.system(size: 12, weight: .semibold))
 
-                        if !presentation.plan.isEmpty {
-                            Text(planProgress)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-
-                    Text(latestActivityText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                if !presentation.plan.isEmpty {
+                    Text(planProgress)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                 }
 
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 8)
+
+                Button(action: showTimeline) {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看完整任务活动")
             }
             .padding(.horizontal, 13)
-            .frame(height: 54)
-            .background(RelayTheme.elevated)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(RelayTheme.hairline, lineWidth: 1)
+            .frame(height: 38)
+
+            Divider().opacity(0.45)
+
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(RelayTheme.accent)
+                    .frame(width: 16, height: 16)
+
+                Text(thinkingText)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 13)
+            .frame(height: 34)
+
+            MobileProgressWindow(feed: presentation.feed)
+                .padding(.horizontal, 9)
+
+            MobileToolWindow(feed: presentation.feed, showTimeline: showTimeline)
+                .padding(.horizontal, 9)
+                .padding(.top, 7)
+                .padding(.bottom, 9)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("查看当前任务活动")
+        .background(RelayTheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(RelayTheme.hairline, lineWidth: 1)
+        }
     }
 
-    private var latestActivityText: String {
-        if let activeStep = presentation.plan.first(where: { !$0.isCompleted }) {
-            return activeStep.text
-        }
-        return presentation.feed.latestText ?? "Codex 正在开始任务"
+    private var thinkingText: String {
+        presentation.feed.latestReasoningText ?? "正在分析任务"
     }
 
     private var planProgress: String {
@@ -79,23 +96,248 @@ struct MobileActivityBar: View {
     }
 }
 
+private struct MobileProgressWindow: View {
+    let feed: MobileActivityFeed
+    @State private var followsLatest = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            windowHeader(title: "进展", count: feed.progressItems.count)
+
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(alignment: .leading, spacing: 7) {
+                            if feed.progressItems.isEmpty {
+                                Text("等待任务进展")
+                                    .foregroundStyle(.tertiary)
+                            } else {
+                                ForEach(feed.progressItems) { item in
+                                    Text(cleanActivityText(item.text))
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .id(item.id)
+                                }
+                            }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id("mobile-progress-bottom")
+                                .onAppear { followsLatest = true }
+                        }
+                        .font(.system(size: 11.5))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 5)
+                            .onChanged { _ in followsLatest = false }
+                    )
+                    .onAppear { scrollToLatest(proxy, animated: false) }
+                    .onChange(of: feed.progressRevision) { _ in
+                        guard followsLatest else { return }
+                        scrollToLatest(proxy, animated: false)
+                    }
+
+                    if !followsLatest, !feed.progressItems.isEmpty {
+                        latestButton {
+                            followsLatest = true
+                            scrollToLatest(proxy, animated: true)
+                        }
+                    }
+                }
+            }
+            .frame(height: 72)
+        }
+        .background(RelayTheme.softFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
+                }
+            } else {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+private struct MobileToolWindow: View {
+    let feed: MobileActivityFeed
+    let showTimeline: () -> Void
+    @State private var followsLatest = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            windowHeader(title: "操作", count: feed.toolItems.count)
+
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            if feed.toolItems.isEmpty {
+                                Text("尚未执行工具或文件操作")
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.tertiary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                ForEach(feed.toolItems) { item in
+                                    Button(action: showTimeline) {
+                                        HStack(spacing: 7) {
+                                            toolStatus(item)
+                                            Image(systemName: toolIcon(item))
+                                                .font(.system(size: 9.5, weight: .medium))
+                                                .foregroundStyle(.secondary)
+                                                .frame(width: 13)
+                                            Text(toolTitle(item))
+                                                .font(.system(size: 11.5, weight: .medium))
+                                                .foregroundStyle(item.isFailedStatus ? Color.red : Color.primary)
+                                                .lineLimit(1)
+                                            Spacer(minLength: 4)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .id(item.id)
+                                }
+                            }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id("mobile-tools-bottom")
+                                .onAppear { followsLatest = true }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 5)
+                            .onChanged { _ in followsLatest = false }
+                    )
+                    .onAppear { scrollToLatest(proxy, animated: false) }
+                    .onChange(of: feed.toolRevision) { _ in
+                        guard followsLatest else { return }
+                        scrollToLatest(proxy, animated: false)
+                    }
+
+                    if !followsLatest, !feed.toolItems.isEmpty {
+                        latestButton {
+                            followsLatest = true
+                            scrollToLatest(proxy, animated: true)
+                        }
+                    }
+                }
+            }
+            .frame(height: 58)
+        }
+        .background(RelayTheme.codeFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func toolStatus(_ item: TranscriptItem) -> some View {
+        if item.isRunningStatus {
+            ProgressView().controlSize(.mini).frame(width: 12, height: 12)
+        } else {
+            Image(systemName: item.isFailedStatus ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(item.isFailedStatus ? Color.red : RelayTheme.accent)
+                .frame(width: 12, height: 12)
+        }
+    }
+
+    private func toolIcon(_ item: TranscriptItem) -> String {
+        switch item.kind {
+        case .command: return "terminal"
+        case .fileChange: return "doc.badge.plus"
+        case .webSearch: return "globe"
+        default: return "wrench.and.screwdriver"
+        }
+    }
+
+    private func toolTitle(_ item: TranscriptItem) -> String {
+        if item.kind == .command, let command = item.text.nonEmpty { return command }
+        return item.title?.nonEmpty ?? item.text.nonEmpty ?? "工具操作"
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("mobile-tools-bottom", anchor: .bottom)
+                }
+            } else {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo("mobile-tools-bottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+private func windowHeader(title: String, count: Int) -> some View {
+    HStack(spacing: 5) {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+        if count > 0 {
+            Text("\(count)")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+        Spacer()
+    }
+    .padding(.horizontal, 10)
+    .frame(height: 22)
+}
+
+private func latestButton(action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: "arrow.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 25, height: 25)
+            .background(.ultraThinMaterial)
+            .clipShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(5)
+}
+
+private func cleanActivityText(_ source: String) -> String {
+    source
+        .replacingOccurrences(of: #"</?thinking\b[^>]*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+        .replacingOccurrences(of: "**", with: "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
 struct MobileCompletedActivityRow: View {
     let id: String
     let items: [TranscriptItem]
     let metadata: TurnMetadata
-    @State private var presentation: MobileActivityPresentation?
+    let action: (MobileActivityPresentation) -> Void
 
     var body: some View {
         let feed = MobileActivityFeed.make(items: items)
         if !feed.entries.isEmpty || metadata.durationMs != nil {
             Button {
-                presentation = MobileActivityPresentation(
+                action(MobileActivityPresentation(
                     id: id,
                     feed: feed,
                     metadata: metadata,
                     isLive: false,
                     plan: []
-                )
+                ))
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: statusIcon)
@@ -122,9 +364,6 @@ struct MobileCompletedActivityRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .sheet(item: $presentation) { presentation in
-                MobileActivitySheet(presentation: presentation)
-            }
         }
     }
 
@@ -207,23 +446,20 @@ struct MobileActivitySheet: View {
     }
 
     private var resolvedPresentation: MobileActivityPresentation {
-        guard presentation.isLive,
-              store.isRunning,
-              let threadId = store.selectedThreadId else { return presentation }
-        let turnId = store.activeTurnId
-        let items = turnId.map { activeTurnId in
-            store.messages.filter { $0.turnId == activeTurnId && $0.isActivity }
-        } ?? []
-        var metadata = turnId.flatMap { store.turnMetadata[$0] } ?? presentation.metadata
+        let turnId = presentation.isLive ? (store.activeTurnId ?? presentation.id) : presentation.id
+        let items = store.messages.filter { $0.turnId == turnId && $0.isActivity }
+        guard !items.isEmpty || store.turnMetadata[turnId] != nil else { return presentation }
+        var metadata = store.turnMetadata[turnId] ?? presentation.metadata
         if metadata.startedAt == nil {
-            metadata.startedAt = store.taskRunStates[threadId]?.startedAt
+            metadata.startedAt = store.selectedThreadId.flatMap { store.taskRunStates[$0]?.startedAt }
         }
+        let isLive = store.isRunning && store.activeTurnId == turnId
         return MobileActivityPresentation(
-            id: turnId ?? presentation.id,
+            id: turnId,
             feed: MobileActivityFeed.make(items: items),
             metadata: metadata,
-            isLive: true,
-            plan: store.activePlan
+            isLive: isLive,
+            plan: isLive ? store.activePlan : []
         )
     }
 }

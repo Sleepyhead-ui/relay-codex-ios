@@ -6,16 +6,32 @@ extension RelayStore {
         TranscriptReconciler.upsert(item, into: &messages)
     }
 
-    func appendDelta(id: String?, delta: String?, turnId: String?, role: TranscriptRole, kind: TranscriptKind, title: String? = nil) {
+    func appendDelta(
+        id: String?,
+        delta: String?,
+        turnId: String?,
+        role: TranscriptRole,
+        kind: TranscriptKind,
+        title: String? = nil,
+        phase: String? = nil
+    ) {
         guard let id, let delta else { return }
         socket.performanceMetrics.recordQueuedDelta()
         if pendingTextDeltas[id] == nil && pendingDetailDeltas[id] == nil { pendingDeltaOrder.append(id) }
         if var pending = pendingTextDeltas[id] {
             pending.text += delta
             if pending.turnId == nil { pending.turnId = turnId }
+            if pending.phase == nil { pending.phase = phase }
             pendingTextDeltas[id] = pending
         } else {
-            pendingTextDeltas[id] = PendingTextDelta(text: delta, turnId: turnId, role: role, kind: kind, title: title)
+            pendingTextDeltas[id] = PendingTextDelta(
+                text: delta,
+                turnId: turnId,
+                role: role,
+                kind: kind,
+                title: title,
+                phase: phase
+            )
         }
         scheduleDeltaFlush()
     }
@@ -61,10 +77,10 @@ extension RelayStore {
         pendingDeltaOrder.removeAll(keepingCapacity: true)
         let updates = pendingOrder.compactMap { id -> TranscriptDeltaUpdate? in
             if let text = pendingText[id], let detail = pendingDetail[id] {
-                return TranscriptDeltaUpdate(id: id, turnId: text.turnId ?? detail.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: detail.text, phase: text.role == .assistant ? "commentary" : nil)
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId ?? detail.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: detail.text, phase: text.phase)
             }
             if let text = pendingText[id] {
-                return TranscriptDeltaUpdate(id: id, turnId: text.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: "", phase: text.role == .assistant ? "commentary" : nil)
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: "", phase: text.phase)
             }
             if let detail = pendingDetail[id] {
                 return TranscriptDeltaUpdate(id: id, turnId: detail.turnId, role: .tool, kind: detail.kind, title: detail.kind == .reasoning ? "思考" : "运行命令", text: "", detail: detail.text)
@@ -285,4 +301,5 @@ struct PendingTextDelta {
     let role: TranscriptRole
     let kind: TranscriptKind
     let title: String?
+    var phase: String?
 }

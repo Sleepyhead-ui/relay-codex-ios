@@ -19,7 +19,10 @@ struct MobileActivityFeed: Equatable {
             }
 
             let text = TranscriptReconciler.normalizedText(item.text)
-            guard !text.isEmpty else { continue }
+            guard !text.isEmpty else {
+                if item.detail?.nonEmpty != nil { normalized.append(item) }
+                continue
+            }
             if let index = normalized.firstIndex(where: { candidate in
                 guard candidate.isCommentary else { return false }
                 let candidateText = TranscriptReconciler.normalizedText(candidate.text)
@@ -38,7 +41,9 @@ struct MobileActivityFeed: Equatable {
             }
         }
 
-        let latestReasoningId = normalized.last(where: { $0.kind == .reasoning })?.id
+        let latestReasoningId = normalized.last(where: {
+            $0.kind == .reasoning || ($0.isCommentary && $0.detail?.nonEmpty != nil)
+        })?.id
         var entries: [MobileActivityEntry] = []
         var pendingTools: [TranscriptItem] = []
 
@@ -49,11 +54,20 @@ struct MobileActivityFeed: Equatable {
         }
 
         for item in normalized {
-            if item.kind == .reasoning {
+            if item.kind == .reasoning || (item.isCommentary && item.detail?.nonEmpty != nil) {
                 guard item.id == latestReasoningId,
-                      let text = latestLine(item.text.nonEmpty ?? item.detail) else { continue }
+                      let text = latestLine(item.detail?.nonEmpty ?? item.text.nonEmpty) else {
+                    if item.isCommentary, let text = item.text.nonEmpty {
+                        flushTools()
+                        entries.append(.progress(id: "progress.\(item.id)", text: text))
+                    }
+                    continue
+                }
                 flushTools()
                 entries.append(.reasoning(id: "reasoning.\(item.id)", text: text))
+                if item.isCommentary, let progress = item.text.nonEmpty {
+                    entries.append(.progress(id: "progress.\(item.id)", text: progress))
+                }
             } else if item.isCommentary {
                 flushTools()
                 if let text = item.text.nonEmpty {
@@ -78,6 +92,37 @@ struct MobileActivityFeed: Equatable {
         return nil
     }
 
+    var latestReasoningText: String? {
+        entries.reversed().lazy.compactMap { entry -> String? in
+            if case .reasoning(_, let text) = entry { return text }
+            return nil
+        }.first
+    }
+
+    var progressItems: [MobileProgressItem] {
+        entries.compactMap { entry in
+            guard case .progress(let id, let text) = entry else { return nil }
+            return MobileProgressItem(id: id, text: text)
+        }
+    }
+
+    var toolItems: [TranscriptItem] {
+        entries.flatMap { entry -> [TranscriptItem] in
+            if case .tools(_, let items) = entry { return items }
+            return []
+        }
+    }
+
+    var progressRevision: String {
+        guard let latest = progressItems.last else { return "progress.empty" }
+        return "\(progressItems.count).\(latest.id).\(latest.text)"
+    }
+
+    var toolRevision: String {
+        guard let latest = toolItems.last else { return "tools.empty" }
+        return "\(toolItems.count).\(latest.id).\(latest.status ?? "").\(latest.detail?.count ?? 0)"
+    }
+
     var eventCount: Int {
         entries.reduce(0) { result, entry in
             switch entry {
@@ -88,14 +133,7 @@ struct MobileActivityFeed: Equatable {
     }
 
     var completedSummary: String {
-        let toolItems = entries.flatMap { entry -> [TranscriptItem] in
-            if case .tools(_, let items) = entry { return items }
-            return []
-        }
-        let progressCount = entries.filter {
-            if case .progress = $0 { return true }
-            return false
-        }.count
+        let progressCount = progressItems.count
         var parts: [String] = []
         if progressCount > 0 { parts.append("\(progressCount) 条进展") }
         if !toolItems.isEmpty { parts.append(MobileActivityFeed.toolSummary(toolItems)) }
@@ -114,10 +152,18 @@ struct MobileActivityFeed: Equatable {
     }
 
     private static func latestLine(_ source: String?) -> String? {
-        source?.suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
+        source?
+            .replacingOccurrences(of: #"</?thinking\b[^>]*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "**", with: "")
+            .suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
     }
+}
+
+struct MobileProgressItem: Identifiable, Equatable {
+    let id: String
+    let text: String
 }
 
 enum MobileActivityEntry: Identifiable, Equatable {

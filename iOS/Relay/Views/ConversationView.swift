@@ -20,7 +20,7 @@ struct ConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 if let presentation = liveActivityPresentation {
-                    MobileActivityBar(presentation: presentation) {
+                    MobileLiveActivityConsole(presentation: presentation) {
                         activityPresentation = presentation
                     }
                     .padding(.horizontal, RelayTheme.horizontalPadding)
@@ -178,7 +178,11 @@ struct ConversationView: View {
                             }
 
                             ForEach(window.groups) { group in
-                                TurnGroupView(group: group, isLive: group.turnId == store.activeTurnId)
+                                TurnGroupView(
+                                    group: group,
+                                    isLive: group.turnId == store.activeTurnId,
+                                    onOpenActivity: { activityPresentation = $0 }
+                                )
                                     .equatable()
                                     .id(group.id)
                             }

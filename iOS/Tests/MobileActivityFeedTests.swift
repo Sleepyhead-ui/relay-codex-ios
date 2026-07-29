@@ -92,6 +92,41 @@ final class MobileActivityFeedTests: XCTestCase {
         XCTAssertEqual(feed.completedSummary, "1 条命令 · 1 个文件")
     }
 
+    func testUsesEmbeddedThinkingAsLatestReasoningWithoutDroppingProgress() {
+        let commentary = TranscriptItem(
+            id: "commentary.1",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            text: "正在核对实时事件",
+            detail: "**Checking event phases**",
+            phase: "commentary"
+        )
+
+        let feed = MobileActivityFeed.make(items: [commentary])
+
+        XCTAssertEqual(feed.latestReasoningText, "Checking event phases")
+        XCTAssertEqual(feed.progressItems.map(\.text), ["正在核对实时事件"])
+    }
+
+    func testExposesSeparateProgressAndToolCollections() {
+        let progress = progress(id: "one", text: "正在构建界面")
+        let command = TranscriptItem(
+            id: "command.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "xcodebuild test"
+        )
+
+        let feed = MobileActivityFeed.make(items: [progress, command])
+
+        XCTAssertEqual(feed.progressItems.map(\.id), ["progress.one"])
+        XCTAssertEqual(feed.toolItems.map(\.id), ["command.1"])
+        XCTAssertNotEqual(feed.progressRevision, "progress.empty")
+        XCTAssertNotEqual(feed.toolRevision, "tools.empty")
+    }
+
     private func progress(id: String, text: String) -> TranscriptItem {
         TranscriptItem(
             id: id,

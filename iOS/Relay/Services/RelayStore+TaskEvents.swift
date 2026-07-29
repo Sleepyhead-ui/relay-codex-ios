@@ -101,7 +101,14 @@ extension RelayStore {
         case "item/agentMessage/delta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
-            appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .assistant, kind: .message)
+            appendDelta(
+                id: params["itemId"]?.stringValue,
+                delta: params["delta"]?.stringValue,
+                turnId: eventTurnId,
+                role: .assistant,
+                kind: .message,
+                phase: params["phase"]?.stringValue
+            )
         case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)

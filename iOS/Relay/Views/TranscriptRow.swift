@@ -3,6 +3,7 @@ import SwiftUI
 struct TurnGroupView: View, Equatable {
     let group: TranscriptGroup
     let isLive: Bool
+    let onOpenActivity: (MobileActivityPresentation) -> Void
 
     static func == (lhs: TurnGroupView, rhs: TurnGroupView) -> Bool {
         lhs.group == rhs.group && lhs.isLive == rhs.isLive
@@ -25,9 +26,10 @@ struct TurnGroupView: View, Equatable {
 
             if !isLive, !group.activityItems.isEmpty {
                 MobileCompletedActivityRow(
-                    id: "completed.\(group.id)",
+                    id: group.turnId ?? group.id,
                     items: group.activityItems,
-                    metadata: group.metadata
+                    metadata: group.metadata,
+                    action: onOpenActivity
                 )
             }
 
