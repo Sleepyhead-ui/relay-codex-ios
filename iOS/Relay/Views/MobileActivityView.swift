@@ -12,6 +12,7 @@ struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
     let compact: Bool
     let showTimeline: () -> Void
+    @State private var manuallyCollapsed = false
 
     var body: some View {
         let hasThinking = presentation.feed.latestReasoningText?.nonEmpty != nil
@@ -32,6 +33,20 @@ struct MobileLiveActivityConsole: View {
 
                 Spacer(minLength: 8)
 
+                if !compact {
+                    Button {
+                        manuallyCollapsed.toggle()
+                    } label: {
+                        Image(systemName: manuallyCollapsed ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, height: 30)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(manuallyCollapsed ? "展开当前任务" : "折叠当前任务")
+                }
+
                 Button(action: showTimeline) {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 12, weight: .semibold))
@@ -45,18 +60,18 @@ struct MobileLiveActivityConsole: View {
             .padding(.horizontal, 13)
             .frame(height: 38)
 
-            if hasThinking || hasProgress || hasTools {
+            if !manuallyCollapsed && (hasThinking || (!compact && (hasProgress || hasTools))) {
                 Divider().opacity(0.45)
             }
 
-            if hasThinking, let thinkingText = presentation.feed.latestReasoningText?.nonEmpty {
+            if !manuallyCollapsed, let summary = compactSummary {
                 HStack(spacing: 8) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(RelayTheme.accent)
                         .frame(width: 16, height: 16)
 
-                    Text(thinkingText)
+                    Text(summary)
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -67,21 +82,21 @@ struct MobileLiveActivityConsole: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if hasProgress {
+            if hasProgress && !compact && !manuallyCollapsed {
                 MobileProgressWindow(feed: presentation.feed, compact: compact)
                     .padding(.horizontal, 7)
                     .padding(.top, hasThinking ? 0 : 8)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if hasTools {
+            if hasTools && !compact && !manuallyCollapsed {
                 MobileToolWindow(feed: presentation.feed, compact: compact, showTimeline: showTimeline)
                     .padding(.horizontal, 7)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if hasThinking || hasProgress || hasTools {
+            if !manuallyCollapsed && (hasThinking || hasProgress || hasTools) {
                 Color.clear.frame(height: 8)
             }
         }
@@ -94,6 +109,20 @@ struct MobileLiveActivityConsole: View {
         .animation(.easeOut(duration: 0.18), value: hasThinking)
         .animation(.easeOut(duration: 0.18), value: hasProgress)
         .animation(.easeOut(duration: 0.18), value: hasTools)
+    }
+
+    private var compactSummary: String? {
+        if let reasoning = presentation.feed.latestReasoningText?.nonEmpty {
+            return cleanActivityText(reasoning)
+        }
+        guard compact else { return nil }
+        if let progress = presentation.feed.progressItems.last?.text.nonEmpty {
+            return cleanActivityText(progress)
+        }
+        if let tool = presentation.feed.toolItems.last {
+            return tool.title?.nonEmpty ?? tool.text.nonEmpty
+        }
+        return nil
     }
 
     private func elapsedText(at date: Date) -> String {

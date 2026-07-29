@@ -17,14 +17,14 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if !store.currentQueuedFollowUps.isEmpty {
+            if !focused, !store.currentQueuedFollowUps.isEmpty {
                 FollowUpQueuePanel(items: store.currentQueuedFollowUps) { id in
                     store.removeQueuedFollowUp(id)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
+            if !focused, let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
                 ContextPressureNotice(
                     percentage: percentage,
                     isBusy: store.isRunning || store.isCompacting
@@ -50,7 +50,7 @@ struct ComposerView: View {
                 }
             }
 
-            if !store.activePlan.isEmpty || visibleGoal != nil {
+            if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {
                 TaskContextPanel(
                     steps: store.activePlan,
                     goal: visibleGoal,
@@ -207,7 +207,6 @@ struct ComposerView: View {
         .padding(.bottom, 0)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
-        .animation(.easeOut(duration: 0.18), value: focused)
         .photosPicker(
             isPresented: $showingPhotoPicker,
             selection: $selectedPhotos,
