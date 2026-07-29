@@ -229,6 +229,7 @@ struct QueuedFollowUp: Identifiable, Equatable {
     let text: String
     let attachmentNames: [String]
     let createdAt: Date
+    let input: [JSONValue]
 
     init?(json: JSONValue) {
         guard let id = json["id"]?.stringValue,
@@ -237,7 +238,9 @@ struct QueuedFollowUp: Identifiable, Equatable {
         self.threadId = threadId
         text = json["text"]?.stringValue ?? ""
         createdAt = Date(timeIntervalSince1970: json["createdAt"]?.doubleValue ?? 0)
-        attachmentNames = (json["input"]?.arrayValue ?? []).compactMap { input in
+        let parsedInput = json["input"]?.arrayValue ?? []
+        input = parsedInput
+        attachmentNames = parsedInput.compactMap { input in
             guard input["type"]?.stringValue != "text" else { return nil }
             if let name = input["name"]?.stringValue?.nonEmpty { return name }
             guard let path = input["path"]?.stringValue?.nonEmpty else { return nil }

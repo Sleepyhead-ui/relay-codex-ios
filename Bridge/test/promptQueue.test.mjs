@@ -51,3 +51,25 @@ test("serializes concurrent persistence without losing prompts", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("edits a queued prompt in place without changing its order or identity", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-prompt-edit-"));
+  const storage = path.join(directory, "queue.json");
+  try {
+    const queue = await PromptQueue.create(storage);
+    const first = await queue.enqueue({ profileId: "profile.1", threadId: "thread.1", text: "before", input: [{ type: "text", text: "before" }] });
+    const second = await queue.enqueue({ profileId: "profile.1", threadId: "thread.1", text: "second", input: [{ type: "text", text: "second" }] });
+    const updated = await queue.update("profile.1", first.id, {
+      text: "after",
+      input: [{ type: "text", text: "after" }, { type: "mention", name: "notes.txt", path: "C:\\notes.txt" }],
+    });
+    assert.equal(updated?.id, first.id);
+    assert.equal(updated?.createdAt, first.createdAt);
+    assert.deepEqual(queue.list("profile.1", "thread.1").map((item) => item.id), [first.id, second.id]);
+    assert.equal(queue.peek("profile.1", "thread.1")?.text, "after");
+    assert.equal((await PromptQueue.create(storage)).peek("profile.1", "thread.1")?.input.length, 2);
+    assert.equal(await queue.update("profile.2", first.id, { text: "blocked", input: [{ type: "text", text: "blocked" }] }), undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

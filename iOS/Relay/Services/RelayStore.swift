@@ -42,6 +42,8 @@ final class RelayStore: ObservableObject {
     @Published var loadingImagePaths = Set<String>()
     @Published var followUpBehavior: FollowUpBehavior = .steer
     @Published var queuedFollowUps: [QueuedFollowUp] = []
+    @Published var editingQueuedFollowUp: QueuedFollowUp?
+    @Published var forkingTurnId: String?
     @Published var taskRunStates: [String: TaskRunState] = [:]
     @Published var goalStates: [String: GoalState] = [:]
     @Published var sendingThreadIds = Set<String>()
@@ -389,6 +391,7 @@ final class RelayStore: ObservableObject {
 
     @discardableResult
     func newThread(workingDirectory: String? = nil) async -> Bool {
+        if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             return false
@@ -475,6 +478,7 @@ final class RelayStore: ObservableObject {
                     reconnectOnTimeout: false
                 )
                 queuedFollowUps.removeAll { $0.id == id }
+                if editingQueuedFollowUp?.id == id { cancelQueuedFollowUpEdit() }
             } catch {
                 report(error)
             }
@@ -488,6 +492,7 @@ final class RelayStore: ObservableObject {
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
         if switchingThreads {
+            if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
             // Composer modes belong to the selected thread. The resumed thread can
             // restore Plan mode through thread/settings/updated after it loads.
             composerMode = .standard
@@ -760,6 +765,47 @@ final class RelayStore: ObservableObject {
             applyGoalResult(result["goal"], threadId: threadId)
         } catch {
             // Goal mode is optional on older App Server and Bridge versions.
+        }
+    }
+
+    func forkThread(through turnId: String) async {
+        guard let sourceThreadId = selectedThreadId, forkingTurnId == nil else { return }
+        guard socket.state == .connected else {
+            socket.reconnectIfNeeded()
+            errorMessage = "尚未连接到 Windows，暂时无法创建分支。"
+            return
+        }
+        guard !isRunning else {
+            errorMessage = "当前任务完成后才能从这一轮创建分支。"
+            return
+        }
+        forkingTurnId = turnId
+        defer { forkingTurnId = nil }
+        do {
+            let result = try await socket.rpc(
+                method: "thread/fork",
+                params: [
+                    "threadId": .string(sourceThreadId),
+                    "lastTurnId": .string(turnId),
+                    "excludeTurns": .bool(true),
+                    "threadSource": .string("relay-ios")
+                ],
+                timeoutSeconds: 30,
+                reconnectOnTimeout: false
+            )
+            guard let forkedThreadId = result["thread"]?["id"]?.stringValue else {
+                throw RelaySocket.SocketError.remote("Codex 未返回新任务编号。")
+            }
+            showingArchivedThreads = false
+            if let summary = ThreadSummary(json: result["thread"] ?? .object([:])) {
+                threads.removeAll { $0.id == summary.id }
+                threads.insert(summary, at: 0)
+                persistThreadCache()
+            }
+            await refreshThreads(showErrors: false)
+            await selectThread(forkedThreadId, closeSidebar: true)
+        } catch {
+            report(error)
         }
     }
 
@@ -1037,6 +1083,7 @@ final class RelayStore: ObservableObject {
         restorationTask?.cancel()
         liveSessionSyncTask?.cancel()
         deltaFlushTask?.cancel()
+        if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         restorationTask = nil
         liveSessionSyncTask = nil
         deltaFlushTask = nil
@@ -1180,6 +1227,12 @@ final class RelayStore: ObservableObject {
         queuedFollowUps.removeAll { $0.threadId == threadId }
         queuedFollowUps.append(contentsOf: replacements)
         queuedFollowUps.sort { $0.createdAt < $1.createdAt }
+        if let editing = editingQueuedFollowUp,
+           editing.threadId == threadId,
+           !replacements.contains(where: { $0.id == editing.id }) {
+            editingQueuedFollowUp = nil
+            errorMessage = "这条排队消息已经开始处理，编辑内容已保留在输入框中。"
+        }
     }
 
     private func handleConnectionRestored() async {
@@ -1246,6 +1299,7 @@ final class RelayStore: ObservableObject {
     private func resetForCodexProfileSwitch() {
         restorationTask?.cancel()
         restorationTask = nil
+        if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         subscribedSessionThreadId = nil

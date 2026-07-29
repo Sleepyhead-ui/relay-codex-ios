@@ -114,7 +114,7 @@ const desktopSync = new DesktopSync(
 );
 const fileTransfer = new FileTransferManager(config.defaultCwd, config.filesRoot);
 const updateManager = new UpdateManager(fileTransfer.filesRoot);
-const promptQueue = await PromptQueue.create();
+const promptQueue = await PromptQueue.create(process.env.RELAY_PROMPT_QUEUE_STORE);
 const dispatchingQueueThreads = new Set<string>();
 const queueRetryTimers = new Map<string, NodeJS.Timeout>();
 const pendingInternalRequests = new Map<string, PendingInternalRequest>();
@@ -462,6 +462,19 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       if (existing) broadcastPromptQueue(existing.threadId);
       return;
     }
+    if (message.method === "relay/prompt/queue/update") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      try {
+        const id = typeof message.params.id === "string" ? message.params.id : "";
+        const item = id ? await promptQueue.update(activeCodexProfile.id, id, message.params) : undefined;
+        if (!item) throw new Error("The queued message is no longer waiting to be processed.");
+        send(socket, { type: "rpcResult", id: message.id, result: { item } });
+        broadcastPromptQueue(item.threadId);
+      } catch (error) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: error instanceof Error ? error.message : "Could not update the queued message." } });
+      }
+      return;
+    }
     if (message.method.startsWith("relay/")) {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -609,7 +622,7 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   if (pending.method === "thread/list" && "result" in message) {
     sessionActivity.observeThreadList(message.result);
-  } else if (pending.method === "thread/resume" && "result" in message) {
+  } else if (["thread/resume", "thread/fork"].includes(pending.method) && "result" in message) {
     sessionActivity.observeThreadResume(message.result);
   }
   if ("result" in message) observeFileTransferWorkspaces(pending.method, message.result);
@@ -633,7 +646,7 @@ function observeFileTransferWorkspaces(method: string, result: unknown): void {
     }
     return;
   }
-  if (["thread/start", "thread/resume", "thread/read"].includes(method) && isObject(object.thread)) {
+  if (["thread/start", "thread/resume", "thread/read", "thread/fork"].includes(method) && isObject(object.thread)) {
     fileTransfer.allowWorkspace(object.thread.cwd);
   }
 }

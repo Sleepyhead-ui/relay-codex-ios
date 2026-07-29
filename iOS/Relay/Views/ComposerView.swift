@@ -18,9 +18,11 @@ struct ComposerView: View {
     var body: some View {
         VStack(spacing: 8) {
             if !focused, !store.currentQueuedFollowUps.isEmpty {
-                FollowUpQueuePanel(items: store.currentQueuedFollowUps) { id in
-                    store.removeQueuedFollowUp(id)
-                }
+                FollowUpQueuePanel(
+                    items: store.currentQueuedFollowUps,
+                    remove: { store.removeQueuedFollowUp($0) },
+                    edit: { store.beginEditingQueuedFollowUp($0) }
+                )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -59,6 +61,10 @@ struct ComposerView: View {
             }
 
             VStack(spacing: 2) {
+                if let editing = store.editingQueuedFollowUp {
+                    queuedEditIndicator(editing)
+                }
+
                 if store.composerMode != .standard {
                     modeIndicator
                 }
@@ -235,6 +241,9 @@ struct ComposerView: View {
         .onChange(of: focused) { value in
             store.composerIsFocused = value
         }
+        .onChange(of: store.editingQueuedFollowUp?.id) { id in
+            if id != nil { focused = true }
+        }
         .onDisappear { store.composerIsFocused = false }
     }
 
@@ -390,6 +399,38 @@ struct ComposerView: View {
         .padding(.top, 5)
     }
 
+    private func queuedEditIndicator(_ item: QueuedFollowUp) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "pencil")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(RelayTheme.accent)
+            Text("编辑排队消息")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(RelayTheme.accent)
+            if !item.attachmentNames.isEmpty {
+                Text("保留 \(item.attachmentNames.count) 个附件")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button { store.cancelQueuedFollowUpEdit() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("取消编辑")
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .frame(height: 30)
+        .background(RelayTheme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 5)
+        .padding(.top, 5)
+    }
+
     private var runConfigurationMenu: some View {
         Menu {
             Menu {
@@ -520,8 +561,9 @@ struct ComposerView: View {
     private var hasDraft: Bool {
         let hasText = !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
+        let hasQueuedFile = store.editingQueuedFollowUp?.input.contains { $0["type"]?.stringValue != "text" } == true
         if store.composerMode == .goal { return hasText }
-        return hasText || hasReadyFile
+        return hasText || hasReadyFile || hasQueuedFile
     }
 
     private var visibleGoal: GoalState? {
@@ -530,6 +572,7 @@ struct ComposerView: View {
     }
 
     private var composerPlaceholder: String {
+        if store.editingQueuedFollowUp != nil { return "编辑排队消息" }
         if store.isRunning { return "引导当前任务" }
         switch store.composerMode {
         case .standard: return "Message Codex"
@@ -549,6 +592,7 @@ struct ComposerView: View {
     }
     private var sendButtonLabel: String {
         if store.isSendingPrompt { return "正在发送" }
+        if store.editingQueuedFollowUp != nil { return "保存修改" }
         if showsStopControl { return "停止任务" }
         if store.isRunning { return store.followUpBehavior == .steer ? "引导当前任务" : "排队到下一轮" }
         return "发送"
@@ -558,6 +602,7 @@ struct ComposerView: View {
 private struct FollowUpQueuePanel: View {
     let items: [QueuedFollowUp]
     let remove: (String) -> Void
+    let edit: (QueuedFollowUp) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -584,6 +629,14 @@ private struct FollowUpQueuePanel: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
+                    Button { edit(item) } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("编辑排队消息")
                     Button { remove(item.id) } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .bold))

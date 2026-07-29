@@ -75,6 +75,22 @@ export class PromptQueue {
     return true;
   }
 
+  async update(profileId: string, id: string, params: JsonObject): Promise<QueuedPrompt | undefined> {
+    const index = this.items.findIndex((item) => item.id === id && item.profileId === profileId);
+    if (index < 0) return undefined;
+    const rawInput = params.input;
+    if (!Array.isArray(rawInput) || rawInput.length === 0) throw new Error("Queued prompt input is required.");
+    const current = this.items[index]!;
+    const updated: QueuedPrompt = {
+      ...current,
+      text: typeof params.text === "string" ? params.text : current.text,
+      input: rawInput,
+    };
+    this.items[index] = updated;
+    await this.persist();
+    return { ...updated, input: [...updated.input] };
+  }
+
   private async load(): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(await readFile(this.storagePath, "utf8"));

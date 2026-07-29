@@ -23,6 +23,7 @@ const bridge = spawn(process.execPath, [path.join(root, "dist", "index.js")], {
     RELAY_FILES_ROOT: filesRoot,
     RELAY_DELIVERY_STORE: path.join(filesRoot, "delivery-registry.json"),
     RELAY_DIAGNOSTICS_STORE: path.join(filesRoot, "diagnostics.json"),
+    RELAY_PROMPT_QUEUE_STORE: path.join(filesRoot, "prompt-queue.json"),
     CODEX_HOME: codexHome,
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -48,7 +49,20 @@ try {
   const download = await rpc("e2e.download.start", "relay/file/download/start", { path: uploaded.path });
   const downloaded = await rpc("e2e.download.chunk", "relay/file/download/chunk", { downloadId: download.downloadId, index: 0 });
   if (Buffer.from(downloaded.data, "base64").toString("utf8") !== "relay-e2e") throw new Error("file transfer content mismatch");
-  console.log(`Relay integration OK; received ${result.data.length} thread(s), ${models.data.length} model(s), and transferred a file.`);
+  const queued = await rpc("e2e.queue.add", "relay/prompt/queue/add", {
+    threadId: "thread.e2e",
+    clientUserMessageId: "message.e2e",
+    text: "before",
+    input: [{ type: "text", text: "before" }],
+  });
+  const edited = await rpc("e2e.queue.update", "relay/prompt/queue/update", {
+    id: queued.item.id,
+    text: "after",
+    input: [{ type: "text", text: "after" }],
+  });
+  if (edited.item.id !== queued.item.id || edited.item.text !== "after") throw new Error("queued prompt update mismatch");
+  await rpc("e2e.queue.remove", "relay/prompt/queue/remove", { id: queued.item.id });
+  console.log(`Relay integration OK; received ${result.data.length} thread(s), ${models.data.length} model(s), transferred a file, and edited a queued prompt.`);
 } catch (error) {
   console.error(output);
   throw error;

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct TurnGroupView: View, Equatable {
     let group: TranscriptGroup
@@ -11,16 +12,25 @@ struct TurnGroupView: View, Equatable {
 
     var body: some View {
         let timeline = timelineSegments
+        let lastAnswerId = group.answerItems.last?.id
 
         VStack(alignment: .leading, spacing: 14) {
             ForEach(timeline) { segment in
                 switch segment {
                 case .user(let item, let isFollowUp):
-                    TranscriptRow(item: item, isFollowUp: isFollowUp)
+                    TranscriptRow(
+                        item: item,
+                        isFollowUp: isFollowUp,
+                        timestamp: group.metadata.startedAt
+                    )
                 case .activity:
                     EmptyView()
                 case .item(let item):
-                    TranscriptRow(item: item)
+                    TranscriptRow(
+                        item: item,
+                        timestamp: item.isFinalAnswer ? (group.metadata.completedAt ?? group.metadata.startedAt) : nil,
+                        forkTurnId: !isLive && item.id == lastAnswerId ? group.turnId : nil
+                    )
                 }
             }
 
@@ -97,11 +107,20 @@ private enum TurnTimelineSegment: Identifiable {
 struct TranscriptRow: View {
     let item: TranscriptItem
     let isFollowUp: Bool
+    let timestamp: Date?
+    let forkTurnId: String?
     @EnvironmentObject private var store: RelayStore
 
-    init(item: TranscriptItem, isFollowUp: Bool = false) {
+    init(
+        item: TranscriptItem,
+        isFollowUp: Bool = false,
+        timestamp: Date? = nil,
+        forkTurnId: String? = nil
+    ) {
         self.item = item
         self.isFollowUp = isFollowUp
+        self.timestamp = timestamp
+        self.forkTurnId = forkTurnId
     }
 
     var body: some View {
@@ -125,6 +144,9 @@ struct TranscriptRow: View {
                     if let deliveryState = item.deliveryState {
                         deliveryStatus(deliveryState)
                     }
+                    if item.deliveryState == nil, !item.text.isEmpty {
+                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: nil)
+                    }
                 }
             }
             .padding(.trailing, -6)
@@ -142,6 +164,9 @@ struct TranscriptRow: View {
                     MarkdownContentView(source: item.textWithoutDownloadLinks)
                     if !item.downloadablePaths.isEmpty {
                         DownloadFileLinks(paths: item.downloadablePaths)
+                    }
+                    if !item.text.isEmpty {
+                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: forkTurnId)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -191,6 +216,57 @@ struct TranscriptRow: View {
         case .uncertain(_): return .orange
         case .sending, .accepted: return .secondary
         }
+    }
+}
+
+private struct MessageActionsRow: View {
+    let text: String
+    let timestamp: Date?
+    let forkTurnId: String?
+    @EnvironmentObject private var store: RelayStore
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Button {
+                UIPasteboard.general.string = text
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(copied ? "已复制" : "复制内容")
+
+            if let forkTurnId {
+                Button {
+                    Task { await store.forkThread(through: forkTurnId) }
+                } label: {
+                    Group {
+                        if store.forkingTurnId == forkTurnId {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.forkingTurnId != nil)
+                .accessibilityLabel("在新任务中继续")
+            }
+
+            if let timestamp {
+                Text(timestamp.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .frame(height: 24)
     }
 }
 

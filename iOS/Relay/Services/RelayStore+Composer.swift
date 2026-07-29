@@ -374,7 +374,8 @@ extension RelayStore {
     func sendPrompt() async {
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         let readyAttachments = attachments.filter { $0.state == .ready && $0.remotePath != nil }
-        guard !text.isEmpty || !readyAttachments.isEmpty else { return }
+        let hasQueuedAttachments = editingQueuedFollowUp?.input.contains { $0["type"]?.stringValue != "text" } == true
+        guard !text.isEmpty || !readyAttachments.isEmpty || hasQueuedAttachments else { return }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             errorMessage = "尚未连接到 Windows，消息仍保留在输入框中。Relay 正在重新连接。"
@@ -387,6 +388,10 @@ extension RelayStore {
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             errorMessage = "Windows 连接已恢复，请稍后重试；输入内容仍保留在输入框中。"
+            return
+        }
+        if editingQueuedFollowUp != nil {
+            await saveQueuedFollowUpEdit(text: text, newAttachments: readyAttachments)
             return
         }
         if selectedThreadId == nil { await newThread() }
@@ -411,6 +416,52 @@ extension RelayStore {
             composerText = ""
             attachments = []
             await startTurn(text: text, readyAttachments: readyAttachments, threadId: threadId)
+        }
+    }
+
+    func beginEditingQueuedFollowUp(_ item: QueuedFollowUp) {
+        guard item.threadId == selectedThreadId else { return }
+        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
+            errorMessage = "请先发送或清空当前输入框，再编辑排队消息。"
+            return
+        }
+        editingQueuedFollowUp = item
+        composerText = item.text
+    }
+
+    func cancelQueuedFollowUpEdit() {
+        guard editingQueuedFollowUp != nil else { return }
+        editingQueuedFollowUp = nil
+        composerText = ""
+        attachments = []
+    }
+
+    private func saveQueuedFollowUpEdit(text: String, newAttachments: [PendingAttachment]) async {
+        guard let editing = editingQueuedFollowUp, editing.threadId == selectedThreadId else { return }
+        let preservedAttachments = editing.input.filter { $0["type"]?.stringValue != "text" }
+        let input = userInput(text: text, attachments: newAttachments) + preservedAttachments
+        guard !input.isEmpty else { return }
+        do {
+            let result = try await socket.rpc(
+                method: "relay/prompt/queue/update",
+                params: [
+                    "id": .string(editing.id),
+                    "text": .string(text),
+                    "input": .array(input)
+                ],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            if let item = result["item"], let updated = QueuedFollowUp(json: item) {
+                queuedFollowUps.removeAll { $0.id == updated.id }
+                queuedFollowUps.append(updated)
+                queuedFollowUps.sort { $0.createdAt < $1.createdAt }
+            }
+            editingQueuedFollowUp = nil
+            composerText = ""
+            attachments = []
+        } catch {
+            report(error)
         }
     }
 
