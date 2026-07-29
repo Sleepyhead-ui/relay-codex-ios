@@ -360,6 +360,54 @@ enum TranscriptKind: Equatable {
     case other
 }
 
+struct AgentMessageContent: Equatable {
+    let visibleText: String
+    let thinkingText: String?
+    let containsThinking: Bool
+
+    static func parse(_ source: String) -> AgentMessageContent {
+        let fullPattern = #"<thinking\b[^>]*>([\s\S]*?)</thinking\s*>"#
+        let openPattern = #"<thinking\b[^>]*>"#
+        guard let fullExpression = try? NSRegularExpression(pattern: fullPattern, options: [.caseInsensitive]),
+              let openExpression = try? NSRegularExpression(pattern: openPattern, options: [.caseInsensitive]) else {
+            return AgentMessageContent(visibleText: source, thinkingText: nil, containsThinking: false)
+        }
+
+        let fullRange = NSRange(source.startIndex..., in: source)
+        let matches = fullExpression.matches(in: source, range: fullRange)
+        if !matches.isEmpty {
+            let thoughts = matches.compactMap { match -> String? in
+                guard match.numberOfRanges > 1,
+                      let range = Range(match.range(at: 1), in: source) else { return nil }
+                return String(source[range]).trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+            }
+            let mutable = NSMutableString(string: source)
+            for match in matches.reversed() { mutable.replaceCharacters(in: match.range, with: "") }
+            let visible = String(mutable)
+                .replacingOccurrences(of: #"</?thinking\b[^>]*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return AgentMessageContent(
+                visibleText: visible,
+                thinkingText: thoughts.joined(separator: "\n").nonEmpty,
+                containsThinking: true
+            )
+        }
+
+        if let open = openExpression.firstMatch(in: source, range: fullRange),
+           let openRange = Range(open.range, in: source) {
+            let visible = String(source[..<openRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let thinking = String(source[openRange.upperBound...])
+                .replacingOccurrences(of: #"</thinking\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return AgentMessageContent(visibleText: visible, thinkingText: thinking.nonEmpty, containsThinking: true)
+        }
+
+        let visible = source
+            .replacingOccurrences(of: #"</thinking\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+        return AgentMessageContent(visibleText: visible, thinkingText: nil, containsThinking: false)
+    }
+}
+
 struct TranscriptItem: Identifiable, Equatable {
     var id: String
     var turnId: String?
@@ -377,6 +425,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var deliveryState: MessageDeliveryState?
     var imagePaths: [String]
     var goal: String?
+    var rawAgentText: String?
 
     init(
         id: String,
@@ -394,7 +443,8 @@ struct TranscriptItem: Identifiable, Equatable {
         errorMessage: String? = nil,
         deliveryState: MessageDeliveryState? = nil,
         imagePaths: [String] = [],
-        goal: String? = nil
+        goal: String? = nil,
+        rawAgentText: String? = nil
     ) {
         self.id = id
         self.turnId = turnId
@@ -412,6 +462,7 @@ struct TranscriptItem: Identifiable, Equatable {
         self.deliveryState = deliveryState
         self.imagePaths = imagePaths
         self.goal = goal
+        self.rawAgentText = rawAgentText
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
@@ -488,13 +539,17 @@ struct TranscriptItem: Identifiable, Equatable {
             if isInternalEnvironmentContext(text), imagePaths.isEmpty { return nil }
             return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective)
         case "agentMessage":
+            let rawText = json["text"]?.stringValue ?? ""
+            let content = AgentMessageContent.parse(rawText)
             return TranscriptItem(
                 id: id,
                 turnId: turnId,
                 role: .assistant,
                 kind: .message,
-                text: json["text"]?.stringValue ?? "",
-                phase: json["phase"]?.stringValue
+                text: content.visibleText,
+                detail: content.thinkingText,
+                phase: json["phase"]?.stringValue ?? (content.containsThinking ? "commentary" : nil),
+                rawAgentText: content.containsThinking ? rawText : nil
             )
         case "reasoning":
             let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""

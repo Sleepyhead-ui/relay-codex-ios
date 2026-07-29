@@ -15,6 +15,27 @@ struct TranscriptDeltaUpdate {
     let title: String?
     let text: String
     let detail: String
+    let phase: String?
+
+    init(
+        id: String,
+        turnId: String?,
+        role: TranscriptRole,
+        kind: TranscriptKind,
+        title: String?,
+        text: String,
+        detail: String,
+        phase: String? = nil
+    ) {
+        self.id = id
+        self.turnId = turnId
+        self.role = role
+        self.kind = kind
+        self.title = title
+        self.text = text
+        self.detail = detail
+        self.phase = phase
+    }
 }
 
 enum TranscriptReconciler {
@@ -37,24 +58,44 @@ enum TranscriptReconciler {
         for (index, item) in result.enumerated() { indexes[item.id] = index }
         for update in updates {
             if let index = indexes[update.id] {
-                result[index].text += update.text
-                if !update.detail.isEmpty { result[index].detail = (result[index].detail ?? "") + update.detail }
-                if result[index].turnId == nil { result[index].turnId = update.turnId }
+                applyDelta(update, to: &result[index])
             } else {
                 indexes[update.id] = result.count
-                result.append(TranscriptItem(
-                    id: update.id,
-                    turnId: update.turnId,
-                    role: update.role,
-                    kind: update.kind,
-                    title: update.title,
-                    text: update.text,
-                    detail: update.detail.nonEmpty,
-                    status: update.kind == .command ? "inProgress" : nil
-                ))
+                result.append(item(for: update))
             }
         }
         return result
+    }
+
+    static func applyDelta(_ update: TranscriptDeltaUpdate, to item: inout TranscriptItem) {
+        if item.turnId == nil { item.turnId = update.turnId }
+        if item.phase == nil { item.phase = update.phase }
+        if update.role == .assistant, update.kind == .message {
+            let raw = (item.rawAgentText ?? item.text) + update.text
+            let content = AgentMessageContent.parse(raw)
+            item.rawAgentText = raw
+            item.text = content.visibleText
+            item.detail = content.thinkingText
+            if item.phase == nil, content.containsThinking { item.phase = "commentary" }
+            return
+        }
+        item.text += update.text
+        if !update.detail.isEmpty { item.detail = (item.detail ?? "") + update.detail }
+    }
+
+    static func item(for update: TranscriptDeltaUpdate) -> TranscriptItem {
+        var item = TranscriptItem(
+            id: update.id,
+            turnId: update.turnId,
+            role: update.role,
+            kind: update.kind,
+            title: update.title,
+            text: "",
+            status: update.kind == .command ? "inProgress" : nil,
+            phase: update.phase
+        )
+        applyDelta(update, to: &item)
+        return item
     }
 
     static func mergeSessionItems(
@@ -65,19 +106,27 @@ enum TranscriptReconciler {
         let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
         let existing = messages.filter { $0.turnId == turnId }
         var consumedExistingIds = Set<String>()
-        var merged = existing
+        var merged: [TranscriptItem] = []
         for item in snapshotItems {
-            if let index = merged.firstIndex(where: {
+            if let index = existing.firstIndex(where: {
                 !consumedExistingIds.contains($0.id) && ($0.id == item.id || semanticallyMatches($0, item))
             }) {
-                consumedExistingIds.insert(merged[index].id)
-                var combined = merge(existing: merged[index], incoming: item)
-                combined.id = merged[index].id
-                merged[index] = combined
+                consumedExistingIds.insert(existing[index].id)
+                var combined = merge(existing: existing[index], incoming: item)
+                combined.id = existing[index].id
+                merged.append(combined)
             } else {
                 merged.append(item)
             }
         }
+        for item in existing where !consumedExistingIds.contains(item.id) {
+            if let index = merged.firstIndex(where: { semanticallyMatches($0, item) }) {
+                merged[index] = merge(existing: merged[index], incoming: item)
+            } else {
+                merged.append(item)
+            }
+        }
+        merged = deduplicated(merged)
 
         guard merged != existing else { return messages }
         var result = messages.filter { $0.turnId != turnId }
@@ -113,6 +162,20 @@ enum TranscriptReconciler {
             for (index, item) in result.enumerated() where indexes[item.id] == nil { indexes[item.id] = index }
         }
         return result == messages ? messages : result
+    }
+
+    private static func deduplicated(_ items: [TranscriptItem]) -> [TranscriptItem] {
+        var result: [TranscriptItem] = []
+        for item in items {
+            if let index = result.firstIndex(where: { semanticallyMatches($0, item) }) {
+                var combined = merge(existing: result[index], incoming: item)
+                combined.id = result[index].id
+                result[index] = combined
+            } else {
+                result.append(item)
+            }
+        }
+        return result
     }
 
     static func mergeHistoryItems(_ historyItems: [TranscriptItem], into messages: [TranscriptItem]) -> [TranscriptItem] {
@@ -198,6 +261,7 @@ enum TranscriptReconciler {
         if merged.deliveryState == nil { merged.deliveryState = existing.deliveryState }
         if merged.imagePaths.isEmpty { merged.imagePaths = existing.imagePaths }
         if merged.goal == nil { merged.goal = existing.goal }
+        if merged.rawAgentText == nil { merged.rawAgentText = existing.rawAgentText }
         return merged
     }
 
@@ -207,9 +271,14 @@ enum TranscriptReconciler {
         let rhsText: String
         switch lhs.kind {
         case .message:
-            guard lhs.role == .assistant, lhs.phase == rhs.phase else { return false }
-            lhsText = normalizedText(lhs.text)
-            rhsText = normalizedText(rhs.text)
+            guard lhs.role == .assistant else { return false }
+            if lhs.phase != rhs.phase,
+               lhs.phase != nil,
+               rhs.phase != nil,
+               lhs.rawAgentText == nil,
+               rhs.rawAgentText == nil { return false }
+            lhsText = normalizedText(lhs.text.nonEmpty ?? lhs.detail ?? "")
+            rhsText = normalizedText(rhs.text.nonEmpty ?? rhs.detail ?? "")
         case .command, .fileChange, .webSearch, .plan, .contextCompaction, .image:
             lhsText = normalizedText(lhs.text)
             rhsText = normalizedText(rhs.text)
@@ -219,7 +288,16 @@ enum TranscriptReconciler {
         case .subagent, .other:
             return false
         }
-        return !lhsText.isEmpty && lhsText == rhsText
+        return streamTextMatches(lhsText, rhsText, allowsPrefix: lhs.kind == .message || lhs.kind == .reasoning)
+    }
+
+    private static func streamTextMatches(_ lhs: String, _ rhs: String, allowsPrefix: Bool) -> Bool {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        if lhs == rhs { return true }
+        guard allowsPrefix else { return false }
+        let shorter = lhs.count <= rhs.count ? lhs : rhs
+        let longer = lhs.count <= rhs.count ? rhs : lhs
+        return shorter.count >= 6 && longer.hasPrefix(shorter)
     }
 
     static func normalizedText(_ text: String) -> String {

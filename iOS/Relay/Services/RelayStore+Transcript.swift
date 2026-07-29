@@ -61,10 +61,10 @@ extension RelayStore {
         pendingDeltaOrder.removeAll(keepingCapacity: true)
         let updates = pendingOrder.compactMap { id -> TranscriptDeltaUpdate? in
             if let text = pendingText[id], let detail = pendingDetail[id] {
-                return TranscriptDeltaUpdate(id: id, turnId: text.turnId ?? detail.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: detail.text)
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId ?? detail.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: detail.text, phase: text.role == .assistant ? "commentary" : nil)
             }
             if let text = pendingText[id] {
-                return TranscriptDeltaUpdate(id: id, turnId: text.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: "")
+                return TranscriptDeltaUpdate(id: id, turnId: text.turnId, role: text.role, kind: text.kind, title: text.title, text: text.text, detail: "", phase: text.role == .assistant ? "commentary" : nil)
             }
             if let detail = pendingDetail[id] {
                 return TranscriptDeltaUpdate(id: id, turnId: detail.turnId, role: .tool, kind: detail.kind, title: detail.kind == .reasoning ? "思考" : "运行命令", text: "", detail: detail.text)

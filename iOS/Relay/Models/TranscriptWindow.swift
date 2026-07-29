@@ -45,22 +45,11 @@ struct TranscriptIndex {
         for update in updates {
             if let index = itemIndexes[update.id] {
                 let oldKey = Self.groupKey(messages[index])
-                messages[index].text += update.text
-                if !update.detail.isEmpty { messages[index].detail = (messages[index].detail ?? "") + update.detail }
-                if messages[index].turnId == nil { messages[index].turnId = update.turnId }
+                TranscriptReconciler.applyDelta(update, to: &messages[index])
                 needsRebuild = needsRebuild || oldKey != Self.groupKey(messages[index])
                 changed = true
             } else {
-                let item = TranscriptItem(
-                    id: update.id,
-                    turnId: update.turnId,
-                    role: update.role,
-                    kind: update.kind,
-                    title: update.title,
-                    text: update.text,
-                    detail: update.detail.nonEmpty,
-                    status: update.kind == .command ? "inProgress" : nil
-                )
+                let item = TranscriptReconciler.item(for: update)
                 let index = messages.count
                 messages.append(item)
                 itemIndexes[item.id] = index

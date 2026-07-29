@@ -327,13 +327,14 @@ private struct RunActivityView: View {
     let remainingSectionCount: Int
     @Binding var expanded: Bool
     let onShowMore: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if showsHeader {
                 Button {
                     guard canExpand else { return }
-                    expanded.toggle()
+                    toggleExpanded()
                 } label: {
                     HStack(alignment: .center, spacing: 7) {
                         Group {
@@ -377,24 +378,32 @@ private struct RunActivityView: View {
             }
 
             if expanded {
-                if visibleSectionCount > 0 {
-                    RunActivityDetails(items: items, visibleSectionCount: visibleSectionCount)
-                }
-                if remainingSectionCount > 0 {
-                    Button(action: onShowMore) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "ellipsis.circle")
-                            Text("显示更多进展（剩余 \(remainingSectionCount) 条）")
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 5)
+                VStack(alignment: .leading, spacing: 5) {
+                    if visibleSectionCount > 0 {
+                        RunActivityDetails(items: items, visibleSectionCount: visibleSectionCount, isLive: isLive)
                     }
-                    .buttonStyle(.plain)
+                    if remainingSectionCount > 0 {
+                        Button(action: onShowMore) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "ellipsis.circle")
+                                Text("显示更多进展（剩余 \(remainingSectionCount) 条）")
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+    }
+
+    private func toggleExpanded() {
+        if reduceMotion { expanded.toggle() }
+        else { withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() } }
     }
 
     private var elapsedMilliseconds: Int {
@@ -432,6 +441,7 @@ private struct RunActivityView: View {
 private struct RunActivityDetails: View {
     let items: [TranscriptItem]
     let visibleSectionCount: Int
+    let isLive: Bool
 
     var body: some View {
         let sections = makeActivitySectionPage(items: items, limit: visibleSectionCount).sections
@@ -443,10 +453,18 @@ private struct RunActivityDetails: View {
                         .foregroundStyle(Color.primary.opacity(0.9))
                 case .reasoning(let id, let text):
                     HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 14, height: 16)
+                        Group {
+                            if isLive {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.secondary)
+                            } else {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .frame(width: 14, height: 16, alignment: .center)
                         CompactMarkdownText(source: text, size: 12)
                             .foregroundStyle(.secondary)
                             .id(id)
@@ -469,7 +487,10 @@ private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> Act
     var pendingExecution: [TranscriptItem] = []
     var hasPendingExecution = false
     var totalCount = 0
-    let latestReasoningId = items.last(where: { $0.kind == .reasoning })?.id
+    let visibleItems = deduplicatedActivityItems(items)
+    let latestReasoningId = visibleItems.last(where: {
+        $0.kind == .reasoning || ($0.isCommentary && $0.detail?.nonEmpty != nil)
+    })?.id
 
     func append(_ section: ActivitySection) {
         totalCount += 1
@@ -484,18 +505,23 @@ private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> Act
         hasPendingExecution = false
     }
 
-    for item in items where item.kind != .plan {
+    for item in visibleItems where item.kind != .plan {
         if item.kind == .reasoning {
             guard item.id == latestReasoningId else { continue }
             flushExecution()
             guard let source = item.text.nonEmpty ?? item.detail?.nonEmpty else { continue }
             totalCount += 1
             if sections.count < limit, let text = lastNonemptyLine(source) {
-                sections.append(.reasoning(id: item.id, text: text))
+                sections.append(.reasoning(id: "latest", text: text))
             }
         } else if item.isCommentary {
             flushExecution()
-            append(.commentary(item))
+            if item.id == latestReasoningId,
+               let source = item.detail?.nonEmpty,
+               let text = lastNonemptyLine(source) {
+                append(.reasoning(id: "latest", text: text))
+            }
+            if item.text.nonEmpty != nil { append(.commentary(item)) }
         } else {
             hasPendingExecution = true
             if totalCount < limit { pendingExecution.append(item) }
@@ -503,6 +529,39 @@ private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> Act
     }
     flushExecution()
     return ActivitySectionPage(sections: sections, totalCount: totalCount)
+}
+
+private func deduplicatedActivityItems(_ items: [TranscriptItem]) -> [TranscriptItem] {
+    var result: [TranscriptItem] = []
+    for item in items {
+        guard item.isCommentary else {
+            result.append(item)
+            continue
+        }
+        let text = TranscriptReconciler.normalizedText(item.text)
+        guard !text.isEmpty else {
+            result.append(item)
+            continue
+        }
+        if let index = result.firstIndex(where: { candidate in
+            guard candidate.isCommentary else { return false }
+            let candidateText = TranscriptReconciler.normalizedText(candidate.text)
+            guard !candidateText.isEmpty else { return false }
+            if candidateText == text { return true }
+            let shorter = candidateText.count <= text.count ? candidateText : text
+            let longer = candidateText.count <= text.count ? text : candidateText
+            return shorter.count >= 6 && longer.hasPrefix(shorter)
+        }) {
+            if text.count > TranscriptReconciler.normalizedText(result[index].text).count {
+                var replacement = item
+                replacement.id = result[index].id
+                result[index] = replacement
+            }
+        } else {
+            result.append(item)
+        }
+    }
+    return result
 }
 
 private func lastNonemptyLine(_ source: String?) -> String? {
@@ -550,6 +609,7 @@ private struct CompactMarkdownText: View {
 private struct ExecutionGroupView: View {
     let items: [TranscriptItem]
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if items.count == 1, let item = items.first {
@@ -562,7 +622,7 @@ private struct ExecutionGroupView: View {
     private var groupedBody: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
-                expanded.toggle()
+                toggleExpanded()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "terminal")
@@ -594,8 +654,14 @@ private struct ExecutionGroupView: View {
                     }
                 }
                 .padding(.leading, 18)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+    }
+
+    private func toggleExpanded() {
+        if reduceMotion { expanded.toggle() }
+        else { withAnimation(.easeOut(duration: 0.14)) { expanded.toggle() } }
     }
 
     @ViewBuilder
@@ -628,12 +694,14 @@ private struct ExecutionGroupView: View {
 private struct CompactCommandRow: View {
     let item: TranscriptItem
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Button {
                 guard hasDetails else { return }
-                expanded.toggle()
+                if reduceMotion { expanded.toggle() }
+                else { withAnimation(.easeOut(duration: 0.14)) { expanded.toggle() } }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "terminal")
@@ -684,6 +752,7 @@ private struct CompactCommandRow: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -726,7 +795,8 @@ private struct ToolEventRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 guard hasExpandableContent else { return }
-                expanded.toggle()
+                if reduceMotion { expanded.toggle() }
+                else { withAnimation(.easeOut(duration: 0.16)) { expanded.toggle() } }
             } label: {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: icon)
@@ -785,7 +855,6 @@ private struct ToolEventRow: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10, weight: .semibold))
                             .rotationEffect(.degrees(expanded ? 180 : 0))
-                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: expanded)
                             .foregroundStyle(.tertiary)
                             .padding(.top, 4)
                     }
@@ -830,7 +899,7 @@ private struct ToolEventRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, item.kind == .fileChange ? 0 : 29)
                 .padding(.bottom, 10)
-                .transition(.identity)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

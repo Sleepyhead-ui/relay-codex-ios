@@ -91,6 +91,73 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(result.first?.text, "正在检查 项目")
     }
 
+    func testAgentMessageSeparatesThinkingMarkupFromVisibleProgress() throws {
+        let content = AgentMessageContent.parse(
+            "<thinking>**Planning**\n**Checking layout**</thinking>\n正在检查对话布局。"
+        )
+
+        XCTAssertTrue(content.containsThinking)
+        XCTAssertEqual(content.thinkingText, "**Planning**\n**Checking layout**")
+        XCTAssertEqual(content.visibleText, "正在检查对话布局。")
+
+        let parsed = try XCTUnwrap(TranscriptItem.from(json: .object([
+            "id": .string("message.1"),
+            "type": .string("agentMessage"),
+            "text": .string("<thinking>**Planning**</thinking>\n正在检查。")
+        ]), turnId: "turn.1"))
+        XCTAssertEqual(parsed.phase, "commentary")
+        XCTAssertEqual(parsed.detail, "**Planning**")
+        XCTAssertEqual(parsed.text, "正在检查。")
+    }
+
+    func testSplitThinkingTagAcrossDeltaFlushesDoesNotLeakMarkup() {
+        let first = TranscriptDeltaUpdate(
+            id: "message.live",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            title: nil,
+            text: "<think",
+            detail: "",
+            phase: "commentary"
+        )
+        let second = TranscriptDeltaUpdate(
+            id: "message.live",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            title: nil,
+            text: "ing>**Checking**</thinking>\n进展内容",
+            detail: "",
+            phase: "commentary"
+        )
+
+        let partial = TranscriptReconciler.applyDeltaBatch([first], to: [])
+        let result = TranscriptReconciler.applyDeltaBatch([second], to: partial)
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].detail, "**Checking**")
+        XCTAssertEqual(result[0].text, "进展内容")
+        XCTAssertFalse(result[0].text.contains("<thinking>"))
+    }
+
+    func testSnapshotMergesLongerCommentaryPrefixAndUsesSnapshotOrder() {
+        let liveProgress = item(id: "live.progress", turnId: "turn.1", role: .assistant, text: "正在检查对话", phase: "commentary")
+        var streamedProgress = liveProgress
+        streamedProgress.rawAgentText = liveProgress.text
+        let prompt = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "修复界面")
+        let snapshotProgress = item(id: "snapshot.progress", turnId: "turn.1", role: .assistant, text: "正在检查对话布局和滚动状态", phase: "commentary")
+
+        let result = TranscriptReconciler.mergeSessionItems(
+            [prompt, snapshotProgress],
+            turnId: "turn.1",
+            into: [streamedProgress, prompt]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["prompt.1", "live.progress"])
+        XCTAssertEqual(result.last?.text, "正在检查对话布局和滚动状态")
+    }
+
     func testPlacementKeepsInitialPromptBeforeOutputAndSteerAfterItsAnchor() {
         let initial = item(id: "prompt.1", turnId: nil, role: .user, text: "开始")
         let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "第一阶段", phase: "commentary")
