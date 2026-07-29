@@ -147,9 +147,11 @@ struct MobileCompletedActivityRow: View {
 struct MobileActivitySheet: View {
     let presentation: MobileActivityPresentation
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: RelayStore
     @State private var visibleEntryCount = 18
 
     var body: some View {
+        let current = resolvedPresentation
         NavigationView {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -167,12 +169,12 @@ struct MobileActivitySheet: View {
                     }
 
                     ForEach(visibleEntries) { entry in
-                        MobileActivityEntryRow(entry: entry, isLive: presentation.isLive)
+                        MobileActivityEntryRow(entry: entry, isLive: current.isLive)
                             .padding(.vertical, 9)
                         Divider().opacity(0.35)
                     }
 
-                    if presentation.feed.entries.isEmpty {
+                    if current.feed.entries.isEmpty {
                         Text("Codex 正在准备任务活动")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
@@ -184,7 +186,7 @@ struct MobileActivitySheet: View {
                 .padding(.bottom, 24)
             }
             .background(RelayTheme.canvas)
-            .navigationTitle(presentation.isLive ? "当前任务" : "任务活动")
+            .navigationTitle(current.isLive ? "当前任务" : "任务活动")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -197,11 +199,32 @@ struct MobileActivitySheet: View {
     }
 
     private var visibleEntries: ArraySlice<MobileActivityEntry> {
-        presentation.feed.entries.suffix(visibleEntryCount)
+        resolvedPresentation.feed.entries.suffix(visibleEntryCount)
     }
 
     private var hiddenEntryCount: Int {
-        max(0, presentation.feed.entries.count - visibleEntryCount)
+        max(0, resolvedPresentation.feed.entries.count - visibleEntryCount)
+    }
+
+    private var resolvedPresentation: MobileActivityPresentation {
+        guard presentation.isLive,
+              store.isRunning,
+              let threadId = store.selectedThreadId else { return presentation }
+        let turnId = store.activeTurnId
+        let items = turnId.map { activeTurnId in
+            store.messages.filter { $0.turnId == activeTurnId && $0.isActivity }
+        } ?? []
+        var metadata = turnId.flatMap { store.turnMetadata[$0] } ?? presentation.metadata
+        if metadata.startedAt == nil {
+            metadata.startedAt = store.taskRunStates[threadId]?.startedAt
+        }
+        return MobileActivityPresentation(
+            id: turnId ?? presentation.id,
+            feed: MobileActivityFeed.make(items: items),
+            metadata: metadata,
+            isLive: true,
+            plan: store.activePlan
+        )
     }
 }
 
