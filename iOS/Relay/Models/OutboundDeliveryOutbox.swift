@@ -8,9 +8,10 @@ struct OutboundDraft: Codable {
     var sandboxPolicy: JSONValue? = nil
     var model: String? = nil
     var effort: String? = nil
+    var collaborationMode: JSONValue? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case threadId, text, attachments, expectedTurnId, sandboxPolicy, model, effort
+        case threadId, text, attachments, expectedTurnId, sandboxPolicy, model, effort, collaborationMode
     }
 
     init(
@@ -20,7 +21,8 @@ struct OutboundDraft: Codable {
         expectedTurnId: String? = nil,
         sandboxPolicy: JSONValue? = nil,
         model: String? = nil,
-        effort: String? = nil
+        effort: String? = nil,
+        collaborationMode: JSONValue? = nil
     ) {
         self.threadId = threadId
         self.text = text
@@ -29,6 +31,7 @@ struct OutboundDraft: Codable {
         self.sandboxPolicy = sandboxPolicy
         self.model = model
         self.effort = effort
+        self.collaborationMode = collaborationMode
     }
 
     init(from decoder: Decoder) throws {
@@ -40,6 +43,7 @@ struct OutboundDraft: Codable {
         sandboxPolicy = try values.decodeIfPresent(JSONValue.self, forKey: .sandboxPolicy)
         model = try values.decodeIfPresent(String.self, forKey: .model)
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
+        collaborationMode = try values.decodeIfPresent(JSONValue.self, forKey: .collaborationMode)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -51,6 +55,7 @@ struct OutboundDraft: Codable {
         try values.encodeIfPresent(sandboxPolicy, forKey: .sandboxPolicy)
         try values.encodeIfPresent(model, forKey: .model)
         try values.encodeIfPresent(effort, forKey: .effort)
+        try values.encodeIfPresent(collaborationMode, forKey: .collaborationMode)
     }
 }
 

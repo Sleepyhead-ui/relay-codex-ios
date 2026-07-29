@@ -91,13 +91,47 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Task defaults") {
+                Section("任务配置") {
                     TextField("默认项目目录", text: $store.host.workingDirectory)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .onChange(of: store.host.workingDirectory) { _ in store.saveHostConfiguration() }
-                    LabeledContent("Model", value: store.selectedModel?.displayName ?? "Default")
-                    LabeledContent("Reasoning", value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "Default")
+
+                    Menu {
+                        ForEach(store.modelOptions) { model in
+                            Button {
+                                Task { await store.selectModel(model) }
+                            } label: {
+                                if store.selectedModel?.id == model.id {
+                                    Label(model.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(model.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        LabeledContent("模型", value: store.selectedModel?.displayName ?? "默认")
+                    }
+                    .disabled(store.modelOptions.isEmpty)
+
+                    Menu {
+                        ForEach(store.availableEfforts) { effort in
+                            Button {
+                                Task { await store.selectEffort(effort.id) }
+                            } label: {
+                                if store.selectedEffort == effort.id {
+                                    Label(effort.displayName, systemImage: "checkmark")
+                                } else {
+                                    Text(effort.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        LabeledContent(
+                            "思考深度",
+                            value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "默认"
+                        )
+                    }
 
                 }
 

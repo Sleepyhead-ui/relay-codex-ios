@@ -24,11 +24,6 @@ struct ComposerView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if let goal = store.currentGoal, goal.status != .complete {
-                ActiveGoalPanel(goal: goal, isRunning: store.isRunning)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
             if let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
                 ContextPressureNotice(
                     percentage: percentage,
@@ -55,11 +50,19 @@ struct ComposerView: View {
                 }
             }
 
-            if !store.activePlan.isEmpty {
-                ExecutionPlanPanel(steps: store.activePlan)
+            if !store.activePlan.isEmpty || visibleGoal != nil {
+                TaskContextPanel(
+                    steps: store.activePlan,
+                    goal: visibleGoal,
+                    isRunning: store.isRunning
+                )
             }
 
             VStack(spacing: 2) {
+                if store.composerMode != .standard {
+                    modeIndicator
+                }
+
                 if !store.attachments.isEmpty {
                     attachmentStrip
                 }
@@ -76,8 +79,36 @@ struct ComposerView: View {
                             focused = false
                             showingFileImporter = true
                         } label: {
-                            Label("文件", systemImage: "folder")
+                            Label("选择文件", systemImage: "folder")
                         }
+
+                        Divider()
+
+                        Button {
+                            focused = false
+                            store.composerMode = store.composerMode == .plan ? .standard : .plan
+                        } label: {
+                            Label(
+                                store.composerMode == .plan ? "退出计划模式" : "计划模式",
+                                systemImage: store.composerMode == .plan ? "checkmark" : "list.bullet.clipboard"
+                            )
+                        }
+                        .disabled(store.isRunning || !store.planModeAvailable)
+
+                        Button {
+                            focused = false
+                            if store.currentGoal != nil {
+                                store.prepareCurrentGoalForEditing()
+                            } else {
+                                store.composerMode = store.composerMode == .goal ? .standard : .goal
+                            }
+                        } label: {
+                            Label(
+                                store.currentGoal == nil ? "目标模式" : "编辑当前目标",
+                                systemImage: "scope"
+                            )
+                        }
+                        .disabled(store.isRunning)
                     } label: {
                         Group {
                             if isImportingAttachments {
@@ -91,9 +122,9 @@ struct ComposerView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isImportingAttachments)
-                    .accessibilityLabel("添加照片或文件")
+                    .accessibilityLabel("添加内容或选择任务模式")
 
-                    TextField(store.isRunning ? "引导当前任务" : "Message Codex", text: $draft.text, axis: .vertical)
+                    TextField(composerPlaceholder, text: $draft.text, axis: .vertical)
                         .font(.system(size: 16))
                         .lineLimit(1...8)
                         .textFieldStyle(.plain)
@@ -138,10 +169,9 @@ struct ComposerView: View {
                 }
 
                 HStack(spacing: 3) {
-                    modelMenu
-                    effortMenu
                     if store.isRunning { followUpMenu }
                     Spacer(minLength: 4)
+                    runConfigurationMenu
                     contextMenu
 
                     if focused {
@@ -210,12 +240,14 @@ struct ComposerView: View {
             isImportingAttachments = true
             Task { await importSelectedPhotos(photos) }
         }
-        .onChange(of: focused) { _ in
+        .onChange(of: focused) { value in
+            store.composerIsFocused = value
             NotificationCenter.default.post(
                 name: Notification.Name("relay.composer.layoutChanged"),
                 object: nil
             )
         }
+        .onDisappear { store.composerIsFocused = false }
     }
 
     private func importSelectedPhotos(_ photos: [PhotosPickerItem]) async {
@@ -343,63 +375,95 @@ struct ComposerView: View {
         }
     }
 
-    private var modelMenu: some View {
-        Menu {
-            ForEach(store.modelOptions) { model in
-                Button {
-                    Task { await store.selectModel(model) }
-                } label: {
-                    if store.selectedModel?.id == model.id {
-                        Label(model.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(model.displayName)
-                    }
-                }
+    private var modeIndicator: some View {
+        HStack(spacing: 7) {
+            Image(systemName: store.composerMode.icon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(RelayTheme.accent)
+            Text(store.composerMode.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(RelayTheme.accent)
+            Spacer()
+            Button { store.composerMode = .standard } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
             }
-        } label: {
-            HStack(spacing: 4) {
-                Text(store.selectedModel?.displayName ?? "Model")
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-            }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background(RelayTheme.softFill)
-            .clipShape(Capsule())
+            .buttonStyle(.plain)
+            .accessibilityLabel("退出\(store.composerMode.title)")
         }
-        .disabled(store.modelOptions.isEmpty)
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .frame(height: 30)
+        .background(RelayTheme.accent.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .padding(.horizontal, 5)
+        .padding(.top, 5)
     }
 
-    private var effortMenu: some View {
+    private var runConfigurationMenu: some View {
         Menu {
-            ForEach(store.availableEfforts) { effort in
-                Button {
-                    Task { await store.selectEffort(effort.id) }
-                } label: {
-                    if store.selectedEffort == effort.id {
-                        Label(effort.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(effort.displayName)
+            Menu {
+                ForEach(store.modelOptions) { model in
+                    Button {
+                        Task { await store.selectModel(model) }
+                    } label: {
+                        if store.selectedModel?.id == model.id {
+                            Label(model.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(model.displayName)
+                        }
                     }
                 }
+            } label: {
+                Label("模型 · \(store.selectedModel?.displayName ?? "默认")", systemImage: "cpu")
+            }
+
+            Menu {
+                ForEach(store.availableEfforts) { effort in
+                    Button {
+                        Task { await store.selectEffort(effort.id) }
+                    } label: {
+                        if store.selectedEffort == effort.id {
+                            Label(effort.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(effort.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Label("推理强度 · \(currentEffortName)", systemImage: "sparkles")
+            }
+
+            Menu {
+                ForEach(WorkspaceAccessMode.allCases) { mode in
+                    Button {
+                        Task { await store.selectWorkspaceAccess(mode) }
+                    } label: {
+                        if store.workspaceAccess == mode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Text(mode.title)
+                        }
+                    }
+                }
+            } label: {
+                Label("访问权限 · \(store.workspaceAccess.title)", systemImage: "lock.shield")
+            }
+
+            Divider()
+
+            Button { store.showingSettings = true } label: {
+                Label("更多设置", systemImage: "gearshape")
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "sparkles")
-                Text(currentEffortName)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-            }
-            .font(.system(size: 11, weight: .semibold))
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 12, weight: .medium))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background(RelayTheme.softFill)
-            .clipShape(Capsule())
+                .frame(width: 32, height: 28)
         }
+        .accessibilityLabel("运行配置")
     }
 
     private var followUpMenu: some View {
@@ -468,7 +532,22 @@ struct ComposerView: View {
     private var hasDraft: Bool {
         let hasText = !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasReadyFile = store.attachments.contains { $0.state == .ready }
+        if store.composerMode == .goal { return hasText }
         return hasText || hasReadyFile
+    }
+
+    private var visibleGoal: GoalState? {
+        guard let goal = store.currentGoal, goal.status != .complete else { return nil }
+        return goal
+    }
+
+    private var composerPlaceholder: String {
+        if store.isRunning { return "引导当前任务" }
+        switch store.composerMode {
+        case .standard: return "Message Codex"
+        case .plan: return "让 Codex 先制定计划"
+        case .goal: return "描述要持续完成的目标"
+        }
     }
 
     private var canSend: Bool {
@@ -540,9 +619,37 @@ private struct FollowUpQueuePanel: View {
     }
 }
 
+private struct TaskContextPanel: View {
+    let steps: [ExecutionPlanStep]
+    let goal: GoalState?
+    let isRunning: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if !steps.isEmpty {
+                ExecutionPlanPanel(steps: steps)
+            }
+            if !steps.isEmpty, goal != nil {
+                Divider()
+                    .padding(.horizontal, 11)
+            }
+            if let goal {
+                ActiveGoalPanel(goal: goal, isRunning: isRunning)
+            }
+        }
+        .background(RelayTheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(RelayTheme.hairline, lineWidth: 1)
+        }
+    }
+}
+
 private struct ActiveGoalPanel: View {
     let goal: GoalState
     let isRunning: Bool
+    @EnvironmentObject private var store: RelayStore
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -565,17 +672,44 @@ private struct ActiveGoalPanel: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: true, vertical: false)
+
+                Menu {
+                    if goal.status == .active {
+                        Button {
+                            Task { await store.updateCurrentGoalStatus(.paused) }
+                        } label: {
+                            Label("暂停目标", systemImage: "pause")
+                        }
+                    } else {
+                        Button {
+                            Task { await store.updateCurrentGoalStatus(.active) }
+                        } label: {
+                            Label("继续目标", systemImage: "play")
+                        }
+                    }
+                    Button {
+                        store.prepareCurrentGoalForEditing()
+                    } label: {
+                        Label("编辑目标", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        Task { await store.clearCurrentGoal() }
+                    } label: {
+                        Label("清除目标", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .accessibilityLabel("目标操作")
             }
         }
         .padding(.horizontal, 11)
         .frame(height: 40)
-        .background(RelayTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(RelayTheme.hairline, lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(goal.status.label)，\(goal.objective)")
     }
 
@@ -697,13 +831,6 @@ private struct ExecutionPlanPanel: View {
                 .transition(.opacity)
             }
         }
-        .background(RelayTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(RelayTheme.hairline, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.04), radius: 8, y: 2)
     }
 
     private var completedCount: Int { steps.filter(\.isCompleted).count }

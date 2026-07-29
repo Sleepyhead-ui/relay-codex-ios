@@ -212,6 +212,9 @@ extension RelayStore {
                 ]
                 if let model = draft.model { params["model"] = .string(model) }
                 if let effort = draft.effort { params["effort"] = .string(effort) }
+                if let collaborationMode = draft.collaborationMode {
+                    params["collaborationMode"] = collaborationMode
+                }
                 result = try await socket.rpc(
                     method: "turn/start",
                     params: params,
@@ -388,6 +391,18 @@ extension RelayStore {
         }
         if selectedThreadId == nil { await newThread() }
         guard let threadId = selectedThreadId else { return }
+        if !isRunning, composerMode == .plan, collaborationModePayload() == nil {
+            errorMessage = "计划模式仍在准备运行配置，请稍后重试；输入内容已保留。"
+            return
+        }
+        if !isRunning, composerMode == .goal {
+            guard !text.isEmpty else {
+                errorMessage = "目标模式需要输入目标内容。"
+                return
+            }
+            guard await setGoal(objective: text, threadId: threadId) else { return }
+            composerMode = .standard
+        }
         if isRunning, followUpBehavior == .queue {
             await enqueueFollowUp(text: text, readyAttachments: readyAttachments, threadId: threadId)
         } else if isRunning {
@@ -411,13 +426,15 @@ extension RelayStore {
         let sandboxPolicy = workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         let model = selectedModel?.model
         let effort = selectedEffort.isEmpty ? nil : selectedEffort
+        let collaborationMode = collaborationModePayload()
         let draft = OutboundDraft(
             threadId: threadId,
             text: text,
             attachments: readyAttachments,
             sandboxPolicy: sandboxPolicy,
             model: model,
-            effort: effort
+            effort: effort,
+            collaborationMode: collaborationMode
         )
         storeOutboundDelivery(id: clientMessageId, draft: draft, placement: placement)
         sendingThreadIds.insert(threadId)
@@ -444,6 +461,7 @@ extension RelayStore {
             ]
             if let model { params["model"] = .string(model) }
             if let effort { params["effort"] = .string(effort) }
+            if let collaborationMode { params["collaborationMode"] = collaborationMode }
             let result = try await socket.rpc(
                 method: "turn/start",
                 params: params,

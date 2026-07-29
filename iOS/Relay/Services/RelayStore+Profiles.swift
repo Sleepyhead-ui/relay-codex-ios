@@ -2,6 +2,25 @@ import Foundation
 
 @MainActor
 extension RelayStore {
+    func refreshCollaborationModes(showErrors: Bool = false) async {
+        guard socket.state == .connected else { return }
+        do {
+            let result = try await socket.rpc(
+                method: "collaborationMode/list",
+                params: [:],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            collaborationModes = result["data"]?.arrayValue?
+                .compactMap(CollaborationModeOption.init(json:)) ?? []
+            if composerMode == .plan, !planModeAvailable { composerMode = .standard }
+        } catch {
+            collaborationModes = []
+            if composerMode == .plan { composerMode = .standard }
+            report(error, show: showErrors)
+        }
+    }
+
     func refreshModels(showErrors: Bool = false) async {
         guard socket.state == .connected else { return }
         do {

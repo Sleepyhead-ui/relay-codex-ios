@@ -20,10 +20,13 @@ struct ConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 if let presentation = liveActivityPresentation {
-                    MobileLiveActivityConsole(presentation: presentation) {
+                    MobileLiveActivityConsole(
+                        presentation: presentation,
+                        compact: store.composerIsFocused
+                    ) {
                         activityPresentation = presentation
                     }
-                    .padding(.horizontal, RelayTheme.horizontalPadding)
+                    .padding(.horizontal, 12)
                 }
 
                 if store.showingArchivedThreads {

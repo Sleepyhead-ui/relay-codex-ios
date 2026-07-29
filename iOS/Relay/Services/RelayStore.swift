@@ -27,6 +27,9 @@ final class RelayStore: ObservableObject {
     @Published var modelOptions: [CodexModelOption] = []
     @Published var selectedModelId = ""
     @Published var selectedEffort = ""
+    @Published var collaborationModes: [CollaborationModeOption] = []
+    @Published var composerMode: ComposerMode = .standard
+    @Published var composerIsFocused = false
     @Published var turnMetadata: [String: TurnMetadata] = [:]
     @Published var tokenUsageByThread: [String: ThreadTokenUsage] = [:]
     @Published var isCompacting = false
@@ -167,6 +170,14 @@ final class RelayStore: ObservableObject {
     var selectedModel: CodexModelOption? {
         modelOptions.first { $0.id == selectedModelId || $0.model == selectedModelId }
     }
+    var planModeAvailable: Bool {
+        collaborationModes.contains { option in
+            option.mode == "plan"
+                && (option.model?.nonEmpty != nil
+                    || selectedModel?.model.nonEmpty != nil
+                    || selectedModelId.nonEmpty != nil)
+        }
+    }
     var availableEfforts: [ReasoningEffortOption] {
         let advertised = selectedModel?.efforts ?? []
         if !advertised.isEmpty { return advertised }
@@ -183,6 +194,18 @@ final class RelayStore: ObservableObject {
     }
     func transcriptWindow(limit: Int) -> TranscriptWindow {
         transcriptIndex.window(messages: messages, metadata: turnMetadata, limit: limit)
+    }
+
+    func collaborationModePayload() -> JSONValue? {
+        guard composerMode != .goal,
+              let option = collaborationModes.first(where: {
+                  $0.mode == (composerMode == .plan ? "plan" : "default")
+              }),
+              let model = (option.model ?? selectedModel?.model ?? selectedModelId).nonEmpty else { return nil }
+        return option.payload(
+            fallbackModel: model,
+            fallbackEffort: selectedEffort.nonEmpty
+        )
     }
 
     init() {
@@ -462,6 +485,11 @@ final class RelayStore: ObservableObject {
         let loadGeneration = UUID()
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
+        if switchingThreads {
+            // Composer modes belong to the selected thread. The resumed thread can
+            // restore Plan mode through thread/settings/updated after it loads.
+            composerMode = .standard
+        }
         // Keep the live snapshot poller alive when restoring the same active
         // thread. Cancelling it here creates a gap in incremental output.
         if switchingThreads {
@@ -712,20 +740,110 @@ final class RelayStore: ObservableObject {
     func refreshGoal(threadId: String) async {
         guard socket.state == .connected else { return }
         do {
+            let result: JSONValue
+            do {
+                result = try await socket.rpc(
+                    method: "thread/goal/get",
+                    params: ["threadId": .string(threadId)],
+                    timeoutSeconds: 8,
+                    reconnectOnTimeout: false
+                )
+            } catch {
+                result = try await socket.rpc(
+                    method: "relay/thread/goal",
+                    params: ["threadId": .string(threadId)],
+                    timeoutSeconds: 8,
+                    reconnectOnTimeout: false
+                )
+            }
+            guard selectedThreadId == threadId || threads.contains(where: { $0.id == threadId }) else { return }
+            applyGoalResult(result["goal"], threadId: threadId)
+        } catch {
+            // Goal mode is optional on older App Server and Bridge versions.
+        }
+    }
+
+    func setGoal(objective: String, threadId: String) async -> Bool {
+        let trimmed = objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorMessage = "请输入目标内容。"
+            return false
+        }
+        guard trimmed.count <= 4_000 else {
+            errorMessage = "目标内容不能超过 4000 个字符。"
+            return false
+        }
+        do {
             let result = try await socket.rpc(
-                method: "relay/thread/goal",
-                params: ["threadId": .string(threadId)],
-                timeoutSeconds: 8,
+                method: "thread/goal/set",
+                params: [
+                    "threadId": .string(threadId),
+                    "objective": .string(trimmed),
+                    "status": .string("active")
+                ],
+                timeoutSeconds: 12,
                 reconnectOnTimeout: false
             )
-            guard selectedThreadId == threadId || threads.contains(where: { $0.id == threadId }) else { return }
-            if let goalJSON = result["goal"], let goal = GoalState(json: goalJSON) {
-                goalStates[threadId] = goal
-            } else {
-                goalStates.removeValue(forKey: threadId)
-            }
+            applyGoalResult(result["goal"], threadId: threadId)
+            return true
         } catch {
-            // Goal mode is optional on older Bridge versions; transcript loading must still succeed.
+            report(error)
+            return false
+        }
+    }
+
+    func updateCurrentGoalStatus(_ status: GoalStatus) async {
+        guard let threadId = selectedThreadId, currentGoal != nil else { return }
+        do {
+            let result = try await socket.rpc(
+                method: "thread/goal/set",
+                params: [
+                    "threadId": .string(threadId),
+                    "status": .string(status.protocolValue)
+                ],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            applyGoalResult(result["goal"], threadId: threadId)
+        } catch {
+            report(error)
+        }
+    }
+
+    func clearCurrentGoal() async {
+        guard let threadId = selectedThreadId else { return }
+        do {
+            _ = try await socket.rpc(
+                method: "thread/goal/clear",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            goalStates.removeValue(forKey: threadId)
+        } catch {
+            report(error)
+        }
+    }
+
+    func prepareCurrentGoalForEditing() {
+        guard let goal = currentGoal else {
+            composerMode = .goal
+            return
+        }
+        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              attachments.isEmpty else {
+            errorMessage = "请先发送或清空当前输入内容，再编辑目标。"
+            return
+        }
+        composerText = goal.objective
+        composerMode = .goal
+    }
+
+    func applyGoalResult(_ value: JSONValue?, threadId: String) {
+        if let value, let goal = GoalState(json: value) {
+            goalStates[threadId] = goal
+        } else {
+            goalStates.removeValue(forKey: threadId)
         }
     }
 
@@ -936,6 +1054,8 @@ final class RelayStore: ObservableObject {
         taskRunStates = [:]
         taskStateCore.reset()
         goalStates = [:]
+        collaborationModes = []
+        composerMode = .standard
         queuedFollowUps = []
         pendingApprovals = []
         threadSnapshots.removeAll()
@@ -1066,7 +1186,8 @@ final class RelayStore: ObservableObject {
         restoreOutboundDeliveriesForCurrentScope()
         async let threadsRefresh: Void = refreshThreads(showErrors: false)
         async let queueRefresh: Void = refreshPromptQueue()
-        _ = await (threadsRefresh, queueRefresh)
+        async let modesRefresh: Void = refreshCollaborationModes(showErrors: false)
+        _ = await (threadsRefresh, queueRefresh, modesRefresh)
         if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         let targetThreadId = ProfileSwitchSelection.restoredThreadId(
             previous: selectedThreadId,
@@ -1130,6 +1251,8 @@ final class RelayStore: ObservableObject {
         tokenUsageByThread = [:]
         taskRunStates = [:]
         goalStates = [:]
+        collaborationModes = []
+        composerMode = .standard
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []

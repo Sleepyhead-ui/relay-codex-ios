@@ -68,6 +68,44 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
         XCTAssertTrue(decoded.automaticallyRecoverable)
     }
 
+    func testDraftRoundTripPreservesCollaborationMode() throws {
+        let collaborationMode: JSONValue = .object([
+            "mode": .string("plan"),
+            "settings": .object([
+                "model": .string("gpt-5.6-codex"),
+                "reasoning_effort": .string("medium"),
+                "developer_instructions": .null
+            ])
+        ])
+        let original = OutboundDraft(
+            threadId: "thread",
+            text: "先制定计划",
+            attachments: [],
+            collaborationMode: collaborationMode
+        )
+
+        let decoded = try JSONDecoder().decode(
+            OutboundDraft.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        XCTAssertEqual(decoded.collaborationMode, collaborationMode)
+    }
+
+    func testLegacyDraftWithoutCollaborationModeStillDecodes() throws {
+        let original = OutboundDraft(threadId: "thread", text: "legacy", attachments: [])
+        let encoded = try JSONEncoder().encode(original)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "collaborationMode")
+
+        let decoded = try JSONDecoder().decode(
+            OutboundDraft.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertNil(decoded.collaborationMode)
+    }
+
     func testMergeUnresolvedPreservesSequenceBeforeNewerTurn() {
         let failedAt = Date(timeIntervalSince1970: 100)
         var laterMetadata = TurnMetadata()

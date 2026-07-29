@@ -10,9 +10,14 @@ struct MobileActivityPresentation: Identifiable {
 
 struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
+    let compact: Bool
     let showTimeline: () -> Void
 
     var body: some View {
+        let hasThinking = presentation.feed.latestReasoningText?.nonEmpty != nil
+        let hasProgress = !presentation.feed.progressItems.isEmpty
+        let hasTools = !presentation.feed.toolItems.isEmpty
+
         VStack(spacing: 0) {
             HStack(spacing: 9) {
                 ProgressView()
@@ -24,12 +29,6 @@ struct MobileLiveActivityConsole: View {
                     Text("正在处理 \(elapsedText(at: context.date))")
                 }
                 .font(.system(size: 12, weight: .semibold))
-
-                if !presentation.plan.isEmpty {
-                    Text(planProgress)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
 
                 Spacer(minLength: 8)
 
@@ -46,30 +45,45 @@ struct MobileLiveActivityConsole: View {
             .padding(.horizontal, 13)
             .frame(height: 38)
 
-            Divider().opacity(0.45)
-
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(RelayTheme.accent)
-                    .frame(width: 16, height: 16)
-
-                Text(thinkingText)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if hasThinking || hasProgress || hasTools {
+                Divider().opacity(0.45)
             }
-            .padding(.horizontal, 13)
-            .frame(height: 34)
 
-            MobileProgressWindow(feed: presentation.feed)
-                .padding(.horizontal, 9)
+            if hasThinking, let thinkingText = presentation.feed.latestReasoningText?.nonEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(RelayTheme.accent)
+                        .frame(width: 16, height: 16)
 
-            MobileToolWindow(feed: presentation.feed, showTimeline: showTimeline)
-                .padding(.horizontal, 9)
-                .padding(.top, 7)
-                .padding(.bottom, 9)
+                    Text(thinkingText)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 13)
+                .frame(height: 34)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if hasProgress {
+                MobileProgressWindow(feed: presentation.feed, compact: compact)
+                    .padding(.horizontal, 7)
+                    .padding(.top, hasThinking ? 0 : 8)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if hasTools {
+                MobileToolWindow(feed: presentation.feed, compact: compact, showTimeline: showTimeline)
+                    .padding(.horizontal, 7)
+                    .padding(.top, 8)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if hasThinking || hasProgress || hasTools {
+                Color.clear.frame(height: 8)
+            }
         }
         .background(RelayTheme.elevated)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -77,15 +91,9 @@ struct MobileLiveActivityConsole: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(RelayTheme.hairline, lineWidth: 1)
         }
-    }
-
-    private var thinkingText: String {
-        presentation.feed.latestReasoningText ?? "正在分析任务"
-    }
-
-    private var planProgress: String {
-        let completed = presentation.plan.filter(\.isCompleted).count
-        return "\(completed)/\(presentation.plan.count)"
+        .animation(.easeOut(duration: 0.18), value: hasThinking)
+        .animation(.easeOut(duration: 0.18), value: hasProgress)
+        .animation(.easeOut(duration: 0.18), value: hasTools)
     }
 
     private func elapsedText(at date: Date) -> String {
@@ -98,6 +106,7 @@ struct MobileLiveActivityConsole: View {
 
 private struct MobileProgressWindow: View {
     let feed: MobileActivityFeed
+    let compact: Bool
     @State private var followsLatest = true
 
     var body: some View {
@@ -147,7 +156,7 @@ private struct MobileProgressWindow: View {
                     }
                 }
             }
-            .frame(height: 72)
+            .frame(height: compact ? 72 : 104)
         }
         .background(RelayTheme.softFill)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -172,6 +181,7 @@ private struct MobileProgressWindow: View {
 
 private struct MobileToolWindow: View {
     let feed: MobileActivityFeed
+    let compact: Bool
     let showTimeline: () -> Void
     @State private var followsLatest = true
 
@@ -236,7 +246,7 @@ private struct MobileToolWindow: View {
                     }
                 }
             }
-            .frame(height: 58)
+            .frame(height: compact ? 58 : 86)
         }
         .background(RelayTheme.codeFill)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))

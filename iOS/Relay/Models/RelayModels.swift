@@ -44,6 +44,26 @@ enum GoalStatus: String, Equatable {
         case .complete: return "目标已完成"
         }
     }
+
+    var protocolValue: String {
+        switch self {
+        case .usageLimited: return "usageLimited"
+        case .budgetLimited: return "budgetLimited"
+        default: return rawValue
+        }
+    }
+
+    init?(protocolValue: String) {
+        switch protocolValue {
+        case "active": self = .active
+        case "paused": self = .paused
+        case "blocked": self = .blocked
+        case "usageLimited", "usage_limited": self = .usageLimited
+        case "budgetLimited", "budget_limited": self = .budgetLimited
+        case "complete": self = .complete
+        default: return nil
+        }
+    }
 }
 
 struct GoalState: Identifiable, Equatable {
@@ -58,20 +78,81 @@ struct GoalState: Identifiable, Equatable {
     let updatedAt: Date
 
     init?(json: JSONValue) {
-        guard let id = json["id"]?.stringValue,
-              let threadId = json["threadId"]?.stringValue,
+        guard let threadId = json["threadId"]?.stringValue,
               let objective = json["objective"]?.stringValue,
               let rawStatus = json["status"]?.stringValue,
-              let status = GoalStatus(rawValue: rawStatus) else { return nil }
-        self.id = id
+              let status = GoalStatus(protocolValue: rawStatus) else { return nil }
+        id = json["id"]?.stringValue ?? "goal.\(threadId)"
         self.threadId = threadId
         self.objective = objective
         self.status = status
         tokenBudget = json["tokenBudget"]?.intValue
         tokensUsed = json["tokensUsed"]?.intValue ?? 0
         timeUsedSeconds = json["timeUsedSeconds"]?.intValue ?? 0
-        createdAt = Date(timeIntervalSince1970: json["createdAt"]?.doubleValue ?? 0)
-        updatedAt = Date(timeIntervalSince1970: json["updatedAt"]?.doubleValue ?? 0)
+        createdAt = Self.date(json["createdAt"]?.doubleValue)
+        updatedAt = Self.date(json["updatedAt"]?.doubleValue)
+    }
+
+    private static func date(_ rawValue: Double?) -> Date {
+        guard let rawValue else { return Date() }
+        let seconds = rawValue > 10_000_000_000 ? rawValue / 1_000 : rawValue
+        return Date(timeIntervalSince1970: seconds)
+    }
+}
+
+enum ComposerMode: String, Equatable {
+    case standard
+    case plan
+    case goal
+
+    var title: String {
+        switch self {
+        case .standard: return "默认模式"
+        case .plan: return "计划模式"
+        case .goal: return "目标模式"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .standard: return "message"
+        case .plan: return "list.bullet.clipboard"
+        case .goal: return "scope"
+        }
+    }
+}
+
+struct CollaborationModeOption: Identifiable, Equatable {
+    let name: String
+    let mode: String
+    let model: String?
+    let reasoningEffort: String?
+
+    var id: String { mode }
+
+    init?(json: JSONValue) {
+        guard let name = json["name"]?.stringValue,
+              let mode = json["mode"]?.stringValue else { return nil }
+        self.name = name
+        self.mode = mode
+        model = json["model"]?.stringValue
+        reasoningEffort = json["reasoning_effort"]?.stringValue
+    }
+
+    func payload(fallbackModel: String, fallbackEffort: String?) -> JSONValue {
+        var settings: [String: JSONValue] = [
+            "model": .string(model ?? fallbackModel),
+            "developer_instructions": .null
+        ]
+        if let effort = reasoningEffort ?? fallbackEffort, !effort.isEmpty {
+            settings["reasoning_effort"] = .string(effort)
+        } else {
+            settings["reasoning_effort"] = .null
+        }
+        return .object([
+            "mode": .string(mode),
+            "settings": .object(settings)
+        ])
     }
 }
 

@@ -135,7 +135,19 @@ extension RelayStore {
         case "thread/settings/updated":
             if let model = params["threadSettings"]?["model"]?.stringValue { selectedModelId = model }
             if let effort = params["threadSettings"]?["effort"]?.stringValue { selectedEffort = effort }
+            if let mode = params["threadSettings"]?["collaborationMode"]?["mode"]?.stringValue,
+               composerMode != .goal {
+                composerMode = mode == "plan" ? .plan : .standard
+            }
             persistGenerationSettings()
+        case "thread/goal/updated":
+            if let threadId = params["threadId"]?.stringValue {
+                applyGoalResult(params["goal"], threadId: threadId)
+            }
+        case "thread/goal/cleared":
+            if let threadId = params["threadId"]?.stringValue {
+                goalStates.removeValue(forKey: threadId)
+            }
         case "error":
             let message = params["error"]?["message"]?.stringValue
                 ?? params["message"]?.stringValue
@@ -170,6 +182,10 @@ extension RelayStore {
             break
         case "thread/tokenUsage/updated":
             if let usage = params["tokenUsage"] { tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage) }
+        case "thread/goal/updated":
+            applyGoalResult(params["goal"], threadId: threadId)
+        case "thread/goal/cleared":
+            goalStates.removeValue(forKey: threadId)
         default:
             break
         }
