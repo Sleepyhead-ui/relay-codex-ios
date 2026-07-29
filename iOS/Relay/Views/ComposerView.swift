@@ -55,6 +55,10 @@ struct ComposerView: View {
                 }
             }
 
+            if !store.activePlan.isEmpty {
+                ExecutionPlanPanel(steps: store.activePlan)
+            }
+
             VStack(spacing: 2) {
                 if !store.attachments.isEmpty {
                     attachmentStrip
