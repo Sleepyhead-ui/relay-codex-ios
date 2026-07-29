@@ -565,30 +565,41 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
-            let unresolvedMessages = outboundDrafts.compactMap { messageId, draft -> TranscriptItem? in
+            let unresolvedMessages = outboundDrafts.compactMap { messageId, draft -> UnresolvedOutboundMessage? in
                 guard draft.threadId == id else { return nil }
-                return messages.first(where: { $0.id == messageId })
+                var item = messages.first(where: { $0.id == messageId })
                     ?? outboundTranscriptItem(id: messageId, draft: draft)
+                if item.deliveryState == .sending || item.deliveryState == .accepted {
+                    item.deliveryState = persistedOutboundDeliveries[messageId]?.automaticallyRecoverable == false
+                        ? .failed("上次发送未成功，可手动重试。")
+                        : .uncertain("连接恢复后仍在确认是否送达。")
+                }
+                return UnresolvedOutboundMessage(
+                    item: item,
+                    sequence: userMessagePlacements[messageId]?.sequence
+                        ?? persistedOutboundDeliveries[messageId]?.sequence
+                        ?? Int.max,
+                    createdAt: persistedOutboundDeliveries[messageId]?.createdAt
+                )
             }
-            let placedMessages = messages.filter {
-                userMessagePlacements[$0.id]?.threadId == id
+            let unresolvedIds = Set(unresolvedMessages.map(\.item.id))
+            let placedMessages = messages.compactMap { item -> UnresolvedOutboundMessage? in
+                guard !unresolvedIds.contains(item.id),
+                      let placement = userMessagePlacements[item.id],
+                      placement.threadId == id else { return nil }
+                return UnresolvedOutboundMessage(item: item, sequence: placement.sequence, createdAt: nil)
             }
             let loadedIds = Set(loadedMessages.map(\.id))
-            let preservedMessages = (unresolvedMessages + placedMessages).reduce(into: [String: TranscriptItem]()) {
-                $0[$1.id] = $1
-            }.values.sorted {
-                let left = userMessagePlacements[$0.id]?.sequence ?? Int.max
-                let right = userMessagePlacements[$1.id]?.sequence ?? Int.max
-                return left < right
+            let placementSequences = userMessagePlacements.reduce(into: [String: Int]()) {
+                $0[$1.key] = $1.value.sequence
             }
-            for unresolved in preservedMessages where !loadedIds.contains(unresolved.id) {
-                var preserved = unresolved
-                if preserved.deliveryState == .sending || preserved.deliveryState == .accepted {
-                    preserved.deliveryState = .uncertain("连接恢复后仍在确认是否送达。")
-                }
-                loadedMessages.append(preserved)
-            }
-            for deliveredId in unresolvedMessages.map(\.id).filter({ loadedIds.contains($0) }) {
+            loadedMessages = OutboundDeliveryOutbox.mergeUnresolved(
+                unresolvedMessages + placedMessages,
+                into: loadedMessages,
+                metadata: loadedMetadata,
+                placementSequences: placementSequences
+            )
+            for deliveredId in unresolvedMessages.map(\.item.id).filter({ loadedIds.contains($0) }) {
                 removeOutboundDelivery(deliveredId)
                 acceptedMessageIds.remove(deliveredId)
             }

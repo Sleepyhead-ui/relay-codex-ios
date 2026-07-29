@@ -27,12 +27,88 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
         XCTAssertEqual(Set(pruned.keys), ["newer"])
     }
 
+    func testAutomaticRecoveryExcludesExplicitFailuresAndKeepsSequenceOrder() {
+        let now = Date()
+        let later = envelope(id: "later", hostId: "host", profileId: "profile", sequence: 2, createdAt: now)
+        let failed = envelope(
+            id: "failed",
+            hostId: "host",
+            profileId: "profile",
+            sequence: 1,
+            createdAt: now,
+            automaticallyRecoverable: false
+        )
+        let earlier = envelope(id: "earlier", hostId: "host", profileId: "profile", sequence: 0, createdAt: now)
+        let records = [later.id: later, failed.id: failed, earlier.id: earlier]
+
+        XCTAssertEqual(
+            OutboundDeliveryOutbox.automaticallyRecoverableScoped(
+                records,
+                hostId: "host",
+                profileId: "profile"
+            ).map(\.id),
+            ["earlier", "later"]
+        )
+    }
+
+    func testLegacyEnvelopeDecodingDefaultsToAutomaticRecovery() throws {
+        let original = envelope(
+            id: "legacy",
+            hostId: "host",
+            profileId: "profile",
+            sequence: 3,
+            createdAt: Date()
+        )
+        let encoded = try JSONEncoder().encode(original)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "automaticallyRecoverable")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(OutboundDeliveryEnvelope.self, from: legacyData)
+        XCTAssertTrue(decoded.automaticallyRecoverable)
+    }
+
+    func testMergeUnresolvedPreservesSequenceBeforeNewerTurn() {
+        let failedAt = Date(timeIntervalSince1970: 100)
+        var laterMetadata = TurnMetadata()
+        laterMetadata.startedAt = Date(timeIntervalSince1970: 200)
+        let history = [item(id: "answer", turnId: "later", text: "newer answer")]
+        let unresolved = [
+            UnresolvedOutboundMessage(item: item(id: "first", text: "first"), sequence: 1, createdAt: failedAt),
+            UnresolvedOutboundMessage(item: item(id: "second", text: "second"), sequence: 2, createdAt: failedAt),
+        ]
+
+        let merged = OutboundDeliveryOutbox.mergeUnresolved(
+            unresolved,
+            into: history,
+            metadata: ["later": laterMetadata],
+            placementSequences: [:]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["first", "second", "answer"])
+    }
+
+    func testMergeUnresolvedReusesExistingBubbleInsteadOfDuplicatingIt() {
+        let existing = item(id: "same-id", text: "failed prompt")
+        let retry = UnresolvedOutboundMessage(item: existing, sequence: 1, createdAt: Date())
+
+        let merged = OutboundDeliveryOutbox.mergeUnresolved(
+            [retry],
+            into: [existing],
+            metadata: [:],
+            placementSequences: ["same-id": 1]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["same-id"])
+    }
+
     private func envelope(
         id: String,
         hostId: String,
         profileId: String,
         sequence: Int,
-        createdAt: Date
+        createdAt: Date,
+        automaticallyRecoverable: Bool = true
     ) -> OutboundDeliveryEnvelope {
         OutboundDeliveryEnvelope(
             id: id,
@@ -40,7 +116,12 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
             profileId: profileId,
             draft: OutboundDraft(threadId: "thread", text: id, attachments: []),
             sequence: sequence,
-            createdAt: createdAt
+            createdAt: createdAt,
+            automaticallyRecoverable: automaticallyRecoverable
         )
+    }
+
+    private func item(id: String, turnId: String? = nil, text: String) -> TranscriptItem {
+        TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text)
     }
 }

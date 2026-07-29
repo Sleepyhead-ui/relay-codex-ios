@@ -64,9 +64,25 @@ extension RelayStore {
             role: .user,
             kind: .message,
             text: [draft.text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n"),
-            deliveryState: .uncertain("正在等待 Windows 确认是否送达。"),
+            deliveryState: persistedOutboundDeliveries[id]?.automaticallyRecoverable == false
+                ? .failed("上次发送未成功，可手动重试。")
+                : .uncertain("正在等待 Windows 确认是否送达。"),
             imagePaths: draft.attachments.filter(\.isImage).compactMap(\.remotePath)
         )
+    }
+
+    private func setOutboundDeliveryAutomaticallyRecoverable(_ id: String, _ recoverable: Bool) {
+        guard var envelope = persistedOutboundDeliveries[id],
+              envelope.automaticallyRecoverable != recoverable else { return }
+        envelope.automaticallyRecoverable = recoverable
+        persistedOutboundDeliveries[id] = envelope
+        persistOutboundDeliveryOutbox()
+    }
+
+    private func markOutboundDeliveryFailed(_ id: String, message: String, threadId: String) {
+        acceptedMessageIds.remove(id)
+        setOutboundDeliveryAutomaticallyRecoverable(id, false)
+        updateDeliveryState(id, state: .failed(message), threadId: threadId)
     }
 
     private func persistOutboundDeliveryOutbox() {
@@ -85,8 +101,14 @@ extension RelayStore {
 
     func reconcileOutboundDeliveries() async {
         guard socket.state == .connected, !outboundDrafts.isEmpty else { return }
-        let pending = outboundDrafts.map { ($0.key, $0.value.threadId) }
-        for (id, threadId) in pending {
+        let pending = OutboundDeliveryOutbox.automaticallyRecoverableScoped(
+            persistedOutboundDeliveries,
+            hostId: currentHostId,
+            profileId: activeCodexProfileId
+        )
+        for envelope in pending {
+            let id = envelope.id
+            let threadId = envelope.draft.threadId
             guard outboundDrafts[id] != nil, socket.state == .connected else { continue }
             do {
                 let result = try await socket.rpc(
@@ -109,15 +131,24 @@ extension RelayStore {
         }
     }
 
-    private func retryOutboundDelivery(id: String, threadId: String) async {
+    private func retryOutboundDelivery(id: String, threadId: String, manual: Bool = false) async {
         guard let draft = outboundDrafts[id], socket.state == .connected else { return }
         let expectedTurnId = draft.expectedTurnId ?? userMessagePlacements[id]?.turnId
-        let runtime = try? await socket.rpc(
-            method: "relay/thread/runtime",
-            params: ["threadId": .string(threadId)],
-            timeoutSeconds: 12,
-            reconnectOnTimeout: false
-        )
+        let runtime: JSONValue?
+        do {
+            runtime = try await socket.rpc(
+                method: "relay/thread/runtime",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+        } catch {
+            if manual {
+                errorMessage = "暂时无法确认当前任务状态，未重发这条消息。"
+                return
+            }
+            runtime = nil
+        }
         let running = runtime?["isRunning"]?.boolValue == true
         switch DeliveryRecoveryPolicy.action(
             expectedTurnId: expectedTurnId,
@@ -125,15 +156,30 @@ extension RelayStore {
             activeTurnId: runtime?["activeTurnId"]?.stringValue
         ) {
         case .waitForHistory:
+            if manual {
+                markOutboundDeliveryFailed(
+                    id,
+                    message: "当前对话还有任务在运行，请稍后重试。",
+                    threadId: threadId
+                )
+                errorMessage = "当前对话还有任务在运行，未重发这条消息。"
+                return
+            }
             updateDeliveryState(id, state: .uncertain("任务已经开始，正在等待对话记录确认消息。"), threadId: threadId)
             return
         case .rejectStaleSteer:
-            updateDeliveryState(id, state: .failed("原任务已经结束，未自动重发这条引导。"), threadId: threadId)
+            markOutboundDeliveryFailed(
+                id,
+                message: "原任务已经结束，无法重试这条引导。可编辑后作为新消息发送。",
+                threadId: threadId
+            )
+            if manual { errorMessage = "原任务已经结束，未重发这条引导。" }
             return
         case .retry:
             break
         }
 
+        if manual { setOutboundDeliveryAutomaticallyRecoverable(id, true) }
         sendingThreadIds.insert(threadId)
         updateDeliveryState(id, state: .sending, threadId: threadId)
         defer { sendingThreadIds.remove(threadId) }
@@ -181,13 +227,15 @@ extension RelayStore {
             removeOutboundDelivery(id)
         } catch {
             let accepted = acceptedMessageIds.remove(id) != nil
-            updateDeliveryState(
-                id,
-                state: accepted || isUncertainDeliveryError(error)
-                    ? .uncertain("消息已重新交给 Windows，正在等待确认。")
-                    : .failed(error.localizedDescription),
-                threadId: threadId
-            )
+            if accepted || isUncertainDeliveryError(error) {
+                updateDeliveryState(
+                    id,
+                    state: .uncertain("消息已重新交给 Windows，正在等待确认。"),
+                    threadId: threadId
+                )
+            } else {
+                markOutboundDeliveryFailed(id, message: error.localizedDescription, threadId: threadId)
+            }
         }
     }
 
@@ -204,8 +252,7 @@ extension RelayStore {
             return
         }
         if let error = result["error"]?["message"]?.stringValue {
-            acceptedMessageIds.remove(id)
-            updateDeliveryState(id, state: .failed(error), threadId: draft.threadId)
+            markOutboundDeliveryFailed(id, message: error, threadId: draft.threadId)
             return
         }
         let turnId = result["turnId"]?.stringValue
@@ -233,6 +280,16 @@ extension RelayStore {
         acceptedMessageIds.remove(id)
     }
 
+    func retryOutboundDeliveryManually(_ id: String) async {
+        guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
+        guard socket.state == .connected else {
+            socket.reconnectIfNeeded()
+            errorMessage = "尚未连接到 Windows，消息仍保留在原位置。"
+            return
+        }
+        await retryOutboundDelivery(id: id, threadId: draft.threadId, manual: true)
+    }
+
     func confirmMessageDelivery(_ id: String) async {
         guard let draft = outboundDrafts[id], draft.threadId == selectedThreadId else { return }
         await selectThread(draft.threadId, closeSidebar: false, showErrors: false)
@@ -240,9 +297,9 @@ extension RelayStore {
             removeOutboundDelivery(id)
             acceptedMessageIds.remove(id)
         } else {
-            updateDeliveryState(
+            markOutboundDeliveryFailed(
                 id,
-                state: .failed("Windows 对话历史中暂未找到这条消息。"),
+                message: "Windows 对话历史中暂未找到这条消息。",
                 threadId: draft.threadId
             )
         }
@@ -425,6 +482,9 @@ extension RelayStore {
                 state: uncertain ? .uncertain("Bridge 可能已接收，正在等待历史确认。") : .failed(error.localizedDescription),
                 threadId: threadId
             )
+            if !uncertain {
+                setOutboundDeliveryAutomaticallyRecoverable(clientMessageId, false)
+            }
             if !uncertain || !wasAccepted {
                 applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: nil, phase: .failed, completedAt: Date()))
                 setThreadStatus(threadId, status: "idle")
@@ -432,7 +492,7 @@ extension RelayStore {
             }
             errorMessage = uncertain
                 ? "消息已保留在对话中，Relay 将在重连后确认是否送达。"
-                : "消息发送失败，内容已保留；可在消息下方恢复并重试。"
+                : "消息发送失败，内容已保留；可在消息下方重试或编辑。"
         }
     }
 
@@ -503,9 +563,12 @@ extension RelayStore {
                 state: uncertain ? .uncertain("引导可能已接收，正在等待历史确认。") : .failed(error.localizedDescription),
                 threadId: threadId
             )
+            if !uncertain {
+                setOutboundDeliveryAutomaticallyRecoverable(clientMessageId, false)
+            }
             errorMessage = uncertain
                 ? "引导已保留在实际位置，Relay 将在重连后确认是否送达。"
-                : "引导发送失败，内容已保留；可在消息下方恢复并重试。"
+                : "引导发送失败，内容已保留；可在消息下方重试或编辑。"
         }
     }
 }

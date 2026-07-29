@@ -177,7 +177,9 @@ struct TranscriptRow: View {
             case .failed(_):
                 Image(systemName: "exclamationmark.circle.fill")
                 Text("未发送")
-                Button("恢复") { store.restoreMessageToComposer(item.id) }
+                Button("重试") { Task { await store.retryOutboundDeliveryManually(item.id) } }
+                    .fontWeight(.semibold)
+                Button("编辑") { store.restoreMessageToComposer(item.id) }
                     .fontWeight(.semibold)
             }
         }

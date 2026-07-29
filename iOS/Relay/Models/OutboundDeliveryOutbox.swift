@@ -61,6 +61,57 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
     let draft: OutboundDraft
     let sequence: Int
     let createdAt: Date
+    var automaticallyRecoverable: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, hostId, profileId, draft, sequence, createdAt, automaticallyRecoverable
+    }
+
+    init(
+        id: String,
+        hostId: String,
+        profileId: String,
+        draft: OutboundDraft,
+        sequence: Int,
+        createdAt: Date,
+        automaticallyRecoverable: Bool = true
+    ) {
+        self.id = id
+        self.hostId = hostId
+        self.profileId = profileId
+        self.draft = draft
+        self.sequence = sequence
+        self.createdAt = createdAt
+        self.automaticallyRecoverable = automaticallyRecoverable
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        hostId = try values.decode(String.self, forKey: .hostId)
+        profileId = try values.decode(String.self, forKey: .profileId)
+        draft = try values.decode(OutboundDraft.self, forKey: .draft)
+        sequence = try values.decode(Int.self, forKey: .sequence)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        automaticallyRecoverable = try values.decodeIfPresent(Bool.self, forKey: .automaticallyRecoverable) ?? true
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(hostId, forKey: .hostId)
+        try values.encode(profileId, forKey: .profileId)
+        try values.encode(draft, forKey: .draft)
+        try values.encode(sequence, forKey: .sequence)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(automaticallyRecoverable, forKey: .automaticallyRecoverable)
+    }
+}
+
+struct UnresolvedOutboundMessage {
+    let item: TranscriptItem
+    let sequence: Int
+    let createdAt: Date?
 }
 
 enum OutboundDeliveryOutbox {
@@ -76,6 +127,15 @@ enum OutboundDeliveryOutbox {
             }
     }
 
+    static func automaticallyRecoverableScoped(
+        _ records: [String: OutboundDeliveryEnvelope],
+        hostId: String,
+        profileId: String
+    ) -> [OutboundDeliveryEnvelope] {
+        scoped(records, hostId: hostId, profileId: profileId)
+            .filter(\.automaticallyRecoverable)
+    }
+
     static func pruned(
         _ records: [String: OutboundDeliveryEnvelope],
         now: Date = Date(),
@@ -88,6 +148,33 @@ enum OutboundDeliveryOutbox {
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(max(1, limit))
         return Dictionary(uniqueKeysWithValues: retained.map { ($0.id, $0) })
+    }
+
+    static func mergeUnresolved(
+        _ unresolved: [UnresolvedOutboundMessage],
+        into history: [TranscriptItem],
+        metadata: [String: TurnMetadata],
+        placementSequences: [String: Int]
+    ) -> [TranscriptItem] {
+        var result = history
+        let sorted = unresolved.sorted { left, right in
+            if left.sequence != right.sequence { return left.sequence < right.sequence }
+            return (left.createdAt ?? .distantFuture) < (right.createdAt ?? .distantFuture)
+        }
+
+        for message in sorted where !result.contains(where: { $0.id == message.item.id }) {
+            let insertion = result.firstIndex { candidate in
+                if let candidateSequence = placementSequences[candidate.id], candidateSequence > message.sequence {
+                    return true
+                }
+                guard let createdAt = message.createdAt,
+                      let turnId = candidate.turnId,
+                      let startedAt = metadata[turnId]?.startedAt else { return false }
+                return startedAt >= createdAt
+            } ?? result.endIndex
+            result.insert(message.item, at: insertion)
+        }
+        return result
     }
 }
 
