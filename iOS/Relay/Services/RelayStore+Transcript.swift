@@ -97,31 +97,49 @@ extension RelayStore {
     }
 
     func ensureLiveSessionSync() {
-        guard liveSessionSyncTask == nil, isRunning, selectedThreadId != nil, socket.state == .connected else { return }
+        guard liveSessionSyncTask == nil,
+              !showingArchivedThreads,
+              selectedThreadId != nil,
+              socket.state == .connected else { return }
+        let generation = UUID()
+        liveSessionSyncGeneration = generation
         liveSessionSyncTask = Task { [weak self] in
             guard let self, let initialThreadId = self.selectedThreadId else { return }
+            var hasActiveSubscription = false
             if let initial = try? await self.socket.rpc(
                 method: "relay/thread/session/subscribe",
                 params: ["threadId": .string(initialThreadId), "incremental": .bool(true)],
                 timeoutSeconds: 12,
                 reconnectOnTimeout: false
             ) {
+                hasActiveSubscription = true
                 self.subscribedSessionThreadId = initialThreadId
                 self.applySessionSnapshot(initial, threadId: initialThreadId)
             }
             while !Task.isCancelled {
-                guard let threadId = self.selectedThreadId, self.isRunning, self.socket.state == .connected else { break }
-                do { try await Task.sleep(nanoseconds: 30_000_000_000) } catch { break }
-                if Date().timeIntervalSince(self.lastSessionUpdateAt[threadId] ?? .distantPast) >= 25 {
-                    await self.syncSessionSnapshot(threadId: threadId)
+                guard let threadId = self.selectedThreadId,
+                      SelectedSessionSyncPolicy.shouldContinue(
+                        initialThreadId: initialThreadId,
+                        selectedThreadId: threadId,
+                        showingArchivedThreads: self.showingArchivedThreads,
+                        connected: self.socket.state == .connected
+                      ) else { break }
+                let retryDelay: UInt64 = hasActiveSubscription ? 30_000_000_000 : 2_000_000_000
+                do { try await Task.sleep(nanoseconds: retryDelay) } catch { break }
+                if !hasActiveSubscription
+                    || Date().timeIntervalSince(self.lastSessionUpdateAt[threadId] ?? .distantPast) >= 25 {
+                    hasActiveSubscription = await self.syncSessionSnapshot(threadId: threadId)
                 }
             }
-            self.liveSessionSyncTask = nil
+            if self.liveSessionSyncGeneration == generation {
+                self.liveSessionSyncTask = nil
+            }
         }
     }
 
-    private func syncSessionSnapshot(threadId: String) async {
-        guard !recoveringSessionThreadIds.contains(threadId) else { return }
+    @discardableResult
+    private func syncSessionSnapshot(threadId: String) async -> Bool {
+        guard !recoveringSessionThreadIds.contains(threadId) else { return false }
         socket.performanceMetrics.recordSessionRecovery()
         recoveringSessionThreadIds.insert(threadId)
         defer { recoveringSessionThreadIds.remove(threadId) }
@@ -130,9 +148,10 @@ extension RelayStore {
             params: ["threadId": .string(threadId), "incremental": .bool(true)],
             timeoutSeconds: 12,
             reconnectOnTimeout: false
-        ) else { return }
+        ) else { return false }
         subscribedSessionThreadId = threadId
         applySessionSnapshot(result, threadId: threadId)
+        return true
     }
 
     func applySessionSnapshot(_ result: JSONValue, threadId: String) {
@@ -189,6 +208,9 @@ extension RelayStore {
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
             applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: metadata.startedAt))
         } else {
+            let currentState = taskRunStates[threadId]
+            let shouldApplyTerminalState = currentState?.isRunning == true
+                && (currentState?.turnId == nil || currentState?.turnId == turnId)
             metadata.status = snapshotIsStale ? "interrupted" : "completed"
             if snapshotIsStale { metadata.durationMs = nil }
             if let completedAt = result["completedAt"]?.doubleValue { metadata.completedAt = Date(timeIntervalSince1970: completedAt) }
@@ -196,10 +218,17 @@ extension RelayStore {
             turnMetadata[turnId] = metadata
             if activeTurnId == nil || activeTurnId == turnId {
                 setThreadStatus(threadId, status: "idle")
-                liveSessionSyncTask?.cancel()
-                liveSessionSyncTask = nil
             }
-            applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: turnId, phase: snapshotIsStale ? .interrupted : .completed, completedAt: metadata.completedAt))
+            if shouldApplyTerminalState {
+                applyTaskRunEvent(
+                    threadId: threadId,
+                    event: .terminal(
+                        turnId: turnId,
+                        phase: snapshotIsStale ? .interrupted : .completed,
+                        completedAt: metadata.completedAt
+                    )
+                )
+            }
         }
         cacheCurrentThread()
     }

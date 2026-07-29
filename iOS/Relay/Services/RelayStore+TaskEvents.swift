@@ -80,8 +80,6 @@ extension RelayStore {
                     if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
                 }
             }
-            liveSessionSyncTask?.cancel()
-            liveSessionSyncTask = nil
             Task {
                 await refreshThreads(showErrors: false)
                 if let selectedThreadId { await refreshGoal(threadId: selectedThreadId) }
@@ -266,8 +264,6 @@ extension RelayStore {
             }
             turnMetadata[failedTurnId] = metadata
         }
-        liveSessionSyncTask?.cancel()
-        liveSessionSyncTask = nil
         setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
         cacheCurrentThread()
     }

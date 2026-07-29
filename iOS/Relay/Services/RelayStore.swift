@@ -97,6 +97,7 @@ final class RelayStore: ObservableObject {
     var restorationTask: Task<Void, Never>?
     var bridgeRecoveryPending = false
     var liveSessionSyncTask: Task<Void, Never>?
+    var liveSessionSyncGeneration = UUID()
     var subscribedSessionThreadId: String?
     var sessionRevisionTracker = SessionRevisionTracker()
     var lastSessionUpdateAt: [String: Date] = [:]
@@ -684,9 +685,7 @@ final class RelayStore: ObservableObject {
             persistGenerationSettings()
             await refreshGoal(threadId: id)
             cacheCurrentThread()
-            if isRunning {
-                ensureLiveSessionSync()
-            }
+            ensureLiveSessionSync()
         } catch {
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             report(error, show: showErrors)
@@ -906,8 +905,6 @@ final class RelayStore: ObservableObject {
             turnMetadata[turnId] = metadata
         }
         applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: stoppedTurnId, phase: .interrupted, completedAt: Date()))
-        liveSessionSyncTask?.cancel()
-        liveSessionSyncTask = nil
         setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
         cacheCurrentThread()
     }
@@ -1186,6 +1183,10 @@ final class RelayStore: ObservableObject {
     }
 
     private func handleConnectionRestored() async {
+        liveSessionSyncGeneration = UUID()
+        liveSessionSyncTask?.cancel()
+        liveSessionSyncTask = nil
+        subscribedSessionThreadId = nil
         await refreshCodexProfiles(showErrors: false)
         restoreOutboundDeliveriesForCurrentScope()
         async let threadsRefresh: Void = refreshThreads(showErrors: false)
