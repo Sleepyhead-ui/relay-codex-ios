@@ -112,6 +112,7 @@ extension RelayStore {
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
+        resolvingApprovalIds = []
         acceptedMessageIds = []
         outboundDrafts = [:]
         forgetOutboundDeliveries(hostId: forgottenHostId)

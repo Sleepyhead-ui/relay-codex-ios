@@ -29,6 +29,18 @@ final class ApprovalQueueTests: XCTestCase {
         )
     }
 
+    func testPresentedApprovalKeepsItsIdentityWhenTaskPriorityChanges() throws {
+        let first = try XCTUnwrap(approval(id: "approval.1", threadId: "thread.1"))
+        let second = try XCTUnwrap(approval(id: "approval.2", threadId: "thread.2"))
+        let approvals = [first, second]
+
+        XCTAssertEqual(
+            ApprovalQueue.prioritized(approvals, selectedThreadId: "thread.2").first?.id,
+            "approval.2"
+        )
+        XCTAssertEqual(ApprovalQueue.request(approvals, id: first.id)?.id, "approval.1")
+    }
+
     private func approval(id: String, threadId: String) -> ApprovalRequest? {
         ApprovalRequest(message: .object([
             "id": .string(id),

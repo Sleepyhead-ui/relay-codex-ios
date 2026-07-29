@@ -267,13 +267,6 @@ struct ConversationView: View {
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { notification in
                     pinBottomDuringKeyboardTransition(notification, proxy: proxy)
                 }
-                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("relay.composer.layoutChanged"))) { _ in
-                    let shouldKeepBottomVisible = isAtBottom || keyboardTransitionID != nil
-                    guard shouldKeepBottomVisible else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        scrollToBottom(proxy, animated: false)
-                    }
-                }
             }
         }
     }
@@ -320,13 +313,29 @@ struct ConversationView: View {
         keyboardTransitionID = transitionID
         let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?
             .doubleValue ?? 0.25
+        let animation = keyboardAnimation(notification, duration: duration)
 
-        DispatchQueue.main.async { scrollToBottom(proxy, animated: false) }
+        DispatchQueue.main.async {
+            guard keyboardTransitionID == transitionID else { return }
+            withAnimation(animation) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.04) {
             guard keyboardTransitionID == transitionID else { return }
-            scrollToBottom(proxy, animated: false)
             isAtBottom = true
             keyboardTransitionID = nil
+        }
+    }
+
+    private func keyboardAnimation(_ notification: Notification, duration: Double) -> Animation {
+        let rawCurve = (notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?
+            .intValue
+        switch rawCurve.flatMap(UIView.AnimationCurve.init(rawValue:)) {
+        case .easeIn: return .easeIn(duration: duration)
+        case .easeOut: return .easeOut(duration: duration)
+        case .linear: return .linear(duration: duration)
+        default: return .easeInOut(duration: duration)
         }
     }
 

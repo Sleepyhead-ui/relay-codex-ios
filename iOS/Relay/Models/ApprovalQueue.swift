@@ -10,4 +10,8 @@ enum ApprovalQueue {
     static func contains(_ approvals: [ApprovalRequest], threadId: String) -> Bool {
         approvals.contains { $0.threadId == threadId }
     }
+
+    static func request(_ approvals: [ApprovalRequest], id: String) -> ApprovalRequest? {
+        approvals.first { $0.id == id }
+    }
 }

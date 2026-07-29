@@ -204,7 +204,7 @@ struct ComposerView: View {
         .frame(maxWidth: RelayTheme.contentWidth)
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.bottom, 0)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
         .animation(.easeOut(duration: 0.18), value: focused)
@@ -235,10 +235,6 @@ struct ComposerView: View {
         }
         .onChange(of: focused) { value in
             store.composerIsFocused = value
-            NotificationCenter.default.post(
-                name: Notification.Name("relay.composer.layoutChanged"),
-                object: nil
-            )
         }
         .onDisappear { store.composerIsFocused = false }
     }

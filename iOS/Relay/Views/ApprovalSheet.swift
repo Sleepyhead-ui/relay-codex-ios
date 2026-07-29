@@ -52,7 +52,7 @@ struct ApprovalSheet: View {
 
                 HStack(spacing: 10) {
                     Button(role: .destructive) {
-                        Task { await store.resolveApproval("decline") }
+                        Task { await store.resolveApproval(approval.id, decision: "decline") }
                     } label: {
                         Text("Deny")
                             .font(.system(size: 15, weight: .semibold))
@@ -62,19 +62,27 @@ struct ApprovalSheet: View {
                             .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                     }
                     .buttonStyle(.plain)
+                    .disabled(isResolving)
 
                     Button {
-                        Task { await store.resolveApproval("accept") }
+                        Task { await store.resolveApproval(approval.id, decision: "accept") }
                     } label: {
-                        Text("Allow once")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 46)
-                            .background(Color.primary)
-                            .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
+                        Group {
+                            if isResolving {
+                                ProgressView().tint(.white)
+                            } else {
+                                Text("Allow once")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 46)
+                        .background(Color.primary)
+                        .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                     }
                     .buttonStyle(.plain)
+                    .disabled(isResolving)
                 }
             }
             .padding(22)
@@ -83,5 +91,9 @@ struct ApprovalSheet: View {
         .presentationDragIndicator(.hidden)
         .background(RelayTheme.elevated)
         .interactiveDismissDisabled()
+    }
+
+    private var isResolving: Bool {
+        store.resolvingApprovalIds.contains(approval.id)
     }
 }

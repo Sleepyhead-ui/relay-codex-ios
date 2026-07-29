@@ -20,6 +20,7 @@ final class RelayStore: ObservableObject {
     @Published var showingSettings = false
     @Published var showingNewTask = false
     @Published var pendingApprovals: [ApprovalRequest] = []
+    @Published var resolvingApprovalIds = Set<String>()
     @Published var errorMessage: String?
     @Published var isLoadingThread = false
     @Published var isLoadingOlderTurns = false
@@ -935,8 +936,10 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    func resolveApproval(_ decision: String) async {
-        guard let approval = pendingApproval else { return }
+    func resolveApproval(_ approvalId: String, decision: String) async {
+        guard let approval = ApprovalQueue.request(pendingApprovals, id: approvalId),
+              resolvingApprovalIds.insert(approvalId).inserted else { return }
+        defer { resolvingApprovalIds.remove(approvalId) }
         do {
             let result: [String: JSONValue]
             if approval.method == "mcpServer/elicitation/request" {
@@ -1058,6 +1061,7 @@ final class RelayStore: ObservableObject {
         composerMode = .standard
         queuedFollowUps = []
         pendingApprovals = []
+        resolvingApprovalIds = []
         threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         setSelectedThread(nil)
@@ -1256,6 +1260,7 @@ final class RelayStore: ObservableObject {
         sendingThreadIds = []
         queuedFollowUps = []
         pendingApprovals = []
+        resolvingApprovalIds = []
         threadSnapshots.removeAll()
         olderTurnsCursorByThread = [:]
         acceptedMessageIds = []
