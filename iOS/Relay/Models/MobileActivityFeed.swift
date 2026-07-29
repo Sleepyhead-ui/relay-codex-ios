@@ -26,7 +26,7 @@ struct MobileActivityFeed: Equatable {
                 if candidateText == text { return true }
                 let shorter = candidateText.count <= text.count ? candidateText : text
                 let longer = candidateText.count <= text.count ? text : candidateText
-                return shorter.count >= 6 && longer.hasPrefix(shorter)
+                return shorter.count >= 4 && longer.hasPrefix(shorter)
             }) {
                 if text.count > TranscriptReconciler.normalizedText(normalized[index].text).count {
                     var replacement = item
