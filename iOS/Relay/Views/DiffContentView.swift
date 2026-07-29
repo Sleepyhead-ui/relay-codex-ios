@@ -1,32 +1,40 @@
 import SwiftUI
 
 struct DiffContentView: View {
-    let source: String
+    private let lines: [DiffLine]
+    private let lineHeight: CGFloat = 19
+    private var height: CGFloat { CGFloat(min(max(lines.count, 2), 18)) * lineHeight + 16 }
 
-    private var lines: [DiffLine] { DiffLine.parse(source) }
-    private var height: CGFloat { CGFloat(min(max(lines.count, 2), 18)) * 18 + 16 }
+    init(source: String) {
+        lines = DiffLine.parse(source)
+    }
 
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(lines) { line in
-                    HStack(spacing: 0) {
-                        Text(gutter(for: line.kind))
-                            .foregroundStyle(foreground(for: line.kind).opacity(0.8))
-                            .frame(width: 20, alignment: .center)
-                        Text(content(for: line))
-                            .foregroundStyle(foreground(for: line.kind))
-                            .padding(.trailing, 12)
+        GeometryReader { geometry in
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(lines) { line in
+                        HStack(spacing: 0) {
+                            Text(gutter(for: line.kind))
+                                .foregroundStyle(foreground(for: line.kind).opacity(0.8))
+                                .frame(width: 24, alignment: .center)
+                            Text(content(for: line))
+                                .foregroundStyle(foreground(for: line.kind))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.trailing, 14)
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minWidth: max(geometry.size.width, 1), minHeight: lineHeight, alignment: .leading)
+                        .background(background(for: line.kind))
                     }
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(minHeight: 18)
-                    .background(background(for: line.kind))
                 }
+                .frame(minWidth: max(geometry.size.width, 1), alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: height)
-        .background(Color.black.opacity(0.16))
+        .frame(maxWidth: .infinity)
+        .background(RelayTheme.codeFill)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)

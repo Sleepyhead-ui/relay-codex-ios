@@ -719,6 +719,7 @@ private struct CompactTechnicalDetail: View {
 private struct ToolEventRow: View {
     let item: TranscriptItem
     @EnvironmentObject private var store: RelayStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expanded = false
 
     var body: some View {
@@ -784,6 +785,7 @@ private struct ToolEventRow: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 10, weight: .semibold))
                             .rotationEffect(.degrees(expanded ? 180 : 0))
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: expanded)
                             .foregroundStyle(.tertiary)
                             .padding(.top, 4)
                     }
@@ -825,10 +827,13 @@ private struct ToolEventRow: View {
                         .foregroundStyle(.tertiary)
                     detailView(detail)
                 }
-                .padding(.leading, 29)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, item.kind == .fileChange ? 0 : 29)
                 .padding(.bottom, 10)
+                .transition(.identity)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
