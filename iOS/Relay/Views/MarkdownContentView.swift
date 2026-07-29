@@ -110,7 +110,7 @@ struct MarkdownContentView: View {
     }
 }
 
-private struct InlineMarkdownText: View {
+struct InlineMarkdownText: View {
     let text: String
     let size: CGFloat
     let weight: Font.Weight

@@ -122,9 +122,12 @@ private struct MobileProgressWindow: View {
                                     .foregroundStyle(.tertiary)
                             } else {
                                 ForEach(feed.progressItems) { item in
-                                    Text(cleanActivityText(item.text))
+                                    InlineMarkdownText(
+                                        cleanActivityText(item.text),
+                                        size: 11.5,
+                                        lineSpacing: 2
+                                    )
                                         .foregroundStyle(.secondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
                                         .id(item.id)
                                 }
                             }
