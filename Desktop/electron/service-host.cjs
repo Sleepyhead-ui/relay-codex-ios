@@ -3,7 +3,13 @@ const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const { bridgeUpgradeBlockers, bridgeVersionMatches, serviceHostRestartDelayMs, serviceHostUnhealthyRestartThreshold } = require("./service-host-policy.cjs");
+const {
+  bridgeUpgradeBlockers,
+  bridgeVersionMatches,
+  serviceHostHeartbeatStaleMs,
+  serviceHostRestartDelayMs,
+  serviceHostUnhealthyRestartThreshold,
+} = require("./service-host-policy.cjs");
 
 const [bridgeEntry, heartbeatPath, hostPidPath, bridgePidPath] = process.argv.slice(2);
 const endpoint = process.env.RELAY_ADVERTISE_URL;
@@ -52,7 +58,7 @@ function claimHostPid() {
       if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error?.code)) return false;
       let owner;
       try { owner = Number(fs.readFileSync(path.join(hostLockPath, "owner"), "utf8").trim()); } catch {}
-      if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return false;
+      if (Number.isInteger(owner) && owner > 0 && hostClaimIsActive(owner)) return false;
       try {
         const stalePath = `${hostLockPath}.stale-${process.pid}-${Date.now()}`;
         fs.renameSync(hostLockPath, stalePath);
@@ -63,6 +69,28 @@ function claimHostPid() {
     }
   }
   return false;
+}
+
+function hostClaimIsActive(owner) {
+  if (!processIsAlive(owner)) return false;
+  try {
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+    const updatedAt = Number(heartbeat?.updatedAt);
+    if (
+      Number(heartbeat?.pid) === owner
+      && Number.isFinite(updatedAt)
+      && Date.now() - updatedAt <= serviceHostHeartbeatStaleMs
+    ) return true;
+  } catch {}
+
+  // A newly created Host has not necessarily written its first heartbeat yet.
+  // After that grace period, a live but reused PID must not keep a stale lock.
+  try {
+    const lockAgeMs = Date.now() - fs.statSync(hostLockPath).mtimeMs;
+    return lockAgeMs <= serviceHostHeartbeatStaleMs;
+  } catch {
+    return false;
+  }
 }
 
 function terminateLegacyServiceHosts() {

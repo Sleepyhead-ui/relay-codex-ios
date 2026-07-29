@@ -163,6 +163,36 @@ describe("Relay service host", () => {
     expect(heartbeat.pid).toBe(host.pid);
   }, 10_000);
 
+  it("recovers a stale Host lock after its PID is reused", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-host-reused-pid-"));
+    const heartbeatPath = path.join(directory, "heartbeat.json");
+    const hostPidPath = path.join(directory, "host.pid");
+    const bridgePidPath = path.join(directory, "bridge.pid");
+    const fakeBridgePath = path.join(directory, "fake-bridge.cjs");
+    const lockPath = `${hostPidPath}.lock`;
+    const port = await availablePort();
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, "owner"), `${process.pid}\n`);
+    fs.writeFileSync(hostPidPath, `${process.pid}\n`);
+    fs.writeFileSync(heartbeatPath, JSON.stringify({
+      pid: process.pid,
+      endpoint: `ws://127.0.0.1:${port}`,
+      updatedAt: Date.now() - 60_000,
+    }));
+    const staleAt = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, staleAt, staleAt);
+    fs.writeFileSync(fakeBridgePath, `
+      const http = require("node:http");
+      http.createServer((_request, response) => response.end(JSON.stringify({ status: "ready", version: process.env.RELAY_SERVICE_VERSION, activeTurns: 0 }))).listen(Number(process.env.RELAY_PORT), "127.0.0.1");
+    `, "utf8");
+
+    const host = spawnServiceHost(fakeBridgePath, heartbeatPath, hostPidPath, bridgePidPath, port, { RELAY_SERVICE_VERSION: "1.0.1" });
+    await waitFor(async () => await healthReady(port), 8_000);
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+    if (heartbeat.bridgePid) spawnedPids.add(Number(heartbeat.bridgePid));
+    expect(heartbeat.pid).toBe(host.pid);
+  }, 10_000);
+
   it("waits for an active old Bridge, then upgrades it when idle", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-service-host-upgrade-"));
     const heartbeatPath = path.join(directory, "heartbeat.json");
