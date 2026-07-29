@@ -126,7 +126,7 @@ private final class DiffCanvasView: UIView {
         }
     }
     private(set) var requiredWidth: CGFloat = 1
-    private(set) var requiredHeight: CGFloat = Self.lineHeight * 2 + Self.topInset * 2
+    private(set) var requiredHeight: CGFloat = DiffCanvasView.lineHeight * 2 + DiffCanvasView.topInset * 2
 
     override init(frame: CGRect) {
         super.init(frame: frame)
