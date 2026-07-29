@@ -3,15 +3,6 @@ import SwiftUI
 struct TurnGroupView: View, Equatable {
     let group: TranscriptGroup
     let isLive: Bool
-    @State private var activityExpanded: Bool
-    @State private var renderedActivitySectionCount = 0
-
-    init(group: TranscriptGroup, isLive: Bool) {
-        self.group = group
-        self.isLive = isLive
-        _activityExpanded = State(initialValue: isLive || group.turnId == nil)
-        _renderedActivitySectionCount = State(initialValue: isLive || group.turnId == nil ? 8 : 0)
-    }
 
     static func == (lhs: TurnGroupView, rhs: TurnGroupView) -> Bool {
         lhs.group == rhs.group && lhs.isLive == rhs.isLive
@@ -19,31 +10,25 @@ struct TurnGroupView: View, Equatable {
 
     var body: some View {
         let timeline = timelineSegments
-        let firstActivityIndex = timeline.firstIndex(where: \.isActivity)
-        let totalActivitySectionCount = timeline.reduce(0) { $0 + $1.activitySectionCount }
-        let activityOffsets = activityOffsets(for: timeline)
 
         VStack(alignment: .leading, spacing: 14) {
-            ForEach(Array(timeline.enumerated()), id: \.element.id) { index, segment in
+            ForEach(timeline) { segment in
                 switch segment {
                 case .user(let item, let isFollowUp):
                     TranscriptRow(item: item, isFollowUp: isFollowUp)
-                case .activity(let id, let items, let sectionCount):
-                    let visibleCount = max(0, min(sectionCount, renderedActivitySectionCount - (activityOffsets[id] ?? 0)))
-                    RunActivityView(
-                        items: items,
-                        metadata: group.metadata,
-                        isLive: isLive,
-                        showsHeader: group.turnId != nil && index == firstActivityIndex,
-                        canExpand: totalActivitySectionCount > 0,
-                        visibleSectionCount: visibleCount,
-                        remainingSectionCount: index == firstActivityIndex ? max(0, totalActivitySectionCount - renderedActivitySectionCount) : 0,
-                        expanded: $activityExpanded,
-                        onShowMore: { renderedActivitySectionCount = min(renderedActivitySectionCount + 8, totalActivitySectionCount) }
-                    )
+                case .activity:
+                    EmptyView()
                 case .item(let item):
                     TranscriptRow(item: item)
                 }
+            }
+
+            if !isLive, !group.activityItems.isEmpty {
+                MobileCompletedActivityRow(
+                    id: "completed.\(group.id)",
+                    items: group.activityItems,
+                    metadata: group.metadata
+                )
             }
 
             if group.answerItems.isEmpty, let error = group.metadata.errorMessage, !error.isEmpty {
@@ -53,19 +38,6 @@ struct TurnGroupView: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: activityExpanded) { expanded in
-            if expanded {
-                renderedActivitySectionCount = min(max(renderedActivitySectionCount, 8), totalActivitySectionCount)
-            }
-        }
-        .onChange(of: isLive) { running in
-            if running {
-                activityExpanded = true
-                renderedActivitySectionCount = min(max(renderedActivitySectionCount, 8), totalActivitySectionCount)
-            } else {
-                activityExpanded = false
-            }
-        }
     }
 
     private var timelineSegments: [TurnTimelineSegment] {
@@ -75,8 +47,7 @@ struct TurnGroupView: View, Equatable {
 
         func flushActivity() {
             guard let first = pendingActivity.first else { return }
-            let sectionCount = makeActivitySectionPage(items: pendingActivity, limit: 0).totalCount
-            result.append(.activity(id: "activity.\(first.id)", items: pendingActivity, sectionCount: sectionCount))
+            result.append(.activity(id: "activity.\(first.id)", items: pendingActivity))
             pendingActivity = []
         }
 
@@ -96,18 +67,7 @@ struct TurnGroupView: View, Equatable {
         flushActivity()
 
         if isLive, !result.contains(where: \.isActivity) {
-            result.append(.activity(id: "activity.pending.\(group.id)", items: [], sectionCount: 0))
-        }
-        return result
-    }
-
-    private func activityOffsets(for timeline: [TurnTimelineSegment]) -> [String: Int] {
-        var result: [String: Int] = [:]
-        var offset = 0
-        for segment in timeline {
-            guard case .activity(let id, _, let sectionCount) = segment else { continue }
-            result[id] = offset
-            offset += sectionCount
+            result.append(.activity(id: "activity.pending.\(group.id)", items: []))
         }
         return result
     }
@@ -115,13 +75,13 @@ struct TurnGroupView: View, Equatable {
 
 private enum TurnTimelineSegment: Identifiable {
     case user(TranscriptItem, isFollowUp: Bool)
-    case activity(id: String, items: [TranscriptItem], sectionCount: Int)
+    case activity(id: String, items: [TranscriptItem])
     case item(TranscriptItem)
 
     var id: String {
         switch self {
         case .user(let item, _): return "user.\(item.id)"
-        case .activity(let id, _, _): return id
+        case .activity(let id, _): return id
         case .item(let item): return "item.\(item.id)"
         }
     }
@@ -129,11 +89,6 @@ private enum TurnTimelineSegment: Identifiable {
     var isActivity: Bool {
         if case .activity = self { return true }
         return false
-    }
-
-    var activitySectionCount: Int {
-        guard case .activity(_, _, let count) = self else { return 0 }
-        return count
     }
 }
 
@@ -241,25 +196,34 @@ struct TranscriptRow: View {
 private struct InlineImageGrid: View {
     let paths: [String]
 
-    private var columns: [GridItem] {
-        paths.count == 1
-            ? [GridItem(.flexible(), spacing: 5)]
-            : [GridItem(.flexible(), spacing: 5), GridItem(.flexible(), spacing: 5)]
-    }
-
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .trailing, spacing: 5) {
-            ForEach(paths, id: \.self) { path in
-                InlineMessageImage(path: path)
+        Group {
+            if paths.count == 1, let path = paths.first {
+                InlineMessageImage(path: path, width: 200, height: 150)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 6) {
+                        ForEach(paths, id: \.self) { path in
+                            InlineMessageImage(path: path, width: 112, height: 84)
+                        }
+                    }
+                }
+                .frame(width: galleryWidth, height: 84)
+                .clipped()
             }
         }
-        .frame(width: paths.count == 1 ? 190 : 250)
         .transaction { $0.animation = nil }
+    }
+
+    private var galleryWidth: CGFloat {
+        min(278, max(180, UIScreen.main.bounds.width - 112))
     }
 }
 
 private struct InlineMessageImage: View {
     let path: String
+    let width: CGFloat
+    let height: CGFloat
     @EnvironmentObject private var store: RelayStore
 
     var body: some View {
@@ -280,8 +244,7 @@ private struct InlineMessageImage: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(4 / 3, contentMode: .fit)
+            .frame(width: width, height: height)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

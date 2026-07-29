@@ -7,6 +7,7 @@ struct ConversationView: View {
     @State private var isUserScrolling = false
     @State private var autoScrollScheduled = false
     @State private var visibleGroupLimit = 24
+    @State private var activityPresentation: MobileActivityPresentation?
 
     private let bottomAnchor = "relay-conversation-bottom"
 
@@ -17,13 +18,46 @@ struct ConversationView: View {
             transcript
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.showingArchivedThreads {
-                archivedBar
-            } else {
-                ComposerView(draft: store.composerDraft)
+            VStack(spacing: 8) {
+                if let presentation = liveActivityPresentation {
+                    MobileActivityBar(presentation: presentation) {
+                        activityPresentation = presentation
+                    }
+                    .padding(.horizontal, RelayTheme.horizontalPadding)
+                }
+
+                if store.showingArchivedThreads {
+                    archivedBar
+                } else {
+                    ComposerView(draft: store.composerDraft)
+                }
             }
         }
         .background(RelayTheme.canvas)
+        .sheet(item: $activityPresentation) { presentation in
+            MobileActivitySheet(
+                presentation: presentation.isLive ? (liveActivityPresentation ?? presentation) : presentation
+            )
+        }
+    }
+
+    private var liveActivityPresentation: MobileActivityPresentation? {
+        guard store.isRunning, let threadId = store.selectedThreadId else { return nil }
+        let turnId = store.activeTurnId
+        let items = turnId.map { activeTurnId in
+            store.messages.filter { $0.turnId == activeTurnId && $0.isActivity }
+        } ?? []
+        var metadata = turnId.flatMap { store.turnMetadata[$0] } ?? TurnMetadata()
+        if metadata.startedAt == nil {
+            metadata.startedAt = store.taskRunStates[threadId]?.startedAt
+        }
+        return MobileActivityPresentation(
+            id: turnId ?? "starting.\(threadId)",
+            feed: MobileActivityFeed.make(items: items),
+            metadata: metadata,
+            isLive: true,
+            plan: store.activePlan
+        )
     }
 
     private var archivedBar: some View {
@@ -215,6 +249,20 @@ struct ConversationView: View {
                         autoScrollScheduled = false
                         guard isAtBottom, !isUserScrolling else { return }
                         scrollToBottom(proxy, animated: !store.isRunning)
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                    guard isAtBottom else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                        guard isAtBottom else { return }
+                        scrollToBottom(proxy, animated: false)
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: Notification.Name("relay.composer.layoutChanged"))) { _ in
+                    guard isAtBottom else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                        guard isAtBottom else { return }
+                        scrollToBottom(proxy, animated: false)
                     }
                 }
             }

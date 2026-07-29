@@ -24,11 +24,6 @@ struct ComposerView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            if store.isRunning, !store.activePlan.isEmpty {
-                ExecutionPlanPanel(steps: store.activePlan)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
             if let goal = store.currentGoal, goal.status != .complete {
                 ActiveGoalPanel(goal: goal, isRunning: store.isRunning)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -175,10 +170,8 @@ struct ComposerView: View {
         .frame(maxWidth: RelayTheme.contentWidth)
         .padding(.horizontal, 12)
         .padding(.top, 8)
-        .padding(.bottom, 0)
-        .offset(y: focused ? 0 : 12)
+        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
-        .animation(.easeOut(duration: 0.2), value: store.activePlan)
         .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
         .animation(.easeOut(duration: 0.18), value: focused)
         .toolbar {
@@ -212,6 +205,12 @@ struct ComposerView: View {
             guard !photos.isEmpty else { return }
             isImportingAttachments = true
             Task { await importSelectedPhotos(photos) }
+        }
+        .onChange(of: focused) { _ in
+            NotificationCenter.default.post(
+                name: Notification.Name("relay.composer.layoutChanged"),
+                object: nil
+            )
         }
     }
 
