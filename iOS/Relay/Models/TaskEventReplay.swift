@@ -20,6 +20,11 @@ struct TaskStateCore {
            event.isReplayableProgress {
             return false
         }
+        if case .terminal(let turnId, _, _) = event,
+           previous.turnId != nil,
+           turnId == nil {
+            return false
+        }
 
         var next = previous
         next.apply(event)

@@ -125,8 +125,15 @@ extension RelayStore {
     }
 
     func consumePairingURL(_ url: URL) {
-        guard url.scheme == "relay", url.host == "connect",
+        guard url.scheme == "relay",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        if url.host == "thread",
+           let threadId = components.queryItems?.first(where: { $0.name == "threadId" })?.value?.nonEmpty {
+            Task { await handleNotificationAction(.openThread(threadId)) }
+            return
+        }
+        if url.host == "open" { return }
+        guard url.host == "connect" else { return }
         var values: [String: String] = [:]
         for item in components.queryItems ?? [] {
             if let value = item.value { values[item.name] = value }

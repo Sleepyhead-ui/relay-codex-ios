@@ -163,7 +163,7 @@ struct SettingsView: View {
                 }
 
                 Section("运行与通知") {
-                    Toggle("任务完成和审批通知", isOn: Binding(
+                    Toggle("Relay 本地通知", isOn: Binding(
                         get: { store.notificationsEnabled },
                         set: { enabled in Task { await store.setNotificationsEnabled(enabled) } }
                     ))

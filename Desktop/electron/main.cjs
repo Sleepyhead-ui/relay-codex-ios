@@ -48,8 +48,15 @@ app.on("second-instance", (_event, commandLine) => {
 });
 
 function readPreferences() {
-  try { return { autoStart: false, notifications: true, ...JSON.parse(fs.readFileSync(preferencesPath(), "utf8")) }; }
-  catch { return { autoStart: false, notifications: true }; }
+  const defaults = {
+    autoStart: false,
+    notifications: true,
+    remoteNotifications: false,
+    barkUrl: "",
+    pushIncludePreview: false,
+  };
+  try { return { ...defaults, ...JSON.parse(fs.readFileSync(preferencesPath(), "utf8")) }; }
+  catch { return defaults; }
 }
 
 function writePreferences(value) {
@@ -173,6 +180,7 @@ function serviceEnvironment(runtime, endpoint, expectExisting) {
     RELAY_SERVICE_VERSION: app.getVersion(),
     RELAY_SERVICE_STARTED_AT: String(Date.now()),
     RELAY_SERVICE_EXPECT_EXISTING: expectExisting ? "1" : "0",
+    RELAY_PUSH_CONFIG: preferencesPath(),
     CODEX_BIN: path.join(runtime.bridge, "vendor", "@openai", "codex-win32-x64", "vendor", "x86_64-pc-windows-msvc", "bin", "codex.exe"),
   };
 }

@@ -7,7 +7,13 @@ export function installDevBridge() {
   const threadId = "preview.thread";
   const turnId = "preview.turn";
   const now = Date.now() / 1000;
-  let preferences = { autoStart: false, notifications: true };
+  let preferences = {
+    autoStart: false,
+    notifications: true,
+    remoteNotifications: false,
+    barkUrl: "",
+    pushIncludePreview: false,
+  };
   let update = { state: "current" as const, currentVersion: "preview", message: "开发预览版" };
   const items = [
     { id: "goal.1", type: "userMessage", content: [{ type: "text", text: "<codex_internal_context source=\"goal\"><objective>完成第二、第三和第四阶段</objective></codex_internal_context>" }] },

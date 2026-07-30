@@ -13,6 +13,7 @@ import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
 import { PerformanceMetrics } from "./performanceMetrics.js";
+import { BarkPushNotifier, cleanPreview, ExternalCompletionTracker } from "./pushNotifications.js";
 import {
   codexRestartDelayMs,
   codexStartupWatchdogMs,
@@ -47,6 +48,8 @@ const relayVersion = process.env.RELAY_SERVICE_VERSION ?? "unknown";
 async function main(): Promise<void> {
 const codexProfiles = await CodexProfileRegistry.create();
 const config = await loadConfig(codexProfiles.activeCodexHome);
+const pushNotifier = new BarkPushNotifier();
+const threadTitles = new Map<string, string>();
 const clients = new Set<WebSocket>();
 const clientLiveness = new WeakMap<WebSocket, boolean>();
 const sessionSubscriptions = new WeakMap<WebSocket, Map<string, () => void>>();
@@ -121,6 +124,14 @@ const pendingInternalRequests = new Map<string, PendingInternalRequest>();
 let nextInternalRequestId = 1;
 let runtimeState = new RuntimeStateTracker();
 let sessionActivity = new SessionActivityTracker();
+let monitoredThreadIds: string[] = [];
+let pollingExternalSessions = false;
+const externalCompletionTracker = new ExternalCompletionTracker();
+
+const externalSessionPollInterval = setInterval(() => void pollExternalSessions(), 1_500);
+externalSessionPollInterval.unref();
+const externalSessionDiscoveryInterval = setInterval(() => void refreshExternalSessionMonitoring(), 5_000);
+externalSessionDiscoveryInterval.unref();
 
 let codex = createCodexAppServer(codexGeneration);
 
@@ -475,6 +486,19 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       }
       return;
     }
+    if (message.method === "relay/push/status" || message.method === "relay/push/test") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      try {
+        if (message.method === "relay/push/test") await pushNotifier.sendTest();
+        const result = await pushNotifier.status();
+        send(socket, { type: "rpcResult", id: message.id, result });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "手机推送测试失败。";
+        diagnostics.record("error", "push", detail);
+        send(socket, { type: "rpcResult", id: message.id, error: { message: detail } });
+      }
+      return;
+    }
     if (message.method.startsWith("relay/")) {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -621,7 +645,7 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   if (pending.deliveryKey) await completeDelivery(pending.deliveryKey, response);
   else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
   if (pending.method === "thread/list" && "result" in message) {
-    sessionActivity.observeThreadList(message.result);
+    observeThreadListResult(message.result);
   } else if (["thread/resume", "thread/fork"].includes(pending.method) && "result" in message) {
     sessionActivity.observeThreadResume(message.result);
   }
@@ -642,13 +666,82 @@ function observeFileTransferWorkspaces(method: string, result: unknown): void {
   const object = isObject(result) ? result : {};
   if (method === "thread/list") {
     for (const thread of Array.isArray(object.data) ? object.data : []) {
-      if (isObject(thread)) fileTransfer.allowWorkspace(thread.cwd);
+      if (isObject(thread)) {
+        fileTransfer.allowWorkspace(thread.cwd);
+        rememberThreadTitle(thread);
+      }
     }
     return;
   }
   if (["thread/start", "thread/resume", "thread/read", "thread/fork"].includes(method) && isObject(object.thread)) {
     fileTransfer.allowWorkspace(object.thread.cwd);
+    rememberThreadTitle(object.thread);
   }
+}
+
+function observeThreadListResult(result: unknown): void {
+  sessionActivity.observeThreadList(result);
+  const object = isObject(result) ? result : {};
+  const threads = Array.isArray(object.data) ? object.data.filter(isObject) : [];
+  monitoredThreadIds = threads
+    .flatMap((thread) => typeof thread.id === "string" ? [thread.id] : [])
+    .slice(0, 8);
+  for (const thread of threads) rememberThreadTitle(thread);
+}
+
+async function refreshExternalSessionMonitoring(): Promise<void> {
+  if (!codexReady || shuttingDown) return;
+  try {
+    const result = await codexRequest("thread/list", {
+      limit: 20,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      useStateDbOnly: true,
+    }, 20_000);
+    observeThreadListResult(result);
+  } catch {}
+}
+
+async function pollExternalSessions(): Promise<void> {
+  if (pollingExternalSessions || shuttingDown || monitoredThreadIds.length === 0) return;
+  pollingExternalSessions = true;
+  try {
+    for (const threadId of monitoredThreadIds) {
+      const snapshot = await sessionActivity.turnSnapshot(threadId);
+      if (!snapshot.known || !snapshot.turnId) continue;
+      if (externalCompletionTracker.observe(threadId, snapshot)) {
+        const final = [...(snapshot.items ?? [])].reverse().find((item) =>
+          item.type === "agentMessage"
+            && item.phase !== "commentary"
+            && typeof item.text === "string"
+            && item.text.trim());
+        try {
+          const sent = await pushNotifier.sendTaskCompletion({
+            turnId: snapshot.turnId,
+            threadId,
+            failed: false,
+            ...(threadTitles.get(threadId) ? { taskTitle: threadTitles.get(threadId)! } : {}),
+            ...(final && typeof final.text === "string" ? { preview: cleanPreview(final.text) } : {}),
+          });
+          if (sent) diagnostics.record("info", "push", "Sent an external task completion notification.", { threadId, turnId: snapshot.turnId });
+        } catch (error) {
+          externalCompletionTracker.retry(threadId, snapshot.turnId);
+          const detail = error instanceof Error ? error.message : "手机任务通知发送失败。";
+          diagnostics.record("error", "push", detail, { threadId, turnId: snapshot.turnId });
+        }
+      }
+    }
+  } finally {
+    pollingExternalSessions = false;
+  }
+}
+
+function rememberThreadTitle(thread: JsonObject): void {
+  const id = typeof thread.id === "string" ? thread.id : undefined;
+  const title = typeof thread.name === "string" ? thread.name
+    : typeof thread.title === "string" ? thread.title
+      : undefined;
+  if (id && title?.trim()) threadTitles.set(id, title.trim());
 }
 
 function handleCodexNotification(message: JsonObject): void {
@@ -659,6 +752,7 @@ function handleCodexNotification(message: JsonObject): void {
     clearTerminalApprovals(message.params);
     const params = isObject(message.params) ? message.params : {};
     if (typeof params.threadId === "string") void dispatchNextQueuedPrompt(params.threadId);
+    void pushTaskCompletion(String(message.method), params);
   }
   if (message.method === "turn/completed" && isObject(message.params)) {
     desktopSync.activateThread(message.params.threadId, "turn-completed");
@@ -711,6 +805,35 @@ function clearTerminalApprovals(params: unknown): void {
 
 function broadcast(message: JsonObject): void {
   for (const client of clients) send(client, message);
+}
+
+async function pushTaskCompletion(method: string, params: JsonObject): Promise<void> {
+  const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+  const turn = isObject(params.turn) ? params.turn : {};
+  const turnId = typeof params.turnId === "string" ? params.turnId
+    : typeof turn.id === "string" ? turn.id
+      : undefined;
+  if (!threadId || !turnId) return;
+  const items = Array.isArray(turn.items) ? turn.items.filter(isObject) : [];
+  const final = [...items].reverse().find((item) =>
+    item.type === "agentMessage"
+      && item.phase !== "commentary"
+      && typeof item.text === "string"
+      && item.text.trim());
+  const taskTitle = threadTitles.get(threadId);
+  try {
+    const sent = await pushNotifier.sendTaskCompletion({
+      turnId,
+      threadId,
+      failed: method === "turn/failed",
+      ...(taskTitle ? { taskTitle } : {}),
+      ...(final && typeof final.text === "string" ? { preview: cleanPreview(final.text) } : {}),
+    });
+    if (sent) diagnostics.record("info", "push", "Sent a task completion notification.", { threadId, turnId });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "手机任务通知发送失败。";
+    diagnostics.record("error", "push", detail, { threadId, turnId });
+  }
 }
 
 function send(socket: WebSocket, message: JsonObject): void {
@@ -856,6 +979,7 @@ function createCodexAppServer(generation: number): CodexAppServer {
         broadcast(bridgeStatus("ready"));
         void recoverPendingDeliveries();
         void dispatchAllQueuedPrompts();
+        void refreshExternalSessionMonitoring();
       }
     },
     onExit: (code, signal) => {
@@ -1107,6 +1231,9 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   sessionActivity.dispose();
   sessionActivity = new SessionActivityTracker();
   runtimeState = new RuntimeStateTracker();
+  monitoredThreadIds = [];
+  externalCompletionTracker.reset();
+  threadTitles.clear();
 
   const previous = codex;
   codexGeneration += 1;
@@ -1126,6 +1253,8 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(heartbeatInterval);
+  clearInterval(externalSessionPollInterval);
+  clearInterval(externalSessionDiscoveryInterval);
   if (codexRestartTimer) clearTimeout(codexRestartTimer);
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
   for (const timer of queueRetryTimers.values()) clearTimeout(timer);

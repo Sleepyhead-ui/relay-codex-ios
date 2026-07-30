@@ -1083,7 +1083,7 @@ final class RelayStore: ObservableObject {
         UserDefaults.standard.set(notifiedCompletionTurnOrder, forKey: notifiedTurnsDefaultsKey)
     }
 
-    private func handleNotificationAction(_ action: RelayNotificationAction) async {
+    func handleNotificationAction(_ action: RelayNotificationAction) async {
         let threadId: String
         switch action {
         case let .openThread(id):

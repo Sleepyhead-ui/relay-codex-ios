@@ -15,7 +15,13 @@ export interface ServiceSupervisorStatus {
   updatedAt?: number;
 }
 export interface ServiceStatus { state: ServiceState; message: string; connection?: ConnectionConfig; supervisor?: ServiceSupervisorStatus }
-export interface DesktopPreferences { autoStart: boolean; notifications: boolean }
+export interface DesktopPreferences {
+  autoStart: boolean;
+  notifications: boolean;
+  remoteNotifications: boolean;
+  barkUrl: string;
+  pushIncludePreview: boolean;
+}
 export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "deferred" | "installing" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string; blockers?: string[] }
 export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
 

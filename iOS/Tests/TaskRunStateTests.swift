@@ -154,6 +154,21 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertEqual(state.turnId, "turn.2")
     }
 
+    func testUnscopedTerminalCannotStopOrPoisonKnownExternalTurn() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.external"))
+        replay.apply(method: "turn/interrupted", params: .object([
+            "threadId": .string("thread.1")
+        ]))
+        replay.apply(
+            method: "item/agentMessage/delta",
+            params: eventParams(threadId: "thread.1", turnId: "turn.external")
+        )
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.external")
+    }
+
     func testStartingNewTurnClearsPreviousPlan() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.started(turnId: "turn.1", startedAt: nil))

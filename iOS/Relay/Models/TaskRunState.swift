@@ -67,7 +67,12 @@ struct TaskRunState: Equatable {
             if phase == .retrying { phase = turnId == nil ? .starting : .running }
             retryMessage = nil
         case .terminal(let turnId, let terminalPhase, let completedAt):
-            guard turnId == nil || self.turnId == nil || self.turnId == turnId else { return }
+            // Once a concrete turn is known, an unscoped terminal event can
+            // belong to an older App Server request while Desktop Codex keeps
+            // writing the active rollout. Only a matching turn may stop it.
+            if let activeTurnId = self.turnId {
+                guard turnId == activeTurnId else { return }
+            }
             phase = terminalPhase
             self.turnId = nil
             self.completedAt = completedAt ?? Date()
