@@ -249,7 +249,11 @@ struct QueuedFollowUpRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
 
-                HStack(spacing: 11) {
+                HStack(spacing: 9) {
+                    Label("等待处理", systemImage: "clock")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+
                     Text(item.createdAt.formatted(date: .omitted, time: .shortened))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.tertiary)
@@ -267,21 +271,32 @@ struct QueuedFollowUpRow: View {
                     .accessibilityLabel(copied ? "已复制" : "复制内容")
 
                     Button { store.beginEditingQueuedFollowUp(item) } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(width: 30, height: 30)
+                        Label("编辑", systemImage: "pencil")
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 9)
+                            .frame(height: 28)
                             .background(RelayTheme.elevated)
-                            .clipShape(Circle())
+                            .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("编辑等待处理的消息")
-                    .contextMenu {
+
+                    Menu {
+                        Button { store.beginEditingQueuedFollowUp(item) } label: {
+                            Label("编辑消息", systemImage: "pencil")
+                        }
                         Button(role: .destructive) {
                             store.removeQueuedFollowUp(item.id)
                         } label: {
-                            Label("删除排队消息", systemImage: "trash")
+                            Label("删除消息", systemImage: "trash")
                         }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("更多消息操作")
                 }
                 .foregroundStyle(.secondary)
             }

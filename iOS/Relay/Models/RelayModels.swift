@@ -217,9 +217,9 @@ enum FollowUpBehavior: String, Codable, CaseIterable, Identifiable {
     case queue
 
     var id: String { rawValue }
-    var title: String { self == .steer ? "引导" : "排队" }
+    var title: String { self == .steer ? "立即引导" : "等待处理" }
     var detail: String {
-        self == .steer ? "立即补充到当前任务" : "当前任务结束后自动发送"
+        self == .steer ? "立即补充到当前任务，发出后不可编辑" : "当前任务结束后发送，处理前可编辑"
     }
 }
 

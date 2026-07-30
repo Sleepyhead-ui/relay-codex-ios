@@ -40,7 +40,7 @@ final class RelayStore: ObservableObject {
     @Published var downloadingPath: String?
     @Published var imagePreviewURLs: [String: URL] = [:]
     @Published var loadingImagePaths = Set<String>()
-    @Published var followUpBehavior: FollowUpBehavior = .steer
+    @Published var followUpBehavior: FollowUpBehavior = .queue
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published var editingQueuedFollowUp: QueuedFollowUp?
     @Published var forkingTurnId: String?

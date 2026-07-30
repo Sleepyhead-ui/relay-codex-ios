@@ -585,7 +585,7 @@ struct ComposerView: View {
         if store.isSendingPrompt { return "正在发送" }
         if store.editingQueuedFollowUp != nil { return "保存修改" }
         if showsStopControl { return "停止任务" }
-        if store.isRunning { return store.followUpBehavior == .steer ? "引导当前任务" : "排队到下一轮" }
+        if store.isRunning { return store.followUpBehavior == .steer ? "立即引导当前任务" : "加入等待队列" }
         return "发送"
     }
 }

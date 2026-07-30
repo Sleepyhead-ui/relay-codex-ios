@@ -2,6 +2,13 @@ import XCTest
 @testable import Relay
 
 final class QueuedFollowUpTests: XCTestCase {
+    func testQueuedFollowUpsClearlyCommunicateTheirEditableWindow() {
+        XCTAssertEqual(FollowUpBehavior.queue.title, "等待处理")
+        XCTAssertTrue(FollowUpBehavior.queue.detail.contains("处理前可编辑"))
+        XCTAssertEqual(FollowUpBehavior.steer.title, "立即引导")
+        XCTAssertTrue(FollowUpBehavior.steer.detail.contains("不可编辑"))
+    }
+
     func testPreservesOriginalInputsForSafeEditing() {
         let json = JSONValue.object([
             "id": .string("queue.1"),
