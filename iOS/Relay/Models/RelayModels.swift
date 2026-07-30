@@ -244,7 +244,7 @@ struct QueuedFollowUp: Identifiable, Equatable {
             guard input["type"]?.stringValue != "text" else { return nil }
             if let name = input["name"]?.stringValue?.nonEmpty { return name }
             guard let path = input["path"]?.stringValue?.nonEmpty else { return nil }
-            return (path as NSString).lastPathComponent
+            return path.lastPathComponentForDisplay
         }
     }
 
@@ -266,7 +266,7 @@ struct QueuedFollowUp: Identifiable, Equatable {
                   value["type"]?.stringValue != "localImage" else { return nil }
             if let name = value["name"]?.stringValue?.nonEmpty { return name }
             guard let path = value["path"]?.stringValue?.nonEmpty else { return nil }
-            return (path as NSString).lastPathComponent
+            return path.lastPathComponentForDisplay
         }
     }
 }
