@@ -17,15 +17,6 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if !focused, !store.currentQueuedFollowUps.isEmpty {
-                FollowUpQueuePanel(
-                    items: store.currentQueuedFollowUps,
-                    remove: { store.removeQueuedFollowUp($0) },
-                    edit: { store.beginEditingQueuedFollowUp($0) }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
             if !focused, let percentage = store.currentTokenUsage?.contextPercentage, percentage >= 90 {
                 ContextPressureNotice(
                     percentage: percentage,
@@ -596,67 +587,6 @@ struct ComposerView: View {
         if showsStopControl { return "停止任务" }
         if store.isRunning { return store.followUpBehavior == .steer ? "引导当前任务" : "排队到下一轮" }
         return "发送"
-    }
-}
-
-private struct FollowUpQueuePanel: View {
-    let items: [QueuedFollowUp]
-    let remove: (String) -> Void
-    let edit: (QueuedFollowUp) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: "text.badge.plus")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Text("已排队 \(items.count) 条后续消息")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text("任务结束后发送")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 11)
-            .frame(height: 32)
-
-            Divider().opacity(0.45)
-
-            ForEach(Array(items.prefix(3))) { item in
-                HStack(spacing: 8) {
-                    Text(item.displayText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Button { edit(item) } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("编辑排队消息")
-                    Button { remove(item.id) } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 26, height: 26)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("删除排队消息")
-                }
-                .padding(.leading, 11)
-                .padding(.trailing, 4)
-                .frame(height: 34)
-            }
-        }
-        .background(RelayTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(RelayTheme.hairline, lineWidth: 1)
-        }
     }
 }
 

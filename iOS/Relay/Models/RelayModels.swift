@@ -252,6 +252,23 @@ struct QueuedFollowUp: Identifiable, Equatable {
         if let text = text.nonEmpty { return text }
         return attachmentNames.joined(separator: "、")
     }
+
+    var imagePaths: [String] {
+        input.compactMap { value in
+            guard value["type"]?.stringValue == "localImage" else { return nil }
+            return value["path"]?.stringValue?.nonEmpty
+        }
+    }
+
+    var nonImageAttachmentNames: [String] {
+        input.compactMap { value in
+            guard value["type"]?.stringValue != "text",
+                  value["type"]?.stringValue != "localImage" else { return nil }
+            if let name = value["name"]?.stringValue?.nonEmpty { return name }
+            guard let path = value["path"]?.stringValue?.nonEmpty else { return nil }
+            return (path as NSString).lastPathComponent
+        }
+    }
 }
 
 struct SharedFile: Identifiable {

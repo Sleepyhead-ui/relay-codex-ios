@@ -151,7 +151,7 @@ struct ConversationView: View {
     private var transcript: some View {
         if store.isLoadingThread {
             LoadingConversationView()
-        } else if store.messages.isEmpty {
+        } else if store.messages.isEmpty && store.currentQueuedFollowUps.isEmpty {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
@@ -189,6 +189,11 @@ struct ConversationView: View {
                                 )
                                     .equatable()
                                     .id(group.id)
+                            }
+
+                            ForEach(store.currentQueuedFollowUps) { item in
+                                QueuedFollowUpRow(item: item)
+                                    .id("queued.\(item.id)")
                             }
 
                             Color.clear
@@ -259,6 +264,12 @@ struct ConversationView: View {
                         autoScrollScheduled = false
                         guard isAtBottom, !isUserScrolling else { return }
                         scrollToBottom(proxy, animated: !store.isRunning)
+                    }
+                }
+                .onChange(of: store.currentQueuedFollowUps.map(\.id)) { _ in
+                    guard isAtBottom, !isUserScrolling else { return }
+                    DispatchQueue.main.async {
+                        scrollToBottom(proxy, animated: true)
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in

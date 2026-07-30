@@ -219,6 +219,77 @@ struct TranscriptRow: View {
     }
 }
 
+struct QueuedFollowUpRow: View {
+    let item: QueuedFollowUp
+    @EnvironmentObject private var store: RelayStore
+    @State private var copied = false
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 34)
+            VStack(alignment: .trailing, spacing: 5) {
+                if !item.imagePaths.isEmpty {
+                    InlineImageGrid(paths: item.imagePaths)
+                }
+                if !item.text.isEmpty {
+                    UserMessageBubble(text: item.text)
+                }
+                if !item.nonImageAttachmentNames.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(item.nonImageAttachmentNames.joined(separator: "、"))
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(RelayTheme.elevated)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
+                HStack(spacing: 11) {
+                    Text(item.createdAt.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+
+                    Button {
+                        UIPasteboard.general.string = item.displayText
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                    } label: {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(copied ? "已复制" : "复制内容")
+
+                    Button { store.beginEditingQueuedFollowUp(item) } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .background(RelayTheme.elevated)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("编辑等待处理的消息")
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            store.removeQueuedFollowUp(item.id)
+                        } label: {
+                            Label("删除排队消息", systemImage: "trash")
+                        }
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.trailing, -6)
+    }
+}
+
 private struct MessageActionsRow: View {
     let text: String
     let timestamp: Date?

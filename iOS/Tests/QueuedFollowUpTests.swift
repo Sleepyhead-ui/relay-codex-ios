@@ -11,6 +11,10 @@ final class QueuedFollowUpTests: XCTestCase {
             "input": .array([
                 .object(["type": .string("text"), "text": .string("before")]),
                 .object([
+                    "type": .string("localImage"),
+                    "path": .string("C:\\workspace\\preview.png")
+                ]),
+                .object([
                     "type": .string("mention"),
                     "name": .string("notes.txt"),
                     "path": .string("C:\\workspace\\notes.txt")
@@ -21,7 +25,9 @@ final class QueuedFollowUpTests: XCTestCase {
         let item = QueuedFollowUp(json: json)
 
         XCTAssertEqual(item?.text, "before")
-        XCTAssertEqual(item?.attachmentNames, ["notes.txt"])
-        XCTAssertEqual(item?.input.count, 2)
+        XCTAssertEqual(item?.attachmentNames, ["preview.png", "notes.txt"])
+        XCTAssertEqual(item?.imagePaths, ["C:\\workspace\\preview.png"])
+        XCTAssertEqual(item?.nonImageAttachmentNames, ["notes.txt"])
+        XCTAssertEqual(item?.input.count, 3)
     }
 }
