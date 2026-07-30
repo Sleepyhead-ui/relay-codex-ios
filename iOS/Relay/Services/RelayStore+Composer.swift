@@ -419,6 +419,39 @@ extension RelayStore {
         }
     }
 
+    func submitNotificationReply(_ source: String, threadId: String, clientMessageId: String) async -> Bool {
+        let text = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, selectedThreadId == threadId else { return false }
+        if isPreparingPrompt {
+            for _ in 0..<20 where isPreparingPrompt {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        guard !isPreparingPrompt, socket.state == .connected else { return false }
+        if isRunning {
+            if followUpBehavior == .queue {
+                return await enqueueFollowUp(
+                    text: text,
+                    readyAttachments: [],
+                    threadId: threadId,
+                    clientMessageId: clientMessageId
+                )
+            }
+            return await steerActiveTurn(
+                text: text,
+                readyAttachments: [],
+                threadId: threadId,
+                clientMessageId: clientMessageId
+            )
+        }
+        return await startTurn(
+            text: text,
+            readyAttachments: [],
+            threadId: threadId,
+            clientMessageId: clientMessageId
+        )
+    }
+
     func beginEditingQueuedFollowUp(_ item: QueuedFollowUp) {
         guard item.threadId == selectedThreadId else { return }
         guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
@@ -465,8 +498,13 @@ extension RelayStore {
         }
     }
 
-    private func startTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
-        let clientMessageId = UUID().uuidString
+    @discardableResult
+    private func startTurn(
+        text: String,
+        readyAttachments: [PendingAttachment],
+        threadId: String,
+        clientMessageId: String = UUID().uuidString
+    ) async -> Bool {
         nextUserMessageSequence += 1
         let placement = UserMessagePlacement(
             threadId: threadId,
@@ -543,6 +581,7 @@ extension RelayStore {
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
             removeOutboundDelivery(clientMessageId)
+            return true
         } catch {
             let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
             let uncertain = wasAccepted || isUncertainDeliveryError(error)
@@ -562,15 +601,21 @@ extension RelayStore {
             errorMessage = uncertain
                 ? "消息已保留在对话中，Relay 将在重连后确认是否送达。"
                 : "消息发送失败，内容已保留；可在消息下方重试或编辑。"
+            return true
         }
     }
 
-    private func steerActiveTurn(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
+    @discardableResult
+    private func steerActiveTurn(
+        text: String,
+        readyAttachments: [PendingAttachment],
+        threadId: String,
+        clientMessageId: String = UUID().uuidString
+    ) async -> Bool {
         guard let expectedTurnId = taskRunStates[threadId]?.turnId else {
             errorMessage = "Relay 尚未取得当前任务的运行编号，请稍后重试。"
-            return
+            return false
         }
-        let clientMessageId = UUID().uuidString
         nextUserMessageSequence += 1
         let placement = UserMessagePlacement(
             threadId: threadId,
@@ -624,6 +669,7 @@ extension RelayStore {
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
             removeOutboundDelivery(clientMessageId)
+            return true
         } catch {
             let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
             let uncertain = wasAccepted || isUncertainDeliveryError(error)
@@ -638,6 +684,7 @@ extension RelayStore {
             errorMessage = uncertain
                 ? "引导已保留在实际位置，Relay 将在重连后确认是否送达。"
                 : "引导发送失败，内容已保留；可在消息下方重试或编辑。"
+            return true
         }
     }
 }

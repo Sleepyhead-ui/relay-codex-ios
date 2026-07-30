@@ -76,12 +76,17 @@ final class RelayStore: ObservableObject {
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
     let notificationsDefaultsKey = "relay.notifications.enabled"
+    private let notifiedTurnsDefaultsKey = "relay.notifications.completedTurns.v1"
+    private let notificationRepliesDefaultsKey = "relay.notifications.pendingReplies.v1"
     private let hostRegistryDefaultsKey = "relay.host.registry"
     let currentHostDefaultsKey = "relay.host.currentId"
     let outboundDeliveryOutboxDefaultsKey = "relay.outboundDeliveryOutbox.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
+    private var notifiedCompletionTurnOrder: [String] = []
+    private var pendingNotificationReplies: [PendingNotificationReply] = []
+    private var pendingNotificationThreadId: String?
     private var threadLoadGeneration = UUID()
     var reconcilingThreadId: String?
     var queuedEvents: [(method: String, params: JSONValue)] = []
@@ -255,6 +260,16 @@ final class RelayStore: ObservableObject {
             followUpBehavior = behavior
         }
         notificationsEnabled = UserDefaults.standard.bool(forKey: notificationsDefaultsKey)
+        notifiedCompletionTurnOrder = Array(
+            (UserDefaults.standard.stringArray(forKey: notifiedTurnsDefaultsKey) ?? []).suffix(256)
+        )
+        notifiedCompletionTurnIds = Set(notifiedCompletionTurnOrder)
+        if let data = UserDefaults.standard.data(forKey: notificationRepliesDefaultsKey),
+           let replies = try? JSONDecoder().decode([PendingNotificationReply].self, from: data) {
+            let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+            pendingNotificationReplies = Array(replies.filter { $0.createdAt >= cutoff }.suffix(20))
+            pendingNotificationThreadId = pendingNotificationReplies.first?.threadId
+        }
         if let data = UserDefaults.standard.data(forKey: outboundDeliveryOutboxDefaultsKey),
            let records = try? JSONDecoder().decode([OutboundDeliveryEnvelope].self, from: data) {
             persistedOutboundDeliveries = OutboundDeliveryOutbox.pruned(
@@ -290,6 +305,11 @@ final class RelayStore: ObservableObject {
             self?.pendingApprovals.removeAll { $0.id == id }
         }
         socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
+        notificationCoordinator.configure { [weak self] action in
+            Task { @MainActor [weak self] in
+                await self?.handleNotificationAction(action)
+            }
+        }
     }
 
     func refreshThreads(showErrors: Bool = true) async {
@@ -1029,13 +1049,88 @@ final class RelayStore: ObservableObject {
               let turnId,
               notifiedCompletionTurnIds.insert(turnId).inserted,
               !applicationIsActive || threadId != selectedThreadId else { return }
-        let title = threads.first(where: { $0.id == threadId })?.title ?? "Codex 任务"
+        rememberNotifiedTurn(turnId)
+        let taskTitle = threads.first(where: { $0.id == threadId })?.title ?? "Codex 任务"
+        let preview = completionPreview(threadId: threadId, turnId: turnId)
         notificationCoordinator.schedule(
             identifier: "relay.turn.\(turnId)",
-            title: failed ? "任务执行失败" : "任务已完成",
-            body: title,
-            threadId: threadId
+            title: taskTitle,
+            subtitle: failed ? "任务执行失败" : "任务已完成",
+            body: preview.nonEmpty ?? (failed ? "Codex 未能完成这个任务" : "任务已处理完毕"),
+            threadId: threadId,
+            categoryIdentifier: NotificationCoordinator.taskCompletedCategoryIdentifier
         )
+    }
+
+    private func completionPreview(threadId: String, turnId: String) -> String {
+        let source = threadId == selectedThreadId ? messages : (threadSnapshots[threadId]?.messages ?? [])
+        let final = source.last {
+            $0.turnId == turnId && $0.isFinalAnswer && $0.kind == .message
+                && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return NotificationPreview.text(from: final?.text ?? "")
+    }
+
+    private func rememberNotifiedTurn(_ turnId: String) {
+        notifiedCompletionTurnOrder.removeAll { $0 == turnId }
+        notifiedCompletionTurnOrder.append(turnId)
+        if notifiedCompletionTurnOrder.count > 256 {
+            let overflow = notifiedCompletionTurnOrder.count - 256
+            let removed = notifiedCompletionTurnOrder.prefix(overflow)
+            notifiedCompletionTurnOrder.removeFirst(overflow)
+            notifiedCompletionTurnIds.subtract(removed)
+        }
+        UserDefaults.standard.set(notifiedCompletionTurnOrder, forKey: notifiedTurnsDefaultsKey)
+    }
+
+    private func handleNotificationAction(_ action: RelayNotificationAction) async {
+        let threadId: String
+        switch action {
+        case let .openThread(id):
+            threadId = id
+        case let .reply(id, text):
+            threadId = id
+            pendingNotificationReplies.append(PendingNotificationReply(threadId: id, text: text))
+            if pendingNotificationReplies.count > 20 {
+                pendingNotificationReplies.removeFirst(pendingNotificationReplies.count - 20)
+            }
+            persistPendingNotificationReplies()
+        }
+        pendingNotificationThreadId = threadId
+
+        if socket.state == .connected {
+            await waitForRestoration()
+            await openNotificationThread(threadId)
+        } else {
+            await selectThread(threadId, closeSidebar: true, showErrors: false)
+            socket.reconnectIfNeeded()
+        }
+    }
+
+    private func openNotificationThread(_ threadId: String) async {
+        await selectThread(threadId, closeSidebar: true, showErrors: false)
+        guard selectedThreadId == threadId else { return }
+        pendingNotificationThreadId = nil
+        await deliverPendingNotificationReplies(threadId: threadId)
+    }
+
+    private func deliverPendingNotificationReplies(threadId: String) async {
+        while let reply = pendingNotificationReplies.first(where: { $0.threadId == threadId }) {
+            guard await submitNotificationReply(reply.text, threadId: threadId, clientMessageId: reply.id) else {
+                errorMessage = "快速回复已保留，Relay 会在连接恢复后重试。"
+                return
+            }
+            pendingNotificationReplies.removeAll { $0.id == reply.id }
+            persistPendingNotificationReplies()
+        }
+    }
+
+    private func persistPendingNotificationReplies() {
+        if pendingNotificationReplies.isEmpty {
+            UserDefaults.standard.removeObject(forKey: notificationRepliesDefaultsKey)
+        } else if let data = try? JSONEncoder().encode(pendingNotificationReplies) {
+            UserDefaults.standard.set(data, forKey: notificationRepliesDefaultsKey)
+        }
     }
 
     private func applyThreadSettings(showErrors: Bool) async {
@@ -1176,8 +1271,13 @@ final class RelayStore: ObservableObject {
         }
     }
 
-    func enqueueFollowUp(text: String, readyAttachments: [PendingAttachment], threadId: String) async {
-        let clientMessageId = UUID().uuidString
+    @discardableResult
+    func enqueueFollowUp(
+        text: String,
+        readyAttachments: [PendingAttachment],
+        threadId: String,
+        clientMessageId: String = UUID().uuidString
+    ) async -> Bool {
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
             "clientUserMessageId": .string(clientMessageId),
@@ -1201,8 +1301,10 @@ final class RelayStore: ObservableObject {
             }
             composerText = ""
             attachments = []
+            return true
         } catch {
             report(error)
+            return false
         }
     }
 
@@ -1248,11 +1350,15 @@ final class RelayStore: ObservableObject {
         _ = await (threadsRefresh, queueRefresh, modesRefresh)
         if modelOptions.isEmpty { await refreshModels(showErrors: false) }
         let targetThreadId = ProfileSwitchSelection.restoredThreadId(
-            previous: selectedThreadId,
+            previous: pendingNotificationThreadId ?? selectedThreadId,
             availableThreadIds: threads.map(\.id)
         )
         if let targetThreadId {
             await selectThread(targetThreadId, closeSidebar: false, showErrors: false)
+            if targetThreadId == pendingNotificationThreadId {
+                pendingNotificationThreadId = nil
+                await deliverPendingNotificationReplies(threadId: targetThreadId)
+            }
         } else {
             setSelectedThread(nil)
         }
