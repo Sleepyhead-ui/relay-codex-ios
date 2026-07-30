@@ -6,6 +6,8 @@ struct SidebarView: View {
     @State private var collapsedProjects = Set<String>()
     @State private var renamingThread: ThreadSummary?
     @State private var renameDraft = ""
+    @AppStorage("relay.sidebar.organization") private var organizationRaw = SidebarOrganization.byProject.rawValue
+    @AppStorage("relay.sidebar.sort") private var sortRaw = SidebarSort.priority.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,25 +28,6 @@ struct SidebarView: View {
             .padding(.horizontal, 14)
             .frame(height: 62)
 
-            Button {
-                store.showingNewTask = true
-                store.sidebarOpen = false
-            } label: {
-                HStack(spacing: 11) {
-                    Image(systemName: "square.and.pencil")
-                    Text("新任务")
-                        .font(.system(size: 15, weight: .medium))
-                    Spacer()
-                }
-                .padding(.horizontal, 13)
-                .frame(height: 44)
-                .background(RelayTheme.elevated)
-                .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
-                .overlay { RoundedRectangle(cornerRadius: RelayTheme.controlRadius).stroke(RelayTheme.hairline) }
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 12)
-
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
@@ -61,70 +44,56 @@ struct SidebarView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
-                    Text("项目")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 13)
-                        .padding(.top, 19)
-                        .padding(.bottom, 5)
+                    HStack(spacing: 4) {
+                        Text("项目")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        organizationMenu
+                        Button {
+                            store.showingNewTask = true
+                            store.sidebarOpen = false
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("新任务")
+                    }
+                    .padding(.leading, 13)
+                    .padding(.trailing, 4)
+                    .padding(.top, 19)
+                    .padding(.bottom, 5)
 
-                    ForEach(projectGroups) { group in
-                        ProjectHeader(
-                            group: group,
-                            expanded: search.isEmpty ? !collapsedProjects.contains(group.id) : true
-                        ) {
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                if collapsedProjects.contains(group.id) {
-                                    collapsedProjects.remove(group.id)
-                                } else {
-                                    collapsedProjects.insert(group.id)
+                    if organization == .byProject {
+                        ForEach(projectGroups) { group in
+                            ProjectHeader(
+                                group: group,
+                                expanded: search.isEmpty ? !collapsedProjects.contains(group.id) : true
+                            ) {
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    if collapsedProjects.contains(group.id) {
+                                        collapsedProjects.remove(group.id)
+                                    } else {
+                                        collapsedProjects.insert(group.id)
+                                    }
+                                }
+                            }
+
+                            if search.isEmpty ? !collapsedProjects.contains(group.id) : true {
+                                ForEach(group.threads) { thread in
+                                    threadRow(thread, indented: true)
                                 }
                             }
                         }
-
-                        if search.isEmpty ? !collapsedProjects.contains(group.id) : true {
-                            ForEach(group.threads) { thread in
-                                ThreadRow(
-                                    thread: thread,
-                                    selected: thread.id == store.selectedThreadId,
-                                    running: store.isThreadRunning(thread.id),
-                                    needsApproval: store.hasPendingApproval(threadId: thread.id),
-                                    pinned: store.isThreadPinned(thread.id)
-                                ) {
-                                    Task { await store.selectThread(thread.id) }
-                                }
-                                .contextMenu {
-                                    if !store.showingArchivedThreads {
-                                        Button {
-                                            store.toggleThreadPin(thread.id)
-                                        } label: {
-                                            Label(store.isThreadPinned(thread.id) ? "取消置顶" : "置顶", systemImage: store.isThreadPinned(thread.id) ? "pin.slash" : "pin")
-                                        }
-                                        Button {
-                                            renameDraft = thread.title
-                                            renamingThread = thread
-                                        } label: {
-                                            Label("重命名", systemImage: "pencil")
-                                        }
-                                        Button(role: .destructive) {
-                                            Task { await store.archiveThread(thread.id) }
-                                        } label: {
-                                            Label("归档", systemImage: "archivebox")
-                                        }
-                                    } else {
-                                        Button {
-                                            Task { await store.unarchiveThread(thread.id) }
-                                        } label: {
-                                            Label("恢复任务", systemImage: "arrow.uturn.backward")
-                                        }
-                                    }
-                                }
-                                .padding(.leading, 15)
-                            }
+                    } else {
+                        ForEach(sortedMatchingThreads) { thread in
+                            threadRow(thread, indented: false)
                         }
                     }
 
-                    if projectGroups.isEmpty {
+                    if sortedMatchingThreads.isEmpty {
                         Text(search.isEmpty ? "暂无任务" : "没有匹配结果")
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
@@ -198,12 +167,110 @@ struct SidebarView: View {
         }
     }
 
-    private var projectGroups: [ProjectGroup] {
-        let matchingThreads = store.threads.filter { thread in
+    private var organization: SidebarOrganization {
+        SidebarOrganization(rawValue: organizationRaw) ?? .byProject
+    }
+
+    private var selectedSort: SidebarSort {
+        SidebarSort(rawValue: sortRaw) ?? .priority
+    }
+
+    private var organizationMenu: some View {
+        Menu {
+            Section("整理") {
+                Button { organizationRaw = SidebarOrganization.byProject.rawValue } label: {
+                    if organization == .byProject {
+                        Label("按项目", systemImage: "checkmark")
+                    } else {
+                        Text("按项目")
+                    }
+                }
+                Button { organizationRaw = SidebarOrganization.singleList.rawValue } label: {
+                    if organization == .singleList {
+                        Label("在一个列表中", systemImage: "checkmark")
+                    } else {
+                        Text("在一个列表中")
+                    }
+                }
+            }
+            Section("排序方式") {
+                Button { sortRaw = SidebarSort.priority.rawValue } label: {
+                    if selectedSort == .priority {
+                        Label("优先级", systemImage: "checkmark")
+                    } else {
+                        Text("优先级")
+                    }
+                }
+                Button { sortRaw = SidebarSort.recent.rawValue } label: {
+                    if selectedSort == .recent {
+                        Label("最近更新", systemImage: "checkmark")
+                    } else {
+                        Text("最近更新")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("项目整理与排序")
+    }
+
+    @ViewBuilder
+    private func threadRow(_ thread: ThreadSummary, indented: Bool) -> some View {
+        ThreadRow(
+            thread: thread,
+            selected: thread.id == store.selectedThreadId,
+            running: store.isThreadRunning(thread.id),
+            needsApproval: store.hasPendingApproval(threadId: thread.id),
+            pinned: store.isThreadPinned(thread.id)
+        ) {
+            Task { await store.selectThread(thread.id) }
+        }
+        .contextMenu {
+            if !store.showingArchivedThreads {
+                Button {
+                    store.toggleThreadPin(thread.id)
+                } label: {
+                    Label(store.isThreadPinned(thread.id) ? "取消置顶" : "置顶", systemImage: store.isThreadPinned(thread.id) ? "pin.slash" : "pin")
+                }
+                Button {
+                    renameDraft = thread.title
+                    renamingThread = thread
+                } label: {
+                    Label("重命名", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    Task { await store.archiveThread(thread.id) }
+                } label: {
+                    Label("归档", systemImage: "archivebox")
+                }
+            } else {
+                Button {
+                    Task { await store.unarchiveThread(thread.id) }
+                } label: {
+                    Label("恢复任务", systemImage: "arrow.uturn.backward")
+                }
+            }
+        }
+        .padding(.leading, indented ? 15 : 0)
+    }
+
+    private var matchingThreads: [ThreadSummary] {
+        store.threads.filter { thread in
             search.isEmpty || thread.title.localizedCaseInsensitiveContains(search)
                 || thread.cwd.localizedCaseInsensitiveContains(search)
                 || thread.cwd.lastPathComponentForDisplay.localizedCaseInsensitiveContains(search)
         }
+    }
+
+    private var sortedMatchingThreads: [ThreadSummary] {
+        matchingThreads.sorted(by: threadComesBefore)
+    }
+
+    private var projectGroups: [ProjectGroup] {
         let grouped = Dictionary(grouping: matchingThreads) { thread in
             thread.cwd.isEmpty ? "relay.no-project" : thread.cwd.normalizedWindowsPath
         }
@@ -211,15 +278,40 @@ struct SidebarView: View {
             ProjectGroup(
                 id: id,
                 path: threads.first?.cwd ?? "",
-                threads: threads.sorted { left, right in
-                    let leftPinned = store.isThreadPinned(left.id)
-                    let rightPinned = store.isThreadPinned(right.id)
-                    return leftPinned == rightPinned ? left.updatedAt > right.updatedAt : leftPinned
-                }
+                threads: threads.sorted(by: threadComesBefore)
             )
         }
-        .sorted { $0.updatedAt > $1.updatedAt }
+        .sorted { left, right in
+            guard let leftThread = left.threads.first, let rightThread = right.threads.first else {
+                return left.updatedAt > right.updatedAt
+            }
+            return threadComesBefore(leftThread, rightThread)
+        }
     }
+
+    private func threadComesBefore(_ left: ThreadSummary, _ right: ThreadSummary) -> Bool {
+        guard selectedSort == .priority else { return left.updatedAt > right.updatedAt }
+        let leftRank = threadPriority(left)
+        let rightRank = threadPriority(right)
+        return leftRank == rightRank ? left.updatedAt > right.updatedAt : leftRank < rightRank
+    }
+
+    private func threadPriority(_ thread: ThreadSummary) -> Int {
+        if store.isThreadPinned(thread.id) { return 0 }
+        if store.hasPendingApproval(threadId: thread.id) { return 1 }
+        if store.isThreadRunning(thread.id) { return 2 }
+        return 3
+    }
+}
+
+private enum SidebarOrganization: String {
+    case byProject
+    case singleList
+}
+
+private enum SidebarSort: String {
+    case priority
+    case recent
 }
 
 private struct ProjectGroup: Identifiable {
