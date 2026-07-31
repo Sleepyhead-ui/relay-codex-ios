@@ -21,7 +21,7 @@ struct TurnGroupView: View, Equatable {
                     TranscriptRow(
                         item: item,
                         isFollowUp: isFollowUp,
-                        timestamp: group.metadata.startedAt
+                        timestamp: item.createdAt ?? group.metadata.startedAt
                     )
                 case .activity:
                     EmptyView()

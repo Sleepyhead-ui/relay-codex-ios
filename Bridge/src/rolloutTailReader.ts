@@ -104,6 +104,7 @@ export class RolloutTailReader {
     this.responseIndex += 1;
     const item = this.parseItem(payload, `rollout.${this.turnId}.${this.responseIndex}`);
     if (item) {
+      if (timestamp > 0 && typeof item.createdAt !== "number") item.createdAt = timestamp;
       const id = String(item.id);
       const existingIndex = this.itemIndexes.get(id);
       if (typeof existingIndex === "number") this.items[existingIndex] = item;

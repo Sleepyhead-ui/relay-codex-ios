@@ -196,7 +196,42 @@ enum TranscriptReconciler {
                 result.append(item)
             }
         }
-        return result
+        return reorderKnownHistoryTurns(result, historyItems: historyItems)
+    }
+
+    private static func reorderKnownHistoryTurns(
+        _ messages: [TranscriptItem],
+        historyItems: [TranscriptItem]
+    ) -> [TranscriptItem] {
+        var orderedTurnIds: [String] = []
+        var orderByTurnId: [String: Int] = [:]
+        for item in historyItems {
+            guard let turnId = item.turnId, orderByTurnId[turnId] == nil else { continue }
+            orderByTurnId[turnId] = orderedTurnIds.count
+            orderedTurnIds.append(turnId)
+        }
+        guard orderedTurnIds.count > 1 else { return messages }
+
+        var blocks: [[TranscriptItem]] = []
+        for item in messages {
+            if let last = blocks.indices.last, blocks[last].first?.turnId == item.turnId {
+                blocks[last].append(item)
+            } else {
+                blocks.append([item])
+            }
+        }
+        let orderedBlocks: [(position: Int, order: Int, block: [TranscriptItem])] = blocks.enumerated().compactMap { position, block in
+            guard let turnId = block.first?.turnId, let order = orderByTurnId[turnId] else { return nil }
+            return (position, order, block)
+        }.sorted { lhs, rhs in
+            lhs.order == rhs.order ? lhs.position < rhs.position : lhs.order < rhs.order
+        }
+        var nextOrderedBlock = orderedBlocks.makeIterator()
+        for index in blocks.indices where blocks[index].first?.turnId.flatMap({ orderByTurnId[$0] }) != nil {
+            guard let next = nextOrderedBlock.next() else { break }
+            blocks[index] = next.block
+        }
+        return blocks.flatMap { $0 }
     }
 
     static func applyUserMessagePlacements(
@@ -262,6 +297,7 @@ enum TranscriptReconciler {
         if merged.imagePaths.isEmpty { merged.imagePaths = existing.imagePaths }
         if merged.goal == nil { merged.goal = existing.goal }
         if merged.rawAgentText == nil { merged.rawAgentText = existing.rawAgentText }
+        if merged.createdAt == nil { merged.createdAt = existing.createdAt }
         return merged
     }
 

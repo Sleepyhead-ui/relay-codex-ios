@@ -76,6 +76,18 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(parsed.imagePaths, ["C:\\Temp\\screen.png"])
     }
 
+    func testRecoversUserMessageTimeFromCodexUUIDv7() throws {
+        let message = JSONValue.object([
+            "id": .string("msg_019fb832-5405-7561-a0f1-c8d22a20bff0"),
+            "type": .string("userMessage"),
+            "content": .array([.object(["type": .string("text"), "text": .string("hello")])])
+        ])
+
+        let parsed = try XCTUnwrap(TranscriptItem.from(json: message, turnId: "turn.1"))
+        let milliseconds = try XCTUnwrap(UInt64("019fb8325405", radix: 16))
+        XCTAssertEqual(parsed.createdAt?.timeIntervalSince1970, Double(milliseconds) / 1_000, accuracy: 0.001)
+    }
+
     func testLaggingSnapshotCannotShortenLiveOutput() throws {
         let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "正在检查完整进展", phase: "commentary")
         var command = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "npm test", detail: "line 1\nline 2")
@@ -97,6 +109,20 @@ final class TranscriptReconcilerTests: XCTestCase {
         let result = TranscriptReconciler.mergeHistoryItems([prompt, answer], into: [prompt, command])
 
         XCTAssertEqual(result.map(\.id), ["user.1", "command.1", "answer.1"])
+    }
+
+    func testLateOlderHistoryTurnIsPlacedBeforeTheCurrentTurn() {
+        let olderPrompt = item(id: "user.old", turnId: "turn.old", role: .user, text: "older prompt")
+        let olderAnswer = item(id: "answer.old", turnId: "turn.old", role: .assistant, text: "older answer")
+        let currentPrompt = item(id: "user.current", turnId: "turn.current", role: .user, text: "current prompt")
+        let currentProgress = item(id: "progress.current", turnId: "turn.current", role: .assistant, text: "working", phase: "commentary")
+
+        let result = TranscriptReconciler.mergeHistoryItems(
+            [olderPrompt, olderAnswer, currentPrompt],
+            into: [currentPrompt, currentProgress]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["user.old", "answer.old", "user.current", "progress.current"])
     }
 
     func testSnapshotReplacesEquivalentLiveItemWithoutChangingItsIdentity() {

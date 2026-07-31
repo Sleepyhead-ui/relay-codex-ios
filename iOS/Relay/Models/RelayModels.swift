@@ -527,6 +527,7 @@ struct TranscriptItem: Identifiable, Equatable {
     var imagePaths: [String]
     var goal: String?
     var rawAgentText: String?
+    var createdAt: Date?
 
     init(
         id: String,
@@ -545,7 +546,8 @@ struct TranscriptItem: Identifiable, Equatable {
         deliveryState: MessageDeliveryState? = nil,
         imagePaths: [String] = [],
         goal: String? = nil,
-        rawAgentText: String? = nil
+        rawAgentText: String? = nil,
+        createdAt: Date? = nil
     ) {
         self.id = id
         self.turnId = turnId
@@ -564,6 +566,7 @@ struct TranscriptItem: Identifiable, Equatable {
         self.imagePaths = imagePaths
         self.goal = goal
         self.rawAgentText = rawAgentText
+        self.createdAt = createdAt
     }
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
@@ -612,6 +615,8 @@ struct TranscriptItem: Identifiable, Equatable {
     static func from(json: JSONValue, turnId: String? = nil) -> TranscriptItem? {
         guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
         let id = type == "userMessage" ? (json["clientId"]?.stringValue ?? serverId) : serverId
+        let createdAt = json["createdAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
+            ?? codexTimestamp(from: serverId)
         switch type {
         case "userMessage":
             var imagePaths: [String] = []
@@ -638,7 +643,7 @@ struct TranscriptItem: Identifiable, Equatable {
                 }
                 .joined(separator: "\n") ?? ""
             if isInternalEnvironmentContext(text), imagePaths.isEmpty { return nil }
-            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective)
+            return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective, createdAt: createdAt)
         case "agentMessage":
             let rawText = json["text"]?.stringValue ?? ""
             let content = AgentMessageContent.parse(rawText)
@@ -720,6 +725,17 @@ struct TranscriptItem: Identifiable, Equatable {
         default:
             return nil
         }
+    }
+
+    private static func codexTimestamp(from identifier: String) -> Date? {
+        guard let raw = identifier.split(separator: "_").last else { return nil }
+        let groups = raw.split(separator: "-")
+        guard groups.count == 5,
+              groups[0].count == 8,
+              groups[1].count == 4,
+              groups[2].first == "7",
+              let milliseconds = UInt64(String(groups[0]) + String(groups[1]), radix: 16) else { return nil }
+        return Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
     }
 
     private static func commandTitle(json: JSONValue) -> String {

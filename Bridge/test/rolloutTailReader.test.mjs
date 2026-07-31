@@ -96,6 +96,7 @@ test("does not bind ignored internal user context to the visible prompt", async 
 
     assert.equal(snapshot.items.length, 1);
     assert.equal(snapshot.items[0].clientId, "client.visible");
+    assert.equal(typeof snapshot.items[0].createdAt, "number");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
