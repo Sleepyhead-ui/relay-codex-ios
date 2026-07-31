@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 import { appendFile, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -203,6 +204,79 @@ test("pushes an updated snapshot when the rollout file changes", async () => {
     const snapshot = await update;
     assert.equal(snapshot.items[0].text, "Immediate progress");
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("polls an updated snapshot when the file watcher misses the change", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-poll-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  const threadId = "thread.poll";
+  let sessions;
+  try {
+    await writeFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-20T03:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn.poll" },
+    })}\n`, "utf8");
+    const silentWatcher = new EventEmitter();
+    let watcherClosed = false;
+    silentWatcher.close = () => { watcherClosed = true; };
+    sessions = new SessionActivityTracker(100, () => silentWatcher);
+    sessions.observeThreadList({ data: [{ id: threadId, path: sessionPath }] });
+    const update = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("session poll timed out")), 1_000);
+      const stop = sessions.subscribe(threadId, (snapshot) => {
+        if (!snapshot.items?.length) return;
+        clearTimeout(timeout);
+        stop();
+        resolve(snapshot);
+      });
+    });
+    await appendFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-20T03:00:01.000Z",
+      type: "response_item",
+      payload: { type: "message", id: "message.poll", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Recovered by polling" }] },
+    })}\n`, "utf8");
+    const snapshot = await update;
+    assert.equal(snapshot.items[0].text, "Recovered by polling");
+    assert.equal(watcherClosed, true);
+  } finally {
+    sessions?.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("shares one watcher across subscribers and closes it after the last unsubscribe", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-shared-watch-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  const threadId = "thread.shared-watch";
+  let sessions;
+  try {
+    await writeFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-07-20T04:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn.shared-watch" },
+    })}\n`, "utf8");
+    let watcherCount = 0;
+    let closeCount = 0;
+    sessions = new SessionActivityTracker(1_000, () => {
+      watcherCount += 1;
+      const watcher = new EventEmitter();
+      watcher.close = () => { closeCount += 1; };
+      return watcher;
+    });
+    sessions.observeThreadList({ data: [{ id: threadId, path: sessionPath }] });
+    const stopFirst = sessions.subscribe(threadId, () => {});
+    const stopSecond = sessions.subscribe(threadId, () => {});
+
+    assert.equal(watcherCount, 1);
+    stopFirst();
+    assert.equal(closeCount, 0);
+    stopSecond();
+    assert.equal(closeCount, 1);
+  } finally {
+    sessions?.dispose();
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -304,7 +304,10 @@ final class RelayStore: ObservableObject {
             guard let id = message["id"]?.stringValue ?? message["id"]?.intValue.map(String.init) else { return }
             self?.pendingApprovals.removeAll { $0.id == id }
         }
-        socket.onNonfatalError = { [weak self] message in self?.errorMessage = message }
+        socket.onNonfatalError = { [weak self] message in
+            guard RelayErrorPresentation.shouldPresentNonfatal(message) else { return }
+            self?.errorMessage = message
+        }
         notificationCoordinator.configure { [weak self] action in
             Task { @MainActor [weak self] in
                 await self?.handleNotificationAction(action)

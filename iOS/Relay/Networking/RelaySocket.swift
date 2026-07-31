@@ -24,8 +24,8 @@ final class RelaySocket: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .invalidEndpoint: return "Enter a valid ws:// or wss:// address."
-            case .disconnected: return "The Windows host is disconnected."
+            case .invalidEndpoint: return "请输入有效的 ws:// 或 wss:// 连接地址。"
+            case .disconnected: return "Windows 连接已断开。"
             case .remote(let message): return message
             }
         }
@@ -364,7 +364,7 @@ final class RelaySocket: ObservableObject {
     private func send(_ object: [String: Any]) async throws {
         guard let task, state == .connected else { throw SocketError.disconnected }
         let data = try JSONSerialization.data(withJSONObject: object)
-        guard let text = String(data: data, encoding: .utf8) else { throw SocketError.remote("Could not encode request.") }
+        guard let text = String(data: data, encoding: .utf8) else { throw SocketError.remote("无法编码请求。") }
         try await task.send(.string(text))
     }
 
@@ -445,7 +445,7 @@ final class RelaySocket: ObservableObject {
             pendingAccepted.removeValue(forKey: id)
             pendingTimeouts.removeValue(forKey: id)?.cancel()
             if let error = message["error"] {
-                continuation.resume(throwing: SocketError.remote(error["message"]?.stringValue ?? "Codex request failed."))
+                continuation.resume(throwing: SocketError.remote(error["message"]?.stringValue ?? "Codex 请求失败。"))
             } else {
                 continuation.resume(returning: message["result"] ?? .null)
             }
@@ -472,7 +472,7 @@ final class RelaySocket: ObservableObject {
         case "serverRequestResolved":
             onServerRequestResolved?(message)
         case "bridgeError":
-            onNonfatalError?(message["message"]?.stringValue ?? "Bridge reported an error.")
+            onNonfatalError?(message["message"]?.stringValue ?? "Bridge 报告了一个错误。")
         default:
             break
         }
@@ -527,7 +527,7 @@ final class RelaySocket: ObservableObject {
             guard let self, !Task.isCancelled,
                   generation == self.connectionGeneration,
                   self.state != .connected else { return }
-            self.handleConnectionFailure(SocketError.remote("Connection timed out."), generation: generation)
+            self.handleConnectionFailure(SocketError.remote("连接 Windows 超时。"), generation: generation)
         }
     }
 

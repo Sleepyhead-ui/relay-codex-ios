@@ -46,13 +46,41 @@ struct RootView: View {
         .sheet(item: $store.sharedFile) { file in
             ShareSheet(items: [file.url])
         }
-        .alert("Relay", isPresented: Binding(
+        .alert(errorPresentation?.title ?? "Relay", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )) {
-            Button("OK", role: .cancel) { store.errorMessage = nil }
+            if let action = errorPresentation?.recoveryAction {
+                Button(action.label) { performRecovery(action) }
+            }
+            if errorPresentation?.technicalDetails.nonEmpty != nil {
+                Button("复制详情") {
+                    UIPasteboard.general.string = errorPresentation?.technicalDetails
+                    store.errorMessage = nil
+                }
+            }
+            Button("关闭", role: .cancel) { store.errorMessage = nil }
         } message: {
-            Text(store.errorMessage ?? "Unknown error")
+            Text(errorPresentation?.message ?? "Relay 未能完成这次操作。")
+        }
+    }
+
+    private var errorPresentation: RelayErrorPresentation? {
+        store.errorMessage.map(RelayErrorPresentation.make)
+    }
+
+    private func performRecovery(_ action: RelayRecoveryAction) {
+        store.errorMessage = nil
+        switch action {
+        case .reconnect:
+            store.connect()
+        case .editConnection:
+            store.showingConnection = true
+        case .openDiagnostics:
+            DispatchQueue.main.async { store.showingDiagnostics = true }
+        case .openSystemSettings:
+            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(url)
         }
     }
 }

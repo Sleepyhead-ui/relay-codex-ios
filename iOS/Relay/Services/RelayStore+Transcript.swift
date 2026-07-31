@@ -104,7 +104,13 @@ extension RelayStore {
         let generation = UUID()
         liveSessionSyncGeneration = generation
         liveSessionSyncTask = Task { [weak self] in
-            guard let self, let initialThreadId = self.selectedThreadId else { return }
+            guard let self else { return }
+            defer {
+                if self.liveSessionSyncGeneration == generation {
+                    self.liveSessionSyncTask = nil
+                }
+            }
+            guard let initialThreadId = self.selectedThreadId else { return }
             var hasActiveSubscription = false
             if let initial = try? await self.socket.rpc(
                 method: "relay/thread/session/subscribe",
@@ -114,6 +120,7 @@ extension RelayStore {
             ) {
                 hasActiveSubscription = true
                 self.subscribedSessionThreadId = initialThreadId
+                self.lastSessionUpdateAt[initialThreadId] = Date()
                 self.applySessionSnapshot(initial, threadId: initialThreadId)
             }
             while !Task.isCancelled {
@@ -124,15 +131,14 @@ extension RelayStore {
                         showingArchivedThreads: self.showingArchivedThreads,
                         connected: self.socket.state == .connected
                       ) else { break }
-                let retryDelay: UInt64 = hasActiveSubscription ? 30_000_000_000 : 2_000_000_000
+                let retryDelay = SelectedSessionSyncPolicy.retryDelay(hasActiveSubscription: hasActiveSubscription)
                 do { try await Task.sleep(nanoseconds: retryDelay) } catch { break }
-                if !hasActiveSubscription
-                    || Date().timeIntervalSince(self.lastSessionUpdateAt[threadId] ?? .distantPast) >= 25 {
+                if SelectedSessionSyncPolicy.shouldRefreshSubscription(
+                    hasActiveSubscription: hasActiveSubscription,
+                    lastUpdateAt: self.lastSessionUpdateAt[threadId]
+                ) {
                     hasActiveSubscription = await self.syncSessionSnapshot(threadId: threadId)
                 }
-            }
-            if self.liveSessionSyncGeneration == generation {
-                self.liveSessionSyncTask = nil
             }
         }
     }
@@ -150,6 +156,7 @@ extension RelayStore {
             reconnectOnTimeout: false
         ) else { return false }
         subscribedSessionThreadId = threadId
+        lastSessionUpdateAt[threadId] = Date()
         applySessionSnapshot(result, threadId: threadId)
         return true
     }

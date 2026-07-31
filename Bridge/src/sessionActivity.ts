@@ -18,7 +18,10 @@ interface SessionWatch {
   watcher: FSWatcher;
   listeners: Set<(snapshot: SessionTurnSnapshot) => void>;
   debounce: NodeJS.Timeout | undefined;
+  pollInterval: NodeJS.Timeout;
   staleTimeout: NodeJS.Timeout | undefined;
+  snapshotInFlight: boolean;
+  snapshotQueued: boolean;
 }
 
 export interface SessionActivitySnapshot {
@@ -40,6 +43,8 @@ export interface SessionTurnSnapshot extends JsonObject {
 }
 
 const staleExternalSessionSeconds = 5 * 60;
+const defaultPollIntervalMs = 1_000;
+type WatchFactory = (path: string, listener: () => void) => FSWatcher;
 
 /**
  * The desktop Codex app and Relay's app-server are separate processes. When
@@ -50,6 +55,11 @@ const staleExternalSessionSeconds = 5 * 60;
 export class SessionActivityTracker {
   private readonly sessions = new Map<string, SessionState>();
   private readonly watches = new Map<string, SessionWatch>();
+
+  constructor(
+    private readonly pollIntervalMs = defaultPollIntervalMs,
+    private readonly createWatcher: WatchFactory = (path, listener) => watch(path, { persistent: false }, listener),
+  ) {}
 
   observeThreadList(result: unknown): void {
     const object = isObject(result) ? result : {};
@@ -118,9 +128,20 @@ export class SessionActivityTracker {
         state.watcher.close();
       }
       const listeners = state?.listeners ?? new Set<(snapshot: SessionTurnSnapshot) => void>();
-      const watcher = watch(session.path, { persistent: false }, () => this.scheduleSnapshot(threadId));
+      const watcher = this.createWatcher(session.path, () => this.scheduleSnapshot(threadId));
       watcher.on("error", () => this.closeWatch(threadId));
-      state = { path: session.path, watcher, listeners, debounce: undefined, staleTimeout: undefined };
+      const pollInterval = setInterval(() => this.emitSnapshot(threadId), this.pollIntervalMs);
+      pollInterval.unref();
+      state = {
+        path: session.path,
+        watcher,
+        listeners,
+        debounce: undefined,
+        pollInterval,
+        staleTimeout: undefined,
+        snapshotInFlight: false,
+        snapshotQueued: false,
+      };
       this.watches.set(threadId, state);
     }
     state.listeners.add(listener);
@@ -158,7 +179,7 @@ export class SessionActivityTracker {
     this.scheduleStaleCheck(id);
   }
 
-  private scheduleSnapshot(threadId: string): void {
+  private scheduleSnapshot(threadId: string, delayMs = 45): void {
     const state = this.watches.get(threadId);
     if (!state) return;
     if (state.debounce) clearTimeout(state.debounce);
@@ -166,19 +187,40 @@ export class SessionActivityTracker {
       const current = this.watches.get(threadId);
       if (!current) return;
       current.debounce = undefined;
-      void this.turnSnapshot(threadId).then((snapshot) => {
-        const latest = this.watches.get(threadId);
-        if (!latest) return;
-        for (const listener of latest.listeners) listener(snapshot);
-        this.scheduleStaleCheck(threadId);
-      }).catch(() => {});
-    }, 45);
+      this.emitSnapshot(threadId);
+    }, delayMs);
+    state.debounce.unref();
+  }
+
+  private emitSnapshot(threadId: string): void {
+    const state = this.watches.get(threadId);
+    if (!state) return;
+    if (state.snapshotInFlight) {
+      state.snapshotQueued = true;
+      return;
+    }
+    state.snapshotInFlight = true;
+    void this.turnSnapshot(threadId).then((snapshot) => {
+      const latest = this.watches.get(threadId);
+      if (!latest) return;
+      for (const listener of latest.listeners) listener(snapshot);
+      this.scheduleStaleCheck(threadId);
+    }).catch(() => {}).finally(() => {
+      const latest = this.watches.get(threadId);
+      if (!latest) return;
+      latest.snapshotInFlight = false;
+      if (latest.snapshotQueued) {
+        latest.snapshotQueued = false;
+        this.scheduleSnapshot(threadId, 0);
+      }
+    });
   }
 
   private closeWatch(threadId: string): void {
     const state = this.watches.get(threadId);
     if (!state) return;
     if (state.debounce) clearTimeout(state.debounce);
+    clearInterval(state.pollInterval);
     if (state.staleTimeout) clearTimeout(state.staleTimeout);
     state.watcher.close();
     this.watches.delete(threadId);
@@ -220,6 +262,7 @@ export class SessionActivityTracker {
           if (snapshot.isRunning) this.scheduleStaleCheck(threadId);
         }).catch(() => {});
       }, Math.max(50, staleAt - Date.now() + 50));
+      current.staleTimeout.unref();
     }).catch(() => {});
   }
 }
