@@ -71,9 +71,7 @@ struct MobileLiveActivityConsole: View {
                         .foregroundStyle(RelayTheme.accent)
                         .frame(width: 16, height: 16)
 
-                    Text(summary)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                    ShimmeringStatusText(summary, font: .system(size: 11.5))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -531,9 +529,18 @@ private struct MobileActivityEntryRow: View {
                         .foregroundStyle(.tertiary)
                         .frame(width: 18, height: 18)
                 }
-                Text(text.replacingOccurrences(of: "**", with: ""))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                Group {
+                    if isLive {
+                        ShimmeringStatusText(
+                            text.replacingOccurrences(of: "**", with: ""),
+                            font: .system(size: 12)
+                        )
+                    } else {
+                        Text(text.replacingOccurrences(of: "**", with: ""))
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                     .fixedSize(horizontal: false, vertical: true)
             }
         case .tools(_, let items):
@@ -630,5 +637,61 @@ private struct MobileToolDetailRow: View {
 
     private var hasDetails: Bool {
         item.text.nonEmpty != nil || item.detail?.nonEmpty != nil || item.errorMessage?.nonEmpty != nil
+    }
+}
+
+private struct ShimmeringStatusText: View {
+    let text: String
+    let font: Font
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = -1
+
+    init(_ text: String, font: Font) {
+        self.text = text
+        self.font = font
+    }
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .foregroundStyle(.secondary)
+            .overlay {
+                if !reduceMotion {
+                    GeometryReader { geometry in
+                        let highlightWidth = max(44, geometry.size.width * 0.42)
+                        ZStack(alignment: .leading) {
+                            LinearGradient(
+                                colors: [.clear, Color.primary.opacity(0.72), .clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: highlightWidth)
+                            .offset(x: phase * (geometry.size.width + highlightWidth))
+                        }
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height,
+                            alignment: .leading
+                        )
+                        .mask(alignment: .leading) {
+                            Text(text)
+                                .font(font)
+                                .frame(width: geometry.size.width, alignment: .leading)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+            .clipped()
+            .onAppear { startAnimation() }
+            .onChange(of: reduceMotion) { _ in startAnimation() }
+    }
+
+    private func startAnimation() {
+        phase = -1
+        guard !reduceMotion else { return }
+        withAnimation(.linear(duration: 1.65).repeatForever(autoreverses: false)) {
+            phase = 1
+        }
     }
 }

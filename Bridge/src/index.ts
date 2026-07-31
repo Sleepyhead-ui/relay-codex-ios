@@ -22,6 +22,7 @@ import {
 } from "./restartPolicy.js";
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
+import { queuedPromptWaitSatisfied } from "./queueDispatchPolicy.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
@@ -751,7 +752,13 @@ function handleCodexNotification(message: JsonObject): void {
   if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
     clearTerminalApprovals(message.params);
     const params = isObject(message.params) ? message.params : {};
-    if (typeof params.threadId === "string") void dispatchNextQueuedPrompt(params.threadId);
+    if (typeof params.threadId === "string") {
+      const turn = isObject(params.turn) ? params.turn : {};
+      const completedTurnId = typeof turn.id === "string"
+        ? turn.id
+        : typeof params.turnId === "string" ? params.turnId : undefined;
+      void dispatchNextQueuedPrompt(params.threadId, completedTurnId);
+    }
     void pushTaskCompletion(String(message.method), params);
   }
   if (message.method === "turn/completed" && isObject(message.params)) {
@@ -1163,10 +1170,17 @@ async function dispatchAllQueuedPrompts(): Promise<void> {
   }
 }
 
-async function dispatchNextQueuedPrompt(threadId: string): Promise<void> {
+async function dispatchNextQueuedPrompt(threadId: string, completedTurnId?: string): Promise<void> {
   if (!codexReady || dispatchingQueueThreads.has(threadId)) return;
   const next = promptQueue.peek(activeCodexProfile.id, threadId);
   if (!next) return;
+  if (next.waitForTurnId && completedTurnId !== next.waitForTurnId) {
+    const observed = await sessionActivity.turnSnapshot(threadId);
+    if (!queuedPromptWaitSatisfied(next, observed, completedTurnId)) {
+      scheduleQueueRetry(threadId);
+      return;
+    }
+  }
   const runtime = await runtimeState.snapshotWithExternal(threadId, sessionActivity);
   if (runtime.known && runtime.isRunning) {
     scheduleQueueRetry(threadId);

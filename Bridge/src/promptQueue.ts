@@ -13,6 +13,7 @@ export interface QueuedPrompt extends JsonObject {
   text: string;
   input: unknown[];
   createdAt: number;
+  waitForTurnId?: string;
   model?: string;
   effort?: string;
   sandboxPolicy?: unknown;
@@ -58,6 +59,7 @@ export class PromptQueue {
       text: typeof params.text === "string" ? params.text : "",
       input: rawInput,
       createdAt: Date.now() / 1000,
+      ...(typeof params.waitForTurnId === "string" && params.waitForTurnId ? { waitForTurnId: params.waitForTurnId } : {}),
       ...(typeof params.model === "string" && params.model ? { model: params.model } : {}),
       ...(typeof params.effort === "string" && params.effort ? { effort: params.effort } : {}),
       ...(isObject(params.sandboxPolicy) ? { sandboxPolicy: params.sandboxPolicy } : {}),
@@ -106,6 +108,7 @@ export class PromptQueue {
           text: typeof value.text === "string" ? value.text : "",
           input: value.input,
           createdAt: typeof value.createdAt === "number" ? value.createdAt : 0,
+          ...(typeof value.waitForTurnId === "string" && value.waitForTurnId ? { waitForTurnId: value.waitForTurnId } : {}),
           ...(typeof value.model === "string" ? { model: value.model } : {}),
           ...(typeof value.effort === "string" ? { effort: value.effort } : {}),
           ...(isObject(value.sandboxPolicy) ? { sandboxPolicy: value.sandboxPolicy } : {}),

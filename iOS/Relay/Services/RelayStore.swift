@@ -1285,6 +1285,7 @@ final class RelayStore: ObservableObject {
             "input": .array(userInput(text: text, attachments: readyAttachments)),
             "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         ]
+        if let activeTurnId { params["waitForTurnId"] = .string(activeTurnId) }
         if let model = selectedModel?.model { params["model"] = .string(model) }
         if !selectedEffort.isEmpty { params["effort"] = .string(selectedEffort) }
         do {

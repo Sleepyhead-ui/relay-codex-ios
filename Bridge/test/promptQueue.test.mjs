@@ -73,3 +73,22 @@ test("edits a queued prompt in place without changing its order or identity", as
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("persists the active turn a prompt must wait for", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-prompt-wait-turn-"));
+  const storage = path.join(directory, "queue.json");
+  try {
+    const queue = await PromptQueue.create(storage);
+    const queued = await queue.enqueue({
+      profileId: "profile.1",
+      threadId: "thread.1",
+      waitForTurnId: "turn.active",
+      text: "next",
+      input: [{ type: "text", text: "next" }],
+    });
+    assert.equal(queued.waitForTurnId, "turn.active");
+    assert.equal((await PromptQueue.create(storage)).peek("profile.1", "thread.1")?.waitForTurnId, "turn.active");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

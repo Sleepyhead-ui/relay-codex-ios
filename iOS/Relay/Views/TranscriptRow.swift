@@ -271,12 +271,11 @@ struct QueuedFollowUpRow: View {
                     .accessibilityLabel(copied ? "已复制" : "复制内容")
 
                     Button { store.beginEditingQueuedFollowUp(item) } label: {
-                        Label("编辑", systemImage: "pencil")
-                            .font(.system(size: 11, weight: .semibold))
-                            .padding(.horizontal, 9)
-                            .frame(height: 28)
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
                             .background(RelayTheme.elevated)
-                            .clipShape(Capsule())
+                            .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("编辑等待处理的消息")
