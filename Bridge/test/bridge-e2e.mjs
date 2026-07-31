@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +62,10 @@ try {
   });
   if (edited.item.id !== queued.item.id || edited.item.text !== "after") throw new Error("queued prompt update mismatch");
   await rpc("e2e.queue.remove", "relay/prompt/queue/remove", { id: queued.item.id });
-  console.log(`Relay integration OK; received ${result.data.length} thread(s), ${models.data.length} model(s), transferred a file, and edited a queued prompt.`);
+  const appServerStarts = countOccurrences(output, "[codex] Starting App Server with");
+  await writeFile(path.join(codexHome, "config.toml"), 'model = "gpt-5.2-codex"\n');
+  await waitForConfigReload(appServerStarts);
+  console.log(`Relay integration OK; received ${result.data.length} thread(s), ${models.data.length} model(s), transferred a file, edited a queued prompt, and reloaded changed API configuration.`);
 } catch (error) {
   console.error(output);
   throw error;
@@ -125,6 +128,23 @@ async function waitForHealth() {
     await new Promise((resolve) => setTimeout(resolve, 350));
   }
   throw new Error("Timed out waiting for Relay Bridge.");
+}
+
+async function waitForConfigReload(previousStarts) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (bridge.exitCode !== null) throw new Error(`Bridge exited with code ${bridge.exitCode}.`);
+    if (countOccurrences(output, "[codex] Starting App Server with") > previousStarts) {
+      await waitForHealth();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for Codex configuration reload.\n${output}`);
+}
+
+function countOccurrences(value, search) {
+  return value.split(search).length - 1;
 }
 
 function listThreads() {

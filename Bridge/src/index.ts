@@ -6,6 +6,7 @@ import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
 import { resolveCodexExecutable } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
+import { CodexRuntimeConfigMonitor } from "./codexRuntimeConfigMonitor.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { DeliveryRegistry, isDurableDeliveryMethod, type DeliveryResponse } from "./deliveryRegistry.js";
@@ -109,6 +110,10 @@ let codexStartupTimer: NodeJS.Timeout | undefined;
 let recoveringDeliveries = false;
 let shuttingDown = false;
 let activeCodexProfile = (await codexProfiles.list()).find((profile) => profile.active)!;
+let codexConfigReloadPending = false;
+let codexConfigReloadInProgress = false;
+let codexConfigReloadTimer: NodeJS.Timeout | undefined;
+const changedCodexConfigFiles = new Set<string>();
 const desktopSync = new DesktopSync(
   config.desktopSync,
   config.desktopCdpPort,
@@ -135,9 +140,11 @@ const externalSessionDiscoveryInterval = setInterval(() => void refreshExternalS
 externalSessionDiscoveryInterval.unref();
 
 let codex = createCodexAppServer(codexGeneration);
+const codexConfigMonitor = new CodexRuntimeConfigMonitor((changedFiles) => requestCodexConfigReload(changedFiles));
 
 await codex.start();
 armCodexStartupWatchdog(codexGeneration);
+await codexConfigMonitor.start(codexProfiles.activeCodexHome);
 
 const httpServer = createServer((request, response) => {
   if (request.url === "/health") {
@@ -760,6 +767,7 @@ function handleCodexNotification(message: JsonObject): void {
       void dispatchNextQueuedPrompt(params.threadId, completedTurnId);
     }
     void pushTaskCompletion(String(message.method), params);
+    if (codexConfigReloadPending) scheduleCodexConfigReload(100);
   }
   if (message.method === "turn/completed" && isObject(message.params)) {
     desktopSync.activateThread(message.params.threadId, "turn-completed");
@@ -1081,6 +1089,58 @@ async function failPendingRequests(message: string, notifyClients: boolean): Pro
   await Promise.all(deliveries);
 }
 
+function requestCodexConfigReload(changedFiles: string[]): void {
+  for (const file of changedFiles) changedCodexConfigFiles.add(file);
+  if (!codexConfigReloadPending) {
+    diagnostics.record("info", "codex", "Codex configuration changed; waiting to reload App Server.", {
+      files: [...changedCodexConfigFiles],
+      profileId: activeCodexProfile.id,
+    });
+  }
+  codexConfigReloadPending = true;
+  scheduleCodexConfigReload(300);
+}
+
+function scheduleCodexConfigReload(delayMs: number): void {
+  if (shuttingDown || codexConfigReloadInProgress || codexConfigReloadTimer) return;
+  codexConfigReloadTimer = setTimeout(() => {
+    codexConfigReloadTimer = undefined;
+    void reloadCodexConfigurationWhenIdle();
+  }, delayMs);
+  codexConfigReloadTimer.unref();
+}
+
+async function reloadCodexConfigurationWhenIdle(): Promise<void> {
+  if (shuttingDown || !codexConfigReloadPending || codexConfigReloadInProgress) return;
+  if (runtimeState.activeCount > 0 || pendingClientRequests.size > 0 || pendingServerRequests.size > 0) {
+    scheduleCodexConfigReload(1_000);
+    return;
+  }
+
+  codexConfigReloadInProgress = true;
+  codexConfigReloadPending = false;
+  const files = [...changedCodexConfigFiles];
+  changedCodexConfigFiles.clear();
+  diagnostics.record("info", "codex", "Reloading Codex App Server after configuration change.", {
+    files,
+    profileId: activeCodexProfile.id,
+  });
+  codexReady = false;
+  broadcast({ ...bridgeStatus("reloading"), reason: "configuration-changed" });
+  if (codexRestartTimer) clearTimeout(codexRestartTimer);
+  codexRestartTimer = undefined;
+  if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  codexStartupTimer = undefined;
+  codexRestartAttempt = 0;
+  try {
+    await failPendingRequests("Codex configuration changed; Relay is reloading App Server.", true);
+    await replaceCodex(true);
+  } finally {
+    codexConfigReloadInProgress = false;
+    if (codexConfigReloadPending) scheduleCodexConfigReload(300);
+  }
+}
+
 function clearPendingApprovals(reason: string): void {
   for (const pending of pendingServerRequests.values()) {
     clearTimeout(pending.timeout);
@@ -1236,6 +1296,11 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   if (requested.active) return requested;
 
   activeCodexProfile = await codexProfiles.select(profileId);
+  await codexConfigMonitor.setCodexHome(codexProfiles.activeCodexHome);
+  codexConfigReloadPending = false;
+  changedCodexConfigFiles.clear();
+  if (codexConfigReloadTimer) clearTimeout(codexConfigReloadTimer);
+  codexConfigReloadTimer = undefined;
   codexReady = false;
   broadcast(bridgeStatus("switching"));
   for (const client of clients) {
@@ -1269,6 +1334,8 @@ function shutdown(): void {
   clearInterval(heartbeatInterval);
   clearInterval(externalSessionPollInterval);
   clearInterval(externalSessionDiscoveryInterval);
+  codexConfigMonitor.stop();
+  if (codexConfigReloadTimer) clearTimeout(codexConfigReloadTimer);
   if (codexRestartTimer) clearTimeout(codexRestartTimer);
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
   for (const timer of queueRetryTimers.values()) clearTimeout(timer);
