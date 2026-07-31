@@ -432,6 +432,15 @@ struct TurnMetadata: Equatable {
             .lowercased()
         return ["inprogress", "active", "running", "started", "pending", "queued", "processing"].contains(normalized)
     }
+
+    var isFailed: Bool {
+        let normalized = status
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || ["failed", "error", "cancelled", "canceled"].contains(normalized)
+    }
 }
 
 enum TranscriptRole: Equatable {

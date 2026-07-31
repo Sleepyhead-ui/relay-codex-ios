@@ -82,7 +82,14 @@ enum TaskEventDecoder {
         case "turn/started":
             events = turnId.map { [.started(turnId: $0, startedAt: startedAt)] } ?? []
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
-            let phase: TaskRunPhase = method == "turn/failed"
+            let normalizedStatus = turn["status"]?.stringValue?
+                .replacingOccurrences(of: "_", with: "")
+                .replacingOccurrences(of: "-", with: "")
+                .lowercased()
+            let turnFailed = method == "turn/failed"
+                || turn["error"]?["message"]?.stringValue != nil
+                || normalizedStatus.map { ["failed", "error"].contains($0) } == true
+            let phase: TaskRunPhase = turnFailed
                 ? .failed
                 : (method == "turn/completed" ? .completed : .interrupted)
             events = [.terminal(turnId: turnId, phase: phase, completedAt: completedAt)]

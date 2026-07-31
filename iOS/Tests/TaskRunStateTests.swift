@@ -46,6 +46,22 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertEqual(replay.states["thread.2"]?.turnId, "turn.2")
     }
 
+    func testCompletedNotificationWithFailedTurnStatusRemainsFailed() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "turn/completed", params: .object([
+            "threadId": .string("thread.1"),
+            "turn": .object([
+                "id": .string("turn.1"),
+                "status": .string("failed"),
+                "error": .object(["message": .string("503 Service Unavailable")])
+            ])
+        ]))
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .failed)
+        XCTAssertNil(replay.states["thread.1"]?.turnId)
+    }
+
     func testRecordedStaleEventsDoNotReplaceCurrentTurnOrPlan() {
         var replay = TaskEventReplay()
         replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.new"))

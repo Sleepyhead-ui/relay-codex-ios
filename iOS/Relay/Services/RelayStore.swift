@@ -81,6 +81,7 @@ final class RelayStore: ObservableObject {
     private let hostRegistryDefaultsKey = "relay.host.registry"
     let currentHostDefaultsKey = "relay.host.currentId"
     let outboundDeliveryOutboxDefaultsKey = "relay.outboundDeliveryOutbox.v1"
+    let failedTurnDraftDismissalsDefaultsKey = "relay.failedTurnDraftDismissals.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
     private var notifiedCompletionTurnIds = Set<String>()
@@ -623,14 +624,35 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
+            let startedDeliveries = persistedOutboundDeliveries.values.filter {
+                $0.draft.threadId == id && $0.confirmedTurnId != nil
+            }
+            for envelope in startedDeliveries {
+                guard let turnId = envelope.confirmedTurnId else { continue }
+                let hasOutput = loadedMessages.contains { $0.turnId == turnId && $0.role != .user }
+                reconcileStartedTurnDelivery(
+                    turnId: turnId,
+                    status: loadedMetadata[turnId]?.status,
+                    errorMessage: loadedMetadata[turnId]?.errorMessage,
+                    hasOutput: hasOutput
+                )
+            }
+            recoverEditableFailedTurnPrompts(
+                threadId: id,
+                metadata: loadedMetadata,
+                history: loadedMessages
+            )
             let unresolvedMessages = outboundDrafts.compactMap { messageId, draft -> UnresolvedOutboundMessage? in
                 guard draft.threadId == id else { return nil }
                 var item = messages.first(where: { $0.id == messageId })
                     ?? outboundTranscriptItem(id: messageId, draft: draft)
                 if item.deliveryState == .sending || item.deliveryState == .accepted {
-                    item.deliveryState = persistedOutboundDeliveries[messageId]?.automaticallyRecoverable == false
-                        ? .failed("上次发送未能启动任务，可编辑后重新发送。")
-                        : .uncertain("连接恢复后仍在确认是否送达。")
+                    let envelope = persistedOutboundDeliveries[messageId]
+                    item.deliveryState = envelope?.confirmedTurnId != nil
+                        ? nil
+                        : (envelope?.automaticallyRecoverable == false
+                            ? .failed("上次发送未能启动任务，可编辑后重新发送。")
+                            : .uncertain("连接恢复后仍在确认是否送达。"))
                 }
                 return UnresolvedOutboundMessage(
                     item: item,
@@ -657,7 +679,11 @@ final class RelayStore: ObservableObject {
                 metadata: loadedMetadata,
                 placementSequences: placementSequences
             )
-            for deliveredId in unresolvedMessages.map(\.item.id).filter({ loadedIds.contains($0) }) {
+            for deliveredId in unresolvedMessages.map(\.item.id).filter({
+                loadedIds.contains($0)
+                    && persistedOutboundDeliveries[$0]?.confirmedTurnId == nil
+                    && persistedOutboundDeliveries[$0]?.automaticallyRecoverable == true
+            }) {
                 removeOutboundDelivery(deliveredId)
                 acceptedMessageIds.remove(deliveredId)
             }

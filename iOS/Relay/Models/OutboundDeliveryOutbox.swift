@@ -67,9 +67,10 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
     let sequence: Int
     let createdAt: Date
     var automaticallyRecoverable: Bool
+    var confirmedTurnId: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, hostId, profileId, draft, sequence, createdAt, automaticallyRecoverable
+        case id, hostId, profileId, draft, sequence, createdAt, automaticallyRecoverable, confirmedTurnId
     }
 
     init(
@@ -79,7 +80,8 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         draft: OutboundDraft,
         sequence: Int,
         createdAt: Date,
-        automaticallyRecoverable: Bool = true
+        automaticallyRecoverable: Bool = true,
+        confirmedTurnId: String? = nil
     ) {
         self.id = id
         self.hostId = hostId
@@ -88,6 +90,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         self.sequence = sequence
         self.createdAt = createdAt
         self.automaticallyRecoverable = automaticallyRecoverable
+        self.confirmedTurnId = confirmedTurnId
     }
 
     init(from decoder: Decoder) throws {
@@ -99,6 +102,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         sequence = try values.decode(Int.self, forKey: .sequence)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         automaticallyRecoverable = try values.decodeIfPresent(Bool.self, forKey: .automaticallyRecoverable) ?? true
+        confirmedTurnId = try values.decodeIfPresent(String.self, forKey: .confirmedTurnId)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -110,6 +114,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         try values.encode(sequence, forKey: .sequence)
         try values.encode(createdAt, forKey: .createdAt)
         try values.encode(automaticallyRecoverable, forKey: .automaticallyRecoverable)
+        try values.encodeIfPresent(confirmedTurnId, forKey: .confirmedTurnId)
     }
 }
 
@@ -167,7 +172,13 @@ enum OutboundDeliveryOutbox {
             return (left.createdAt ?? .distantFuture) < (right.createdAt ?? .distantFuture)
         }
 
-        for message in sorted where !result.contains(where: { $0.id == message.item.id }) {
+        for message in sorted {
+            if let existingIndex = result.firstIndex(where: { $0.id == message.item.id }) {
+                if let deliveryState = message.item.deliveryState {
+                    result[existingIndex].deliveryState = deliveryState
+                }
+                continue
+            }
             let insertion = result.firstIndex { candidate in
                 if let candidateSequence = placementSequences[candidate.id], candidateSequence > message.sequence {
                     return true

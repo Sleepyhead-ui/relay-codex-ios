@@ -66,6 +66,28 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
 
         let decoded = try JSONDecoder().decode(OutboundDeliveryEnvelope.self, from: legacyData)
         XCTAssertTrue(decoded.automaticallyRecoverable)
+        XCTAssertNil(decoded.confirmedTurnId)
+    }
+
+    func testEnvelopeRoundTripPreservesConfirmedTurnObservation() throws {
+        let original = OutboundDeliveryEnvelope(
+            id: "observing",
+            hostId: "host",
+            profileId: "profile",
+            draft: OutboundDraft(threadId: "thread", text: "prompt", attachments: []),
+            sequence: 1,
+            createdAt: Date(),
+            automaticallyRecoverable: false,
+            confirmedTurnId: "turn-1"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            OutboundDeliveryEnvelope.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        XCTAssertEqual(decoded.confirmedTurnId, "turn-1")
+        XCTAssertFalse(decoded.automaticallyRecoverable)
     }
 
     func testDraftRoundTripPreservesCollaborationMode() throws {
@@ -128,7 +150,9 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
 
     func testMergeUnresolvedReusesExistingBubbleInsteadOfDuplicatingIt() {
         let existing = item(id: "same-id", text: "failed prompt")
-        let retry = UnresolvedOutboundMessage(item: existing, sequence: 1, createdAt: Date())
+        var unresolvedItem = existing
+        unresolvedItem.deliveryState = .failed("503 Service Unavailable")
+        let retry = UnresolvedOutboundMessage(item: unresolvedItem, sequence: 1, createdAt: Date())
 
         let merged = OutboundDeliveryOutbox.mergeUnresolved(
             [retry],
@@ -138,6 +162,7 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
         )
 
         XCTAssertEqual(merged.map(\.id), ["same-id"])
+        XCTAssertEqual(merged.first?.deliveryState, .failed("503 Service Unavailable"))
     }
 
     private func envelope(

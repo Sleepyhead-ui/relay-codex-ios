@@ -5,9 +5,39 @@ enum DeliveryFailureDisposition: Equatable {
     case uncertain
 }
 
+enum StartedTurnDisposition: Equatable {
+    case awaitingOutput
+    case failed
+    case resolved
+}
+
 enum DeliveryFailurePolicy {
     static func canEditFailedTurnStart(expectedTurnId: String?) -> Bool {
         expectedTurnId == nil
+    }
+
+    static func isRelayClientMessageId(_ id: String) -> Bool {
+        UUID(uuidString: id) != nil
+    }
+
+    static func startedTurnDisposition(
+        status: String?,
+        errorMessage: String?,
+        hasOutput: Bool
+    ) -> StartedTurnDisposition {
+        if hasOutput { return .resolved }
+        let normalized = status?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        if errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || normalized.map { ["failed", "error", "cancelled", "canceled"].contains($0) } == true {
+            return .failed
+        }
+        if normalized.map { ["completed", "complete", "succeeded", "success", "interrupted", "aborted"].contains($0) } == true {
+            return .resolved
+        }
+        return .awaitingOutput
     }
 
     static func disposition(

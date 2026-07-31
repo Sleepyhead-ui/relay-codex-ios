@@ -67,6 +67,7 @@ extension RelayStore {
             flushPendingDetailDeltas()
             let turn = params["turn"] ?? .object([:])
             let turnId = turn["id"]?.stringValue ?? eventTurnId
+            var terminalFailed = method == "turn/failed"
             if let turnId {
                 var metadata = TurnMetadata(json: turn)
                 if method == "turn/aborted" || method == "turn/interrupted" {
@@ -75,17 +76,28 @@ extension RelayStore {
                     metadata.status = "failed"
                 }
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
+                terminalFailed = terminalFailed || metadata.isFailed
                 turnMetadata[turnId] = metadata
                 for itemJSON in turn["items"]?.arrayValue ?? [] {
                     if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
                 }
+                let hasOutput = (turn["items"]?.arrayValue ?? []).contains { itemJSON in
+                    guard let item = TranscriptItem.from(json: itemJSON, turnId: turnId) else { return false }
+                    return item.role != .user
+                }
+                reconcileStartedTurnDelivery(
+                    turnId: turnId,
+                    status: metadata.status,
+                    errorMessage: metadata.errorMessage,
+                    hasOutput: hasOutput
+                )
             }
             Task {
                 await refreshThreads(showErrors: false)
                 if let selectedThreadId { await refreshGoal(threadId: selectedThreadId) }
             }
             if let selectedThreadId {
-                notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: method == "turn/failed")
+                notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: terminalFailed)
             }
             scheduleCompletionReconciliation(threadId: selectedThreadId)
         case "item/started", "item/completed":
@@ -95,7 +107,12 @@ extension RelayStore {
                 flushPendingTextDeltas()
                 flushPendingDetailDeltas()
             }
-            if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) { upsert(item) }
+            if let itemJSON = params["item"], let item = TranscriptItem.from(json: itemJSON, turnId: eventTurnId) {
+                upsert(item)
+                if item.role != .user, let eventTurnId {
+                    reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true)
+                }
+            }
         case "item/agentMessage/delta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
@@ -107,20 +124,24 @@ extension RelayStore {
                 kind: .message,
                 phase: params["phase"]?.stringValue
             )
+            if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDelta(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, role: .tool, kind: .reasoning, title: "思考")
+            if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "item/reasoning/textDelta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .reasoning)
+            if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "item/commandExecution/outputDelta":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .command)
+            if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "turn/plan/updated":
-            break
+            if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "thread/tokenUsage/updated":
             if let threadId = params["threadId"]?.stringValue, let usage = params["tokenUsage"] {
                 tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage)
@@ -155,6 +176,9 @@ extension RelayStore {
                 errorMessage = message
                 if params["willRetry"]?.boolValue == false, let threadId {
                     markSelectedThreadFailed(threadId: threadId, turnId: eventTurnId, message: message)
+                    if let eventTurnId {
+                        reconcileStartedTurnDelivery(turnId: eventTurnId, status: "failed", errorMessage: message)
+                    }
                 }
             }
         default:
@@ -166,18 +190,50 @@ extension RelayStore {
         let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
         guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: threadId) else { return }
         switch method {
-        case "turn/started", "item/started", "item/completed", "item/agentMessage/delta",
-             "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
-             "item/reasoning/textDelta", "item/commandExecution/outputDelta", "turn/plan/updated":
+        case "turn/started":
             break
+        case "item/started", "item/completed":
+            if let turnId,
+               let itemJSON = params["item"],
+               let item = TranscriptItem.from(json: itemJSON, turnId: turnId),
+               item.role != .user {
+                reconcileStartedTurnDelivery(turnId: turnId, hasOutput: true)
+            }
+        case "item/agentMessage/delta", "item/reasoning/summaryTextDelta",
+             "item/reasoningSummaryText/delta", "item/reasoning/textDelta",
+             "item/commandExecution/outputDelta", "turn/plan/updated":
+            if let turnId {
+                reconcileStartedTurnDelivery(turnId: turnId, hasOutput: true)
+            }
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
+            let turn = params["turn"] ?? .object([:])
+            var terminalFailed = method == "turn/failed"
+            if let turnId {
+                let metadata = TurnMetadata(json: turn)
+                terminalFailed = terminalFailed || metadata.isFailed
+                let hasOutput = (turn["items"]?.arrayValue ?? []).contains { itemJSON in
+                    guard let item = TranscriptItem.from(json: itemJSON, turnId: turnId) else { return false }
+                    return item.role != .user
+                }
+                reconcileStartedTurnDelivery(
+                    turnId: turnId,
+                    status: method == "turn/failed" ? "failed" : metadata.status,
+                    errorMessage: metadata.errorMessage,
+                    hasOutput: hasOutput
+                )
+            }
             Task {
                 await refreshThreads(showErrors: false)
                 await refreshGoal(threadId: threadId)
             }
-            notifyTaskCompleted(threadId: threadId, turnId: turnId, failed: method == "turn/failed")
+            notifyTaskCompleted(threadId: threadId, turnId: turnId, failed: terminalFailed)
         case "error":
-            break
+            if params["willRetry"]?.boolValue == false, let turnId {
+                let message = params["error"]?["message"]?.stringValue
+                    ?? params["message"]?.stringValue
+                    ?? "Codex reported an error."
+                reconcileStartedTurnDelivery(turnId: turnId, status: "failed", errorMessage: message)
+            }
         case "thread/tokenUsage/updated":
             if let usage = params["tokenUsage"] { tokenUsageByThread[threadId] = ThreadTokenUsage(json: usage) }
         case "thread/goal/updated":

@@ -39,7 +39,7 @@ extension RelayStore {
             if userMessagePlacements[record.id] == nil {
                 userMessagePlacements[record.id] = UserMessagePlacement(
                     threadId: record.draft.threadId,
-                    turnId: record.draft.expectedTurnId,
+                    turnId: record.confirmedTurnId ?? record.draft.expectedTurnId,
                     afterItemId: nil,
                     sequence: record.sequence
                 )
@@ -54,19 +54,22 @@ extension RelayStore {
     }
 
     func outboundTranscriptItem(id: String, draft: OutboundDraft) -> TranscriptItem {
+        let envelope = persistedOutboundDeliveries[id]
         let attachmentSummary = draft.attachments
             .filter { !$0.isImage }
             .map { "附件 \($0.name)" }
             .joined(separator: "\n")
         return TranscriptItem(
             id: id,
-            turnId: draft.expectedTurnId,
+            turnId: envelope?.confirmedTurnId ?? draft.expectedTurnId,
             role: .user,
             kind: .message,
             text: [draft.text, attachmentSummary].filter { !$0.isEmpty }.joined(separator: "\n\n"),
-            deliveryState: persistedOutboundDeliveries[id]?.automaticallyRecoverable == false
-                ? .failed("上次发送未能启动任务，可编辑后重新发送。")
-                : .uncertain("正在等待 Windows 确认是否送达。"),
+            deliveryState: envelope?.confirmedTurnId != nil
+                ? nil
+                : (envelope?.automaticallyRecoverable == false
+                    ? .failed("上次发送未能启动任务，可编辑后重新发送。")
+                    : .uncertain("正在等待 Windows 确认是否送达。")),
             imagePaths: draft.attachments.filter(\.isImage).compactMap(\.remotePath)
         )
     }
@@ -79,10 +82,123 @@ extension RelayStore {
         persistOutboundDeliveryOutbox()
     }
 
+    private func markOutboundDeliveryAwaitingFirstOutput(_ id: String, turnId: String) {
+        guard var envelope = persistedOutboundDeliveries[id] else { return }
+        envelope.automaticallyRecoverable = false
+        envelope.confirmedTurnId = turnId
+        persistedOutboundDeliveries[id] = envelope
+        userMessagePlacements[id]?.turnId = turnId
+        persistOutboundDeliveryOutbox()
+        let metadata = turnMetadata[turnId]
+        let hasOutput = messages.contains { $0.turnId == turnId && $0.role != .user }
+        if metadata != nil || hasOutput {
+            reconcileStartedTurnDelivery(
+                turnId: turnId,
+                status: metadata?.status,
+                errorMessage: metadata?.errorMessage,
+                hasOutput: hasOutput
+            )
+        }
+    }
+
     private func markOutboundDeliveryFailed(_ id: String, message: String, threadId: String) {
         acceptedMessageIds.remove(id)
-        setOutboundDeliveryAutomaticallyRecoverable(id, false)
+        if var envelope = persistedOutboundDeliveries[id] {
+            envelope.automaticallyRecoverable = false
+            envelope.confirmedTurnId = nil
+            persistedOutboundDeliveries[id] = envelope
+            persistOutboundDeliveryOutbox()
+        }
         updateDeliveryState(id, state: .failed(message), threadId: threadId)
+    }
+
+    func reconcileStartedTurnDelivery(
+        turnId: String,
+        status: String? = nil,
+        errorMessage: String? = nil,
+        hasOutput: Bool = false
+    ) {
+        let matches = persistedOutboundDeliveries.values.filter {
+            $0.confirmedTurnId == turnId && $0.draft.expectedTurnId == nil
+        }
+        for envelope in matches {
+            switch DeliveryFailurePolicy.startedTurnDisposition(
+                status: status,
+                errorMessage: errorMessage,
+                hasOutput: hasOutput
+            ) {
+            case .awaitingOutput:
+                break
+            case .failed:
+                markOutboundDeliveryFailed(
+                    envelope.id,
+                    message: errorMessage ?? "任务未能开始处理，可编辑后重新发送。",
+                    threadId: envelope.draft.threadId
+                )
+            case .resolved:
+                removeOutboundDelivery(envelope.id)
+                acceptedMessageIds.remove(envelope.id)
+            }
+        }
+    }
+
+    func recoverEditableFailedTurnPrompts(
+        threadId: String,
+        metadata: [String: TurnMetadata],
+        history: [TranscriptItem]
+    ) {
+        let dismissed = Set(UserDefaults.standard.stringArray(forKey: failedTurnDraftDismissalsDefaultsKey) ?? [])
+        for (turnId, turnMetadata) in metadata {
+            let turnItems = history.filter { $0.turnId == turnId }
+            let hasOutput = turnItems.contains { $0.role != .user }
+            guard DeliveryFailurePolicy.startedTurnDisposition(
+                status: turnMetadata.status,
+                errorMessage: turnMetadata.errorMessage,
+                hasOutput: hasOutput
+            ) == .failed else { continue }
+
+            for item in turnItems where item.role == .user
+                && DeliveryFailurePolicy.isRelayClientMessageId(item.id)
+                && !dismissed.contains(item.id)
+                && outboundDrafts[item.id] == nil {
+                let recoveredAttachments = item.imagePaths.map { path in
+                    PendingAttachment(
+                        id: UUID(),
+                        name: URL(fileURLWithPath: path).lastPathComponent,
+                        localURL: URL(fileURLWithPath: path),
+                        remotePath: path,
+                        size: 0,
+                        progress: 1,
+                        state: .ready,
+                        isImage: true
+                    )
+                }
+                guard !item.text.isEmpty || !recoveredAttachments.isEmpty else { continue }
+                nextUserMessageSequence += 1
+                storeOutboundDelivery(
+                    id: item.id,
+                    draft: OutboundDraft(threadId: threadId, text: item.text, attachments: recoveredAttachments),
+                    placement: UserMessagePlacement(
+                        threadId: threadId,
+                        turnId: turnId,
+                        afterItemId: nil,
+                        sequence: nextUserMessageSequence
+                    )
+                )
+                markOutboundDeliveryFailed(
+                    item.id,
+                    message: turnMetadata.errorMessage ?? "任务未能开始处理，可编辑后重新发送。",
+                    threadId: threadId
+                )
+            }
+        }
+    }
+
+    private func rememberFailedTurnDraftDismissal(_ id: String) {
+        var ids = UserDefaults.standard.stringArray(forKey: failedTurnDraftDismissalsDefaultsKey) ?? []
+        ids.removeAll { $0 == id }
+        ids.append(id)
+        UserDefaults.standard.set(Array(ids.suffix(500)), forKey: failedTurnDraftDismissalsDefaultsKey)
     }
 
     private func persistOutboundDeliveryOutbox() {
@@ -212,7 +328,11 @@ extension RelayStore {
             updateDeliveryState(id, state: nil, threadId: threadId, turnId: turnId)
             if let turnId, selectedThreadId == threadId { bindUserPrompt(id, to: turnId, threadId: threadId) }
             acceptedMessageIds.remove(id)
-            removeOutboundDelivery(id)
+            if draft.expectedTurnId == nil, let turnId {
+                markOutboundDeliveryAwaitingFirstOutput(id, turnId: turnId)
+            } else {
+                removeOutboundDelivery(id)
+            }
         } catch {
             let accepted = acceptedMessageIds.remove(id) != nil
             if isUncertainDeliveryFailure(error, bridgeAccepted: accepted) {
@@ -251,7 +371,11 @@ extension RelayStore {
             bindUserPrompt(id, to: turnId, threadId: draft.threadId)
         }
         acceptedMessageIds.remove(id)
-        removeOutboundDelivery(id)
+        if draft.expectedTurnId == nil, let turnId {
+            markOutboundDeliveryAwaitingFirstOutput(id, turnId: turnId)
+        } else {
+            removeOutboundDelivery(id)
+        }
     }
 
     func restoreMessageToComposer(_ id: String) {
@@ -263,6 +387,7 @@ extension RelayStore {
         }
         composerText = draft.text
         attachments = draft.attachments
+        rememberFailedTurnDraftDismissal(id)
         messages.removeAll { $0.id == id }
         userMessagePlacements.removeValue(forKey: id)
         removeOutboundDelivery(id)
@@ -571,7 +696,9 @@ extension RelayStore {
             }
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
-            removeOutboundDelivery(clientMessageId)
+            if let confirmedTurnId {
+                markOutboundDeliveryAwaitingFirstOutput(clientMessageId, turnId: confirmedTurnId)
+            }
             return true
         } catch {
             let wasAccepted = acceptedMessageIds.remove(clientMessageId) != nil
