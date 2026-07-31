@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BarkPushNotifier, cleanPreview, ExternalCompletionTracker, normalizeBarkEndpoint } from "../dist/pushNotifications.js";
+import { BarkPushNotifier, cleanPreview, defaultBarkIconUrl, ExternalCompletionTracker, normalizeBarkEndpoint } from "../dist/pushNotifications.js";
 
 test("normalizes a copied public Bark test URL to its device endpoint", () => {
   assert.equal(
@@ -40,8 +40,28 @@ test("keeps task content private by default and includes a Relay deep link", asy
   }), false);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://api.day.app/device-key");
+  assert.equal(requests[0].body.icon, defaultBarkIconUrl);
   assert.equal(requests[0].body.body, "任务已处理完毕");
   assert.match(requests[0].body.url, /^relay:\/\/thread\?threadId=thread\.1$/);
+});
+
+test("adds the Relay icon to test pushes and supports an override", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "relay-push-"));
+  const preferencesPath = path.join(directory, "preferences.json");
+  await writeFile(preferencesPath, JSON.stringify({
+    remoteNotifications: true,
+    barkUrl: "https://api.day.app/device-key",
+    pushIncludePreview: false,
+  }));
+  let payload;
+  const notifier = new BarkPushNotifier(preferencesPath, undefined, async (_url, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ code: 200 }), { status: 200 });
+  }, "https://example.com/custom-relay-icon.png");
+
+  await notifier.sendTest();
+  assert.equal(payload.icon, "https://example.com/custom-relay-icon.png");
+  assert.equal(payload.group, "Relay");
 });
 
 test("preview cleanup removes thinking and markdown", () => {

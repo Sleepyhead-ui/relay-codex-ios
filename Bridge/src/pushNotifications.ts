@@ -29,6 +29,8 @@ const defaultPreferences: PushPreferences = {
   pushIncludePreview: false,
 };
 
+export const defaultBarkIconUrl = "https://cdn.jsdelivr.net/gh/Sleepyhead-ui/relay-codex-ios@v1.1.24/assets/relay-push-icon.png";
+
 export class ExternalCompletionTracker {
   private readonly states = new Map<string, { turnId: string; isRunning: boolean }>();
 
@@ -65,6 +67,7 @@ export class BarkPushNotifier {
     private readonly preferencesPath = process.env.RELAY_PUSH_CONFIG,
     private readonly environmentUrl = process.env.RELAY_BARK_URL,
     private readonly fetcher: Fetch = fetch,
+    private readonly iconUrl = process.env.RELAY_BARK_ICON_URL?.trim() || defaultBarkIconUrl,
   ) {}
 
   async status(): Promise<{ configured: boolean; enabled: boolean; includePreview: boolean }> {
@@ -94,6 +97,7 @@ export class BarkPushNotifier {
         title,
         body,
         group: "Relay",
+        icon: this.iconUrl,
         level: message.failed ? "timeSensitive" : "active",
         url: relayThreadURL(message.threadId),
       });
@@ -112,6 +116,7 @@ export class BarkPushNotifier {
       title: "Relay 推送已连接",
       body: "Windows 可以在 Relay 被 iOS 挂起时继续发送任务通知。",
       group: "Relay",
+      icon: this.iconUrl,
       level: "active",
       url: "relay://open",
     });
