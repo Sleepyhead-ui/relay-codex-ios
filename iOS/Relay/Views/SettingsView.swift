@@ -3,226 +3,302 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: RelayStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showingForgetConfirmation = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Windows host") {
-                    LabeledContent("Name", value: store.host.name)
-                    LabeledContent("Address", value: store.host.endpoint)
-                    LabeledContent("Status", value: status)
-                    Button("Edit connection") {
-                        dismiss()
-                        store.showingConnection = true
-                    }
-                    if store.savedHosts.count > 1 {
-                        ForEach(store.savedHosts) { entry in
-                            Button {
-                                store.switchHost(entry.id)
-                                dismiss()
-                            } label: {
-                                HStack(spacing: 9) {
-                                    Circle()
-                                        .fill(store.hostAvailability[entry.id] == true ? Color.green : Color.secondary.opacity(0.5))
-                                        .frame(width: 7, height: 7)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.name).foregroundStyle(.primary)
-                                        Text(entry.endpoint).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                    Spacer()
-                                    if entry.id == store.currentHostId { Image(systemName: "checkmark").foregroundStyle(RelayTheme.accent) }
-                                }
-                            }
-                            .disabled(entry.id == store.currentHostId)
-                        }
-                    }
-                    if store.isCheckingHosts {
-                        HStack { ProgressView(); Text("正在检查已配对电脑").foregroundStyle(.secondary) }
-                    }
-                }
-
-                Section("Codex 实例") {
-                    if store.codexProfiles.isEmpty {
-                        HStack {
-                            ProgressView()
-                            Text("正在发现 Windows 实例")
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        ForEach(store.codexProfiles.sorted { left, right in
-                            if left.isActive != right.isActive { return left.isActive }
-                            if left.isRunning != right.isRunning { return left.isRunning }
-                            return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
-                        }) { profile in
-                            Button {
-                                Task { await store.switchCodexProfile(profile.id) }
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: profile.isRunning ? "circle.fill" : "circle")
-                                        .font(.system(size: 8))
-                                        .foregroundStyle(profile.isRunning ? Color.green : Color.secondary)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(profile.name)
-                                            .foregroundStyle(.primary)
-                                        Text(profile.isRunning ? "Windows 上正在运行" : "已保存的实例")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if profile.id == store.activeCodexProfileId {
-                                        Image(systemName: "checkmark")
-                                            .foregroundStyle(RelayTheme.accent)
-                                    }
-                                }
-                            }
-                            .disabled(store.isSwitchingCodexProfile || store.isRunning || store.pendingApproval != nil || profile.id == store.activeCodexProfileId)
-                        }
-                    }
-                    if store.isSwitchingCodexProfile {
-                        HStack {
-                            ProgressView()
-                            Text("正在切换并刷新对话")
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if store.isRunning || store.pendingApproval != nil {
-                        Text("任务运行或等待审批时不能切换实例。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("任务配置") {
-                    TextField("默认项目目录", text: $store.host.workingDirectory)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onChange(of: store.host.workingDirectory) { _ in store.saveHostConfiguration() }
-
-                    Menu {
-                        ForEach(store.modelOptions) { model in
-                            Button {
-                                Task { await store.selectModel(model) }
-                            } label: {
-                                if store.selectedModel?.id == model.id {
-                                    Label(model.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(model.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        LabeledContent("模型", value: store.selectedModel?.displayName ?? "默认")
-                    }
-                    .disabled(store.modelOptions.isEmpty)
-
-                    Menu {
-                        ForEach(store.availableEfforts) { effort in
-                            Button {
-                                Task { await store.selectEffort(effort.id) }
-                            } label: {
-                                if store.selectedEffort == effort.id {
-                                    Label(effort.displayName, systemImage: "checkmark")
-                                } else {
-                                    Text(effort.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        LabeledContent(
-                            "思考深度",
-                            value: store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "默认"
-                        )
-                    }
-
-                }
-
-                Section("工作区权限") {
-                    Picker("访问级别", selection: $store.workspaceAccess) {
-                        ForEach(WorkspaceAccessMode.allCases) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: store.workspaceAccess) { mode in
-                        Task { await store.selectWorkspaceAccess(mode) }
-                    }
-
-                    Label(store.workspaceAccess.detail, systemImage: accessIcon)
-                        .font(.footnote)
-                        .foregroundStyle(store.workspaceAccess == .fullAccess ? Color.orange : Color.secondary)
-
-                    Text("权限会应用到新任务和之后发送的每一轮；越过当前边界的操作仍可能要求确认。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Conversation continuity") {
-                    LabeledContent("桌面同步", value: desktopSyncLabel)
-                    Text("增强刷新会在手机任务完成后让 Windows Codex 重新读取当前线程。若显示“基础深链”，请完全退出 Windows Codex，再从手机发送一次消息；Bridge 会用仅限本机的增强模式重新启动它。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("运行与通知") {
-                    Toggle("Relay 本地通知", isOn: Binding(
-                        get: { store.notificationsEnabled },
-                        set: { enabled in Task { await store.setNotificationsEnabled(enabled) } }
-                    ))
-                    Button {
-                        dismiss()
-                        store.showingDiagnostics = true
-                    } label: {
-                        Label("打开诊断中心", systemImage: "stethoscope")
-                    }
-                }
-
-                Section("应用更新") {
-                    if let update = store.updateInfo {
-                        LabeledContent("当前版本", value: update.currentVersion)
-                        LabeledContent("最新版本", value: update.latestVersion)
-                        if update.available {
-                            Button {
-                                Task { await store.downloadLatestIPA() }
-                            } label: {
-                                HStack {
-                                    if store.isDownloadingUpdate { ProgressView(value: store.updateDownloadProgress ?? 0) }
-                                    Label(store.isDownloadingUpdate ? "正在通过 Windows 下载 \(Int((store.updateDownloadProgress ?? 0) * 100))%" : "下载 IPA", systemImage: "arrow.down.circle")
-                                }
-                            }
-                            .disabled(store.isDownloadingUpdate)
-                        } else {
-                            Label("当前已是最新版本", systemImage: "checkmark.circle")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Button {
-                        Task { await store.checkForUpdate() }
-                    } label: {
-                        HStack {
-                            if store.isCheckingUpdate { ProgressView() }
-                            Text(store.isCheckingUpdate ? "正在检查" : "检查更新")
-                        }
-                    }
-                    .disabled(store.isCheckingUpdate)
-                }
+                windowsSection
+                codexProfilesSection
+                taskDefaultsSection
+                notificationsSection
+                aboutSection
 
                 Section {
-                    Button("Forget this host", role: .destructive) { store.forgetHost() }
-                }
-
-                Section {
-                    LabeledContent("Relay", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown")
-                    LabeledContent("Protocol", value: "Codex 0.144.x")
+                    Button("移除此电脑", role: .destructive) {
+                        showingForgetConfirmation = true
+                    }
+                } footer: {
+                    Text("只会移除这台手机保存的连接信息，不会删除 Windows 上的项目或 Codex 对话。")
                 }
             }
             .scrollContentBackground(.hidden)
             .background(RelayTheme.canvas)
-            .navigationTitle("Settings")
+            .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .confirmationDialog("移除此电脑？", isPresented: $showingForgetConfirmation, titleVisibility: .visible) {
+                Button("移除", role: .destructive) { store.forgetHost() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("之后需要重新输入连接地址和配对令牌才能连接。")
             }
             .task { await store.refreshSavedHostStatus() }
         }
+    }
+
+    private var windowsSection: some View {
+        Section("Windows 电脑") {
+            HStack(spacing: 11) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.host.name.nonEmpty ?? "Windows 电脑")
+                    Text(store.host.endpoint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 12)
+                Text(status)
+                    .font(.subheadline)
+                    .foregroundStyle(statusColor)
+            }
+
+            Button {
+                dismiss()
+                store.showingConnection = true
+            } label: {
+                Label("编辑连接", systemImage: "network")
+            }
+
+            ForEach(otherSavedHosts) { entry in
+                Button {
+                    store.switchHost(entry.id)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 11) {
+                        Circle()
+                            .fill(store.hostAvailability[entry.id] == true ? Color.green : Color.secondary.opacity(0.5))
+                            .frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.name).foregroundStyle(.primary)
+                            Text(entry.endpoint)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Text("切换")
+                            .font(.subheadline)
+                            .foregroundStyle(RelayTheme.accent)
+                    }
+                }
+            }
+
+            if store.isCheckingHosts {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在检查已配对电脑")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var codexProfilesSection: some View {
+        Section("Codex 实例") {
+            if store.codexProfiles.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在发现 Windows 实例")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(sortedProfiles) { profile in
+                    Button {
+                        Task { await store.switchCodexProfile(profile.id) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: profile.isRunning ? "circle.fill" : "circle")
+                                .font(.system(size: 8))
+                                .foregroundStyle(profile.isRunning ? Color.green : Color.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(profile.name)
+                                    .foregroundStyle(.primary)
+                                Text(profile.isRunning ? "正在运行" : "已保存")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if profile.id == store.activeCodexProfileId {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(RelayTheme.accent)
+                            }
+                        }
+                    }
+                    .disabled(profileSwitchDisabled || profile.id == store.activeCodexProfileId)
+                }
+            }
+
+            if store.isSwitchingCodexProfile {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在切换并刷新对话")
+                        .foregroundStyle(.secondary)
+                }
+            } else if store.isRunning || store.pendingApproval != nil {
+                Text("任务运行或等待确认时不能切换实例。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var taskDefaultsSection: some View {
+        Section {
+            HStack {
+                Text("项目目录")
+                Spacer(minLength: 16)
+                TextField("未设置", text: $store.host.workingDirectory)
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: store.host.workingDirectory) { _ in store.saveHostConfiguration() }
+            }
+
+            Menu {
+                ForEach(store.modelOptions) { model in
+                    Button {
+                        Task { await store.selectModel(model) }
+                    } label: {
+                        if store.selectedModel?.id == model.id {
+                            Label(model.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(model.displayName)
+                        }
+                    }
+                }
+            } label: {
+                LabeledContent("模型", value: store.selectedModel?.displayName ?? "默认")
+            }
+            .disabled(store.modelOptions.isEmpty)
+
+            Menu {
+                ForEach(store.availableEfforts) { effort in
+                    Button {
+                        Task { await store.selectEffort(effort.id) }
+                    } label: {
+                        if store.selectedEffort == effort.id {
+                            Label(effort.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(effort.displayName)
+                        }
+                    }
+                }
+            } label: {
+                LabeledContent("思考深度", value: selectedEffortName)
+            }
+
+            Picker("文件权限", selection: $store.workspaceAccess) {
+                ForEach(WorkspaceAccessMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .onChange(of: store.workspaceAccess) { mode in
+                Task { await store.selectWorkspaceAccess(mode) }
+            }
+
+            Label(store.workspaceAccess.detail, systemImage: accessIcon)
+                .font(.footnote)
+                .foregroundStyle(store.workspaceAccess == .fullAccess ? Color.orange : Color.secondary)
+        } header: {
+            Text("新任务默认设置")
+        } footer: {
+            Text("项目目录和文件权限用于新任务；已有任务继续使用创建时的工作区。")
+        }
+    }
+
+    private var notificationsSection: some View {
+        Section {
+            Toggle("任务通知", isOn: Binding(
+                get: { store.notificationsEnabled },
+                set: { enabled in Task { await store.setNotificationsEnabled(enabled) } }
+            ))
+            Button {
+                dismiss()
+                store.showingDiagnostics = true
+            } label: {
+                Label("诊断中心", systemImage: "stethoscope")
+            }
+        } header: {
+            Text("通知与诊断")
+        } footer: {
+            Text("任务完成、执行失败或需要确认时发送通知。")
+        }
+    }
+
+    private var aboutSection: some View {
+        Section("关于 Relay") {
+            LabeledContent("版本", value: appVersion)
+
+            if let update = store.updateInfo, update.available {
+                Button {
+                    Task { await store.downloadLatestIPA() }
+                } label: {
+                    HStack(spacing: 10) {
+                        if store.isDownloadingUpdate {
+                            ProgressView(value: store.updateDownloadProgress ?? 0)
+                        }
+                        Label(updateDownloadLabel(update.latestVersion), systemImage: "arrow.down.circle")
+                    }
+                }
+                .disabled(store.isDownloadingUpdate)
+            } else if store.updateInfo != nil {
+                Label("已是最新版本", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                Task { await store.checkForUpdate() }
+            } label: {
+                HStack(spacing: 10) {
+                    if store.isCheckingUpdate { ProgressView() }
+                    Text(store.isCheckingUpdate ? "正在检查" : "检查更新")
+                }
+            }
+            .disabled(store.isCheckingUpdate)
+        }
+    }
+
+    private var sortedProfiles: [CodexProfile] {
+        store.codexProfiles.sorted { left, right in
+            if left.isActive != right.isActive { return left.isActive }
+            if left.isRunning != right.isRunning { return left.isRunning }
+            return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+        }
+    }
+
+    private var otherSavedHosts: [RelayHostEntry] {
+        store.savedHosts.filter { $0.id != store.currentHostId }
+    }
+
+    private var profileSwitchDisabled: Bool {
+        store.isSwitchingCodexProfile || store.isRunning || store.pendingApproval != nil
+    }
+
+    private var selectedEffortName: String {
+        store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "默认"
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+    }
+
+    private func updateDownloadLabel(_ version: String) -> String {
+        if store.isDownloadingUpdate {
+            return "正在下载 \(Int((store.updateDownloadProgress ?? 0) * 100))%"
+        }
+        return "下载 v\(version) 安装包"
     }
 
     private var accessIcon: String {
@@ -236,20 +312,18 @@ struct SettingsView: View {
     private var status: String {
         switch store.socket.state {
         case .connected: return "已连接"
-        case .connecting: return "正在连接 Windows"
-        case .reconnecting(let attempt): return "正在重新连接 Windows（\(attempt)）"
-        case .disconnected: return "Windows 离线"
-        case .failed: return "Windows 连接已断开"
+        case .connecting: return "连接中"
+        case .reconnecting: return "重连中"
+        case .disconnected: return "离线"
+        case .failed: return "连接失败"
         }
     }
 
-    private var desktopSyncLabel: String {
-        switch store.socket.desktopSyncMode {
-        case "enhanced": return "增强刷新"
-        case "deep-link": return "基础深链"
-        case "pending": return "等待检测"
-        case "off": return "关闭"
-        default: return "未知"
+    private var statusColor: Color {
+        switch store.socket.state {
+        case .connected: return .green
+        case .connecting, .reconnecting: return .orange
+        case .disconnected, .failed: return .secondary
         }
     }
 }

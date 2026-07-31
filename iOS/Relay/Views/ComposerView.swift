@@ -37,7 +37,7 @@ struct ComposerView: View {
                     .foregroundStyle(Color.orange)
                 } else {
                     Button { store.showingConnection = true } label: {
-                        Label("Connect to Windows", systemImage: "bolt.horizontal.circle")
+                        Label("连接 Windows", systemImage: "bolt.horizontal.circle")
                             .font(.system(size: 13, weight: .semibold))
                     }
                 }

@@ -20,9 +20,9 @@ struct ConnectionView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         RelayMark(size: 56)
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Connect to your Windows PC")
+                            Text("连接 Windows 电脑")
                                 .font(.system(size: 28, weight: .semibold))
-                            Text("Enter the address and token printed by Relay Bridge, or scan its QR code with the Camera app.")
+                            Text("输入 Relay Desktop 显示的连接地址和配对令牌，也可以使用相机扫描配对二维码。")
                                 .font(.system(size: 15))
                                 .foregroundStyle(.secondary)
                                 .lineSpacing(3)
@@ -30,13 +30,13 @@ struct ConnectionView: View {
                     }
 
                     VStack(spacing: 18) {
-                        RelayField(label: "Computer name", placeholder: "Windows PC", text: $store.host.name, field: .computerName, focus: $focusedField)
-                        RelayField(label: "WebSocket address", placeholder: "ws://100.x.x.x:8765", text: $store.host.endpoint, field: .endpoint, focus: $focusedField)
+                        RelayField(label: "电脑名称", placeholder: "Windows 电脑", text: $store.host.name, field: .computerName, focus: $focusedField)
+                        RelayField(label: "连接地址", placeholder: "ws://100.x.x.x:8765", text: $store.host.endpoint, field: .endpoint, focus: $focusedField)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
-                        RelaySecureField(label: "Pairing token", placeholder: "Token", text: $store.token, field: .token, focus: $focusedField)
-                        RelayField(label: "Default project folder", placeholder: "C:\\Users\\you\\Projects", text: $store.host.workingDirectory, field: .workingDirectory, focus: $focusedField)
+                        RelaySecureField(label: "配对令牌", placeholder: "令牌", text: $store.token, field: .token, focus: $focusedField)
+                        RelayField(label: "默认项目目录", placeholder: "C:\\Users\\you\\Projects", text: $store.host.workingDirectory, field: .workingDirectory, focus: $focusedField)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
@@ -49,7 +49,7 @@ struct ConnectionView: View {
                             HStack {
                                 Spacer()
                                 if store.socket.state.isConnecting { ProgressView().tint(.white) }
-                                Text(store.socket.state.isConnecting ? "Connecting" : "Connect")
+                                Text(store.socket.state.isConnecting ? "正在连接" : "连接")
                                     .font(.system(size: 16, weight: .semibold))
                                 Spacer()
                             }
@@ -61,7 +61,7 @@ struct ConnectionView: View {
                         .buttonStyle(.plain)
                         .disabled(store.socket.state.isConnecting)
 
-                        Label("Use a Tailscale address for remote access. Do not expose this port directly to the public internet.", systemImage: "lock.shield")
+                        Label("远程连接请使用 Tailscale 地址，不要把 Relay 端口直接暴露到公网。", systemImage: "lock.shield")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                     }
@@ -77,12 +77,12 @@ struct ConnectionView: View {
             .toolbar {
                 if canDismiss {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { dismiss() }
+                        Button("完成") { dismiss() }
                     }
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") { focusedField = nil }
+                    Button("完成") { focusedField = nil }
                         .fontWeight(.semibold)
                 }
             }
