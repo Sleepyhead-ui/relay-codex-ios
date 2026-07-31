@@ -85,7 +85,8 @@ final class TranscriptReconcilerTests: XCTestCase {
 
         let parsed = try XCTUnwrap(TranscriptItem.from(json: message, turnId: "turn.1"))
         let milliseconds = try XCTUnwrap(UInt64("019fb8325405", radix: 16))
-        XCTAssertEqual(parsed.createdAt?.timeIntervalSince1970, Double(milliseconds) / 1_000, accuracy: 0.001)
+        let createdAt = try XCTUnwrap(parsed.createdAt)
+        XCTAssertEqual(createdAt.timeIntervalSince1970, Double(milliseconds) / 1_000, accuracy: 0.001)
     }
 
     func testLaggingSnapshotCannotShortenLiveOutput() throws {
