@@ -21,12 +21,14 @@ final class RelaySocket: ObservableObject {
         case invalidEndpoint
         case disconnected
         case remote(String)
+        case uncertainRemote(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidEndpoint: return "请输入有效的 ws:// 或 wss:// 连接地址。"
             case .disconnected: return "Windows 连接已断开。"
             case .remote(let message): return message
+            case .uncertainRemote(let message): return message
             }
         }
     }
@@ -445,7 +447,10 @@ final class RelaySocket: ObservableObject {
             pendingAccepted.removeValue(forKey: id)
             pendingTimeouts.removeValue(forKey: id)?.cancel()
             if let error = message["error"] {
-                continuation.resume(throwing: SocketError.remote(error["message"]?.stringValue ?? "Codex 请求失败。"))
+                let detail = error["message"]?.stringValue ?? "Codex 请求失败。"
+                continuation.resume(throwing: message["deliveryUncertain"]?.boolValue == true
+                    ? SocketError.uncertainRemote(detail)
+                    : SocketError.remote(detail))
             } else {
                 continuation.resume(returning: message["result"] ?? .null)
             }

@@ -198,11 +198,15 @@ struct TranscriptRow: View {
                     .fontWeight(.semibold)
             case .failed(_):
                 Image(systemName: "exclamationmark.circle.fill")
-                Text("未发送")
-                Button("重试") { Task { await store.retryOutboundDeliveryManually(item.id) } }
+                if store.canEditFailedTurnStart(item.id) {
+                    Text("任务未启动")
+                    Button { store.restoreMessageToComposer(item.id) } label: {
+                        Label("编辑后重发", systemImage: "pencil")
+                    }
                     .fontWeight(.semibold)
-                Button("编辑") { store.restoreMessageToComposer(item.id) }
-                    .fontWeight(.semibold)
+                } else {
+                    Text("引导未发送")
+                }
             }
         }
         .font(.system(size: 10, weight: .medium))

@@ -629,7 +629,7 @@ final class RelayStore: ObservableObject {
                     ?? outboundTranscriptItem(id: messageId, draft: draft)
                 if item.deliveryState == .sending || item.deliveryState == .accepted {
                     item.deliveryState = persistedOutboundDeliveries[messageId]?.automaticallyRecoverable == false
-                        ? .failed("上次发送未成功，可手动重试。")
+                        ? .failed("上次发送未能启动任务，可编辑后重新发送。")
                         : .uncertain("连接恢复后仍在确认是否送达。")
                 }
                 return UnresolvedOutboundMessage(
