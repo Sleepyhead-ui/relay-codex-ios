@@ -333,8 +333,8 @@ extension RelayStore {
         var pending: (messageId: String, sequence: Int)?
         for (messageId, placement) in userMessagePlacements {
             guard placement.threadId == threadId, placement.turnId == nil,
-                  let message = messages.first(where: { $0.id == messageId }),
-                  message.deliveryState == .sending || message.deliveryState == .accepted else { continue }
+                  messages.contains(where: { $0.id == messageId }),
+                  outboundDrafts[messageId] != nil else { continue }
             if pending?.sequence ?? Int.min < placement.sequence { pending = (messageId, placement.sequence) }
         }
         guard let messageId = pending?.messageId else { return }

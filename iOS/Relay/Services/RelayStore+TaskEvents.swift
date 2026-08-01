@@ -63,6 +63,9 @@ extension RelayStore {
             let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))
             markTurnActive(params["turn"]?["id"]?.stringValue, startedAt: metadata.startedAt)
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
+            if let selectedThreadId, let eventTurnId {
+                bindPendingUserPrompt(to: eventTurnId, threadId: selectedThreadId)
+            }
             flushPendingTextDeltas()
             flushPendingDetailDeltas()
             let turn = params["turn"] ?? .object([:])
@@ -74,6 +77,8 @@ extension RelayStore {
                     metadata.status = "interrupted"
                 } else if method == "turn/failed" {
                     metadata.status = "failed"
+                } else if metadata.status == nil {
+                    metadata.status = "completed"
                 }
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 terminalFailed = terminalFailed || metadata.isFailed
@@ -298,16 +303,42 @@ extension RelayStore {
                 turnMetadata[staleTurnId] = metadata
             }
             if let selectedThreadId {
+                let reconciledTurnId = runtime["activeTurnId"]?.stringValue
+                    ?? taskRunStates[selectedThreadId]?.turnId
                 applyTaskRunEvent(
                     threadId: selectedThreadId,
                     event: .terminal(
-                        turnId: runtime["activeTurnId"]?.stringValue,
+                        turnId: reconciledTurnId,
                         phase: runtimeError == nil ? .completed : .failed,
                         completedAt: Date()
                     )
                 )
+                scheduleCompletionReconciliation(threadId: selectedThreadId)
             }
         }
+    }
+
+    func applyRuntimeUpdate(threadId: String, runtime: JSONValue) {
+        guard runtime["known"]?.boolValue == true else { return }
+        guard selectedThreadId == threadId else {
+            let running = runtime["isRunning"]?.boolValue == true
+            let turnId = runtime["activeTurnId"]?.stringValue
+            if running, let turnId {
+                applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: nil))
+            } else if !running {
+                let reconciledTurnId = turnId ?? taskRunStates[threadId]?.turnId
+                applyTaskRunEvent(
+                    threadId: threadId,
+                    event: .terminal(
+                        turnId: reconciledTurnId,
+                        phase: runtime["upstreamError"]?.stringValue == nil ? .completed : .failed,
+                        completedAt: Date()
+                    )
+                )
+            }
+            return
+        }
+        reconcileRuntimeState(runtime)
     }
 
     func markSelectedThreadFailed(threadId: String, turnId: String?, message: String) {

@@ -36,7 +36,7 @@ final class DeliveryFailurePolicyTests: XCTestCase {
             DeliveryFailurePolicy.startedTurnDisposition(
                 status: "inProgress",
                 errorMessage: nil,
-                hasOutput: false
+                hasOutput: true
             ),
             .awaitingOutput
         )
@@ -47,6 +47,17 @@ final class DeliveryFailurePolicyTests: XCTestCase {
                 hasOutput: false
             ),
             .resolved
+        )
+    }
+
+    func testInterruptedTurnRemainsEditableEvenAfterPartialOutput() {
+        XCTAssertEqual(
+            DeliveryFailurePolicy.startedTurnDisposition(
+                status: "interrupted",
+                errorMessage: nil,
+                hasOutput: true
+            ),
+            .failed
         )
     }
 

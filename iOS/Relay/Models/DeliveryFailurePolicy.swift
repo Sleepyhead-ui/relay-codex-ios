@@ -25,18 +25,21 @@ enum DeliveryFailurePolicy {
         errorMessage: String?,
         hasOutput: Bool
     ) -> StartedTurnDisposition {
-        if hasOutput { return .resolved }
         let normalized = status?
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
         if errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            || normalized.map { ["failed", "error", "cancelled", "canceled"].contains($0) } == true {
+            || normalized.map { ["failed", "error", "cancelled", "canceled", "interrupted", "aborted"].contains($0) } == true {
             return .failed
         }
-        if normalized.map { ["completed", "complete", "succeeded", "success", "interrupted", "aborted"].contains($0) } == true {
+        if normalized.map { ["completed", "complete", "succeeded", "success"].contains($0) } == true {
             return .resolved
         }
+        // Keep the original prompt until the turn reaches a terminal state.
+        // It is needed to offer edit-and-resend after a manual interruption,
+        // even when commentary or tool output was already streamed.
+        if hasOutput { return .awaitingOutput }
         return .awaitingOutput
     }
 

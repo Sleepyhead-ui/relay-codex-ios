@@ -310,6 +310,9 @@ final class RelayStore: ObservableObject {
             self?.scheduleRestoration()
         }
         socket.onBridgeStatus = { [weak self] message in self?.handleBridgeStatus(message) }
+        socket.onRuntimeUpdated = { [weak self] threadId, runtime in
+            self?.applyRuntimeUpdate(threadId: threadId, runtime: runtime)
+        }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onSessionSnapshot = { [weak self] threadId, subscriptionId, snapshot in
             guard let self,
@@ -1014,20 +1017,27 @@ final class RelayStore: ObservableObject {
             markSelectedThreadStopped(threadId: threadId)
             return
         }
+        // Interrupt is an intent, not a long-running UI state. Clear the local
+        // spinner immediately; a later runtime/event reconciliation remains
+        // authoritative if the request races with natural completion.
+        markSelectedThreadStopped(threadId: threadId)
         do {
             _ = try await socket.rpc(method: "turn/interrupt", params: [
                 "threadId": .string(threadId),
                 "turnId": .string(turnId)
-            ])
-            markSelectedThreadStopped(threadId: threadId)
+            ], timeoutSeconds: 12, reconnectOnTimeout: false)
         } catch {
             // The turn may have ended between the runtime check and interrupt.
             // Reconcile once before showing an error or leaving a stale spinner.
-            if let runtime = try? await socket.rpc(method: "relay/thread/runtime", params: ["threadId": .string(threadId)]),
-               runtime["isRunning"]?.boolValue != true {
+            if let runtime = try? await socket.rpc(
+                method: "relay/thread/runtime",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 8,
+                reconnectOnTimeout: false
+            ) {
                 reconcileRuntimeState(runtime)
-                markSelectedThreadStopped(threadId: threadId)
-            } else {
+                if runtime["isRunning"]?.boolValue == true { report(error) }
+            } else if socket.state == .connected {
                 report(error)
             }
         }
@@ -1042,6 +1052,14 @@ final class RelayStore: ObservableObject {
             turnMetadata[turnId] = metadata
         }
         applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: stoppedTurnId, phase: .interrupted, completedAt: Date()))
+        if let stoppedTurnId {
+            reconcileStartedTurnDelivery(
+                turnId: stoppedTurnId,
+                status: "interrupted",
+                errorMessage: "任务已手动停止，可编辑提示词后重新发送。",
+                hasOutput: false
+            )
+        }
         setThreadStatus(threadId, status: "idle", touchUpdatedAt: false)
         cacheCurrentThread()
     }

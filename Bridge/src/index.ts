@@ -822,6 +822,16 @@ function handleCodexNotification(message: JsonObject): void {
     }
   }
   runtimeState.observeNotification(message);
+  const publishesRuntime = message.method === "turn/started"
+    || message.method === "error"
+    || ["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method));
+  if (publishesRuntime && isObject(message.params) && typeof message.params.threadId === "string") {
+    broadcast({
+      type: "runtimeUpdated",
+      threadId: message.params.threadId,
+      runtime: runtimeState.snapshot(message.params.threadId),
+    });
+  }
   broadcast({ type: "event", source: "appServer", ...message });
   if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
     clearTerminalApprovals(message.params);

@@ -38,6 +38,7 @@ final class RelaySocket: ObservableObject {
     let performanceMetrics = ClientPerformanceMetrics()
     var onConnected: (() -> Void)?
     var onBridgeStatus: ((JSONValue) -> Void)?
+    var onRuntimeUpdated: ((String, JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onSessionSnapshot: ((String, String?, JSONValue) -> Void)?
     var onSessionPatch: ((String, String?, JSONValue) -> Void)?
@@ -368,7 +369,12 @@ final class RelaySocket: ObservableObject {
         session = socketSession
         task = socketTask
         socketTask.resume()
-        receiveNext(generation: generation)
+        pumpMessages(
+            from: socketTask,
+            generation: generation,
+            decodingQueue: decodingQueue,
+            metrics: performanceMetrics
+        )
         startConnectionTimeout(generation: generation)
     }
 
@@ -379,48 +385,76 @@ final class RelaySocket: ObservableObject {
         try await task.send(.string(text))
     }
 
-    private func receiveNext(generation: UUID) {
-        guard let task, generation == connectionGeneration else { return }
-        task.receive { [weak self] result in
-            Task { @MainActor in
-                guard let self, generation == self.connectionGeneration else { return }
-                switch result {
-                case .success(let message):
-                    switch message {
-                    case .string(let text): self.decode(Data(text.utf8), generation: generation)
-                    case .data(let value): self.decode(value, generation: generation)
-                    @unknown default:
+    private nonisolated func pumpMessages(
+        from socketTask: URLSessionWebSocketTask,
+        generation: UUID,
+        decodingQueue: DispatchQueue,
+        metrics: ClientPerformanceMetrics
+    ) {
+        socketTask.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let message):
+                // Keep the network receive continuously armed. Decoding stays
+                // serial, while transcript application is free to use the main
+                // actor without holding terminal/control frames in URLSession.
+                self.pumpMessages(
+                    from: socketTask,
+                    generation: generation,
+                    decodingQueue: decodingQueue,
+                    metrics: metrics
+                )
+                let data: Data?
+                switch message {
+                case .string(let text): data = Data(text.utf8)
+                case .data(let value): data = value
+                @unknown default: data = nil
+                }
+                guard let data else {
+                    Task { @MainActor [weak self] in
+                        guard let self, generation == self.connectionGeneration else { return }
                         self.onNonfatalError?("Ignored one unsupported Bridge message.")
-                        self.receiveNext(generation: generation)
                     }
-                case .failure(let error):
+                    return
+                }
+                metrics.recordInboundMessage(bytes: data.count)
+                decodingQueue.async { [weak self, metrics] in
+                    let startedAt = ClientPerformanceClock.now()
+                    do {
+                        let message = try JSONDecoder().decode(JSONValue.self, from: data)
+                        metrics.recordDecode(milliseconds: ClientPerformanceClock.milliseconds(since: startedAt))
+                        let priority: TaskPriority? = Self.isUrgentInbound(message) ? .userInitiated : nil
+                        Task(priority: priority) { @MainActor [weak self] in
+                            guard let self,
+                                  generation == self.connectionGeneration,
+                                  self.task === socketTask else { return }
+                            self.handle(message, generation: generation)
+                        }
+                    } catch {
+                        metrics.recordDecodeFailure()
+                        Task { @MainActor [weak self] in
+                            guard let self, generation == self.connectionGeneration else { return }
+                            self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
+                        }
+                    }
+                }
+            case .failure(let error):
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          generation == self.connectionGeneration,
+                          self.task === socketTask else { return }
                     self.handleConnectionFailure(error, generation: generation)
                 }
             }
         }
     }
 
-    private func decode(_ data: Data, generation: UUID) {
-        performanceMetrics.recordInboundMessage(bytes: data.count)
-        let metrics = performanceMetrics
-        decodingQueue.async { [weak self, metrics] in
-            let startedAt = ClientPerformanceClock.now()
-            do {
-                let message = try JSONDecoder().decode(JSONValue.self, from: data)
-                metrics.recordDecode(milliseconds: ClientPerformanceClock.milliseconds(since: startedAt))
-                Task { @MainActor [weak self] in
-                    guard let self, generation == self.connectionGeneration else { return }
-                    self.handle(message, generation: generation)
-                    self.receiveNext(generation: generation)
-                }
-            } catch {
-                metrics.recordDecodeFailure()
-                Task { @MainActor [weak self] in
-                    guard let self, generation == self.connectionGeneration else { return }
-                    self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
-                    self.receiveNext(generation: generation)
-                }
-            }
+    private nonisolated static func isUrgentInbound(_ message: JSONValue) -> Bool {
+        switch message["type"]?.stringValue {
+        case "runtimeUpdated", "rpcResult", "rpcAccepted", "serverRequest", "serverRequestResolved":
+            return true
+        default:
+            return false
         }
     }
 
@@ -448,6 +482,10 @@ final class RelaySocket: ObservableObject {
                 }
             } else if status == "codexExited" {
                 onNonfatalError?("Codex App Server stopped on Windows. Relay will keep the connection and retry when it is available.")
+            }
+        case "runtimeUpdated":
+            if let threadId = message["threadId"]?.stringValue {
+                onRuntimeUpdated?(threadId, message["runtime"] ?? .object([:]))
             }
         case "rpcAccepted":
             guard let id = message["id"]?.stringValue else { return }

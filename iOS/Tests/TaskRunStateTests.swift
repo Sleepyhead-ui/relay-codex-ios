@@ -185,6 +185,26 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.external")
     }
 
+    func testAuthoritativeRuntimeTerminalUsesTrackedTurnWhenSnapshotOmitsTurnId() {
+        var states: [String: TaskRunState] = [:]
+        var core = TaskStateCore()
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .started(turnId: "turn.1", startedAt: nil),
+            to: &states
+        ))
+
+        let trackedTurnId = states["thread.1"]?.turnId
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .terminal(turnId: trackedTurnId, phase: .completed, completedAt: nil),
+            to: &states
+        ))
+        XCTAssertEqual(states["thread.1"]?.phase, .completed)
+        XCTAssertNil(states["thread.1"]?.turnId)
+        XCTAssertTrue(core.isCompleted("turn.1"))
+    }
+
     func testStartingNewTurnClearsPreviousPlan() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.started(turnId: "turn.1", startedAt: nil))
