@@ -207,6 +207,16 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(messages.map(\.id), ["msg_1"])
     }
 
+    func testSessionPatchKeepsExistingIdentityForEquivalentCodexPrompt() {
+        let result = TranscriptReconciler.mergeSessionPatchItems(
+            [item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")],
+            removedItemIds: [],
+            turnId: "turn.1",
+            into: [item(id: "item-1", turnId: "turn.1", role: .user, text: "继续")]
+        )
+        XCTAssertEqual(result.map(\.id), ["item-1"])
+    }
+
     func testDelayedOlderTurnEventIsInsertedBeforeCurrentTurn() {
         var messages = [
             item(id: "old.user", turnId: "turn.old", role: .user, text: "旧任务"),

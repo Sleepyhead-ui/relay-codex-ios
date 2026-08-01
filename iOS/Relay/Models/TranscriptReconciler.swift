@@ -46,7 +46,9 @@ enum TranscriptReconciler {
             messages[index] = merge(existing: messages[index], incoming: item)
         } else if item.role == .user,
                   let index = messages.firstIndex(where: { shouldMergeUserUpsert($0, item) }) {
-            messages[index] = merge(existing: messages[index], incoming: item)
+            var combined = merge(existing: messages[index], incoming: item)
+            combined.id = messages[index].id
+            messages[index] = combined
         } else {
             messages.insert(item, at: insertionAfterTurn(item.turnId, in: messages))
         }
@@ -166,7 +168,9 @@ enum TranscriptReconciler {
             }
             if item.role == .user,
                let index = result.firstIndex(where: { equivalentUserMessage($0, item) }) {
-                result[index] = merge(existing: result[index], incoming: item)
+                var combined = merge(existing: result[index], incoming: item)
+                combined.id = result[index].id
+                result[index] = combined
                 continue
             }
             let insertion = (result.lastIndex(where: { $0.turnId == turnId }).map { $0 + 1 }) ?? result.endIndex
