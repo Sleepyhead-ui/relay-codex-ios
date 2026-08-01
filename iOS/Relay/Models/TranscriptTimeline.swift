@@ -249,7 +249,10 @@ final class TranscriptTraceRecorder {
         messages: [TranscriptItem]
     ) {
         let visibleMessages = messages.suffix(itemLimit)
-        let signature = "\(revision)|\(messages.count)|" + visibleMessages.map {
+        // Revisions advance for every streamed text delta. The trace is meant to
+        // retain structural timeline changes, so text-only frames must share a
+        // signature with the preceding frame.
+        let signature = "\(messages.count)|" + visibleMessages.map {
             "\($0.id)|\($0.turnId ?? "-")|\(roleName($0.role))|\(kindName($0.kind))"
         }.joined(separator: "\n")
 #if DEBUG

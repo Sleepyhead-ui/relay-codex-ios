@@ -95,6 +95,9 @@ function hostClaimIsActive(owner) {
 
 function terminateLegacyServiceHosts() {
   if (process.platform !== "win32") return;
+  // Legacy hosts only exist beside an installed runtime. Running this WMI scan
+  // from a source checkout delays development and CI startup by several seconds.
+  if (!/[\\/]service-runtime[\\/]/i.test(__dirname)) return;
   const script = [
     `$current = ${process.pid}`,
     "Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | Where-Object { $_.ProcessId -ne $current -and $_.CommandLine -like '*relay-desktop*service-runtime*service-host.cjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
