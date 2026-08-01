@@ -7,7 +7,10 @@ struct TurnGroupView: View, Equatable {
     let onOpenActivity: (MobileActivityPresentation) -> Void
 
     static func == (lhs: TurnGroupView, rhs: TurnGroupView) -> Bool {
-        lhs.group == rhs.group && lhs.isLive == rhs.isLive
+        lhs.group.id == rhs.group.id
+            && lhs.group.revision == rhs.group.revision
+            && lhs.group.metadata == rhs.group.metadata
+            && lhs.isLive == rhs.isLive
     }
 
     var body: some View {

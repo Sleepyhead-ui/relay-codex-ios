@@ -240,7 +240,7 @@ export function applyUserMessagePlacements(
   let ordered = items;
   const matching = [...placements]
     .filter((placement) => placement.threadId === threadId && placement.turnId === turnId)
-    .sort((left, right) => left.sequence - right.sequence);
+    .sort((left, right) => right.sequence - left.sequence);
   for (const placement of matching) {
     const index = ordered.findIndex((item) => item.id === placement.messageId && item.kind === "user");
     if (index < 0) continue;

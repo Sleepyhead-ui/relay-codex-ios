@@ -120,7 +120,9 @@ struct MobileActivityFeed: Equatable {
 
     var toolRevision: String {
         guard let latest = toolItems.last else { return "tools.empty" }
-        return "\(toolItems.count).\(latest.id).\(latest.status ?? "").\(latest.detail?.count ?? 0)"
+        // The compact tool window does not render command output. Streaming
+        // output must not keep forcing this nested scroll view back to bottom.
+        return "\(toolItems.count).\(latest.id).\(latest.status ?? "").\(latest.title ?? "").\(latest.text)"
     }
 
     var eventCount: Int {

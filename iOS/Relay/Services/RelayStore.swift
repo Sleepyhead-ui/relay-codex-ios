@@ -206,6 +206,9 @@ final class RelayStore: ObservableObject {
     func transcriptWindow(limit: Int) -> TranscriptWindow {
         transcriptIndex.window(messages: messages, metadata: turnMetadata, limit: limit)
     }
+    func transcriptItems(turnId: String) -> [TranscriptItem] {
+        transcriptIndex.items(forTurnId: turnId, messages: messages)
+    }
 
     func collaborationModePayload() -> JSONValue? {
         guard composerMode != .goal,

@@ -285,7 +285,7 @@ enum TranscriptReconciler {
         var result = messages
         let ordered = placements
             .filter { $0.value.threadId == threadId && $0.value.turnId == turnId }
-            .sorted { $0.value.sequence < $1.value.sequence }
+            .sorted { $0.value.sequence > $1.value.sequence }
 
         for (messageId, placement) in ordered {
             guard let index = result.firstIndex(where: { $0.id == messageId && $0.role == .user }) else { continue }

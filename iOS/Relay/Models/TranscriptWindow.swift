@@ -18,11 +18,13 @@ struct TranscriptIndex {
         let id: String
         let turnId: String?
         var range: Range<Int>
+        var revision: Int
     }
 
     private var ranges: [GroupRange] = []
     private var itemIndexes: [String: Int] = [:]
     private var itemGroupIds: [String: String] = [:]
+    private var nextRevision = 0
     private(set) var fullRebuildCount = 0
     private(set) var incrementalUpdateCount = 0
 
@@ -47,6 +49,7 @@ struct TranscriptIndex {
                 let oldKey = Self.groupKey(messages[index])
                 TranscriptReconciler.applyDelta(update, to: &messages[index])
                 needsRebuild = needsRebuild || oldKey != Self.groupKey(messages[index])
+                if oldKey == Self.groupKey(messages[index]) { bumpRevision(groupId: oldKey) }
                 changed = true
             } else {
                 let item = TranscriptReconciler.item(for: update)
@@ -84,6 +87,9 @@ struct TranscriptIndex {
                   itemGroupIds[id] == Self.groupKey(nextMessages[index]) else { return false }
         }
 
+        let changedGroupIds = Set(changedItemIds.subtracting(appendedIds).compactMap { itemGroupIds[$0] })
+        for groupId in changedGroupIds { bumpRevision(groupId: groupId) }
+
         for (offset, item) in appendedItems.enumerated() {
             let index = previousCount + offset
             itemIndexes[item.id] = index
@@ -105,6 +111,7 @@ struct TranscriptIndex {
             TranscriptGroup(
                 id: descriptor.id,
                 turnId: descriptor.turnId,
+                revision: descriptor.revision,
                 items: Array(messages[descriptor.range]),
                 metadata: descriptor.turnId.flatMap { metadata[$0] } ?? TurnMetadata()
             )
@@ -112,13 +119,37 @@ struct TranscriptIndex {
         return TranscriptWindow(groups: groups, hasEarlierGroups: start > 0)
     }
 
+    func items(forTurnId turnId: String, messages: [TranscriptItem]) -> [TranscriptItem] {
+        guard let descriptor = ranges.last(where: { $0.turnId == turnId }) else { return [] }
+        return Array(messages[descriptor.range])
+    }
+
     private mutating func appendRange(for item: TranscriptItem, at index: Int) {
         let key = Self.groupKey(item)
         if let lastIndex = ranges.indices.last, ranges[lastIndex].id == key {
+            let revision = makeRevision()
             ranges[lastIndex].range = ranges[lastIndex].range.lowerBound..<(index + 1)
+            ranges[lastIndex].revision = revision
         } else {
-            ranges.append(GroupRange(id: key, turnId: item.turnId, range: index..<(index + 1)))
+            let revision = makeRevision()
+            ranges.append(GroupRange(
+                id: key,
+                turnId: item.turnId,
+                range: index..<(index + 1),
+                revision: revision
+            ))
         }
+    }
+
+    private mutating func bumpRevision(groupId: String) {
+        guard let index = ranges.firstIndex(where: { $0.id == groupId }) else { return }
+        let revision = makeRevision()
+        ranges[index].revision = revision
+    }
+
+    private mutating func makeRevision() -> Int {
+        nextRevision &+= 1
+        return nextRevision
     }
 
     private static func groupKey(_ item: TranscriptItem) -> String {

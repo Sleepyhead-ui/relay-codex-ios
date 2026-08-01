@@ -127,6 +127,25 @@ final class MobileActivityFeedTests: XCTestCase {
         XCTAssertNotEqual(feed.toolRevision, "tools.empty")
     }
 
+    func testToolRevisionIgnoresInvisibleStreamingDetail() {
+        let first = TranscriptItem(
+            id: "command.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "xcodebuild test",
+            detail: "first frame",
+            status: "inProgress"
+        )
+        var second = first
+        second.detail = "first frame\nsecond frame"
+
+        XCTAssertEqual(
+            MobileActivityFeed.make(items: [first]).toolRevision,
+            MobileActivityFeed.make(items: [second]).toolRevision
+        )
+    }
+
     private func progress(id: String, text: String) -> TranscriptItem {
         TranscriptItem(
             id: id,

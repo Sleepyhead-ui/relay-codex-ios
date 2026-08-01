@@ -7,6 +7,8 @@ struct ConversationView: View {
     @State private var isUserScrolling = false
     @State private var autoScrollScheduled = false
     @State private var visibleGroupLimit = 24
+    @State private var heldTranscriptWindow: TranscriptWindow?
+    @State private var heldLiveActivityPresentation: MobileActivityPresentation?
     @State private var activityPresentation: MobileActivityPresentation?
     @State private var keyboardTransitionID: UUID?
 
@@ -20,7 +22,7 @@ struct ConversationView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
-                if let presentation = liveActivityPresentation {
+                if let presentation = heldLiveActivityPresentation ?? liveActivityPresentation {
                     MobileLiveActivityConsole(
                         presentation: presentation,
                         compact: store.composerIsFocused
@@ -49,7 +51,7 @@ struct ConversationView: View {
         guard store.isRunning, let threadId = store.selectedThreadId else { return nil }
         let turnId = store.activeTurnId
         let items = turnId.map { activeTurnId in
-            store.messages.filter { $0.turnId == activeTurnId && $0.isActivity }
+            store.transcriptItems(turnId: activeTurnId).filter(\.isActivity)
         } ?? []
         var metadata = turnId.flatMap { store.turnMetadata[$0] } ?? TurnMetadata()
         if metadata.startedAt == nil {
@@ -155,7 +157,7 @@ struct ConversationView: View {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
-                let window = store.transcriptWindow(limit: visibleGroupLimit)
+                let window = heldTranscriptWindow ?? store.transcriptWindow(limit: visibleGroupLimit)
                 ZStack(alignment: .bottom) {
                     ScrollView {
                         LazyVStack(spacing: 30) {
@@ -199,7 +201,11 @@ struct ConversationView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomAnchor)
-                                .onAppear { isAtBottom = true }
+                                .onAppear {
+                                    guard !isUserScrolling else { return }
+                                    isAtBottom = true
+                                    heldTranscriptWindow = nil
+                                }
                                 .onDisappear {
                                     if keyboardTransitionID == nil { isAtBottom = false }
                                 }
@@ -214,11 +220,16 @@ struct ConversationView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 4)
                             .onChanged { _ in
-                                if !isUserScrolling { isUserScrolling = true }
+                                guard !isUserScrolling else { return }
+                                heldTranscriptWindow = window
+                                heldLiveActivityPresentation = liveActivityPresentation
+                                isUserScrolling = true
                             }
                             .onEnded { _ in
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                                     isUserScrolling = false
+                                    heldLiveActivityPresentation = nil
+                                    if isAtBottom { heldTranscriptWindow = nil }
                                 }
                             }
                     )
@@ -226,8 +237,12 @@ struct ConversationView: View {
 
                     if !isAtBottom {
                         Button {
+                            heldTranscriptWindow = nil
+                            heldLiveActivityPresentation = nil
                             isAtBottom = true
-                            scrollToBottom(proxy, animated: true)
+                            DispatchQueue.main.async {
+                                scrollToBottom(proxy, animated: true)
+                            }
                         } label: {
                             Image(systemName: "arrow.down")
                                 .font(.system(size: 14, weight: .semibold))
@@ -246,6 +261,8 @@ struct ConversationView: View {
                 .onAppear { scrollToBottom(proxy, animated: false) }
                 .onChange(of: store.selectedThreadId) { _ in
                     isAtBottom = true
+                    heldTranscriptWindow = nil
+                    heldLiveActivityPresentation = nil
                     visibleGroupLimit = 24
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         scrollToBottom(proxy, animated: false)
@@ -253,6 +270,8 @@ struct ConversationView: View {
                 }
                 .onChange(of: store.isLoadingThread) { loading in
                     guard !loading else { return }
+                    heldTranscriptWindow = nil
+                    heldLiveActivityPresentation = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         scrollToBottom(proxy, animated: false)
                     }

@@ -218,6 +218,22 @@ describe("desktop transcript", () => {
     expect(placed.map((item) => item.id)).toEqual(["user.1", "progress.1", "user.2", "progress.2"]);
   });
 
+  it("keeps follow-up send order when placements share a stale anchor", () => {
+    const messages = [
+      { id: "user.3", turnId: "turn.1", kind: "user" as const, text: "second follow-up" },
+      { id: "progress.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "working" },
+      { id: "user.1", turnId: "turn.1", kind: "user" as const, text: "start" },
+      { id: "user.2", turnId: "turn.1", kind: "user" as const, text: "first follow-up" },
+    ];
+    const placed = applyUserMessagePlacements(messages, [
+      { messageId: "user.1", threadId: "thread.1", turnId: "turn.1", sequence: 1 },
+      { messageId: "user.2", threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 2 },
+      { messageId: "user.3", threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 3 },
+    ], "thread.1", "turn.1");
+
+    expect(placed.map((item) => item.id)).toEqual(["user.1", "progress.1", "user.2", "user.3"]);
+  });
+
   it("extracts only the objective from internal goal context", () => {
     const parsed = extractGoalContext(`before\n<codex_internal_context source="goal">\n<objective>完成第一、第二阶段</objective>\n<status>active</status>\nInternal continuation instructions\n</codex_internal_context>\nafter`);
     expect(parsed.text).toBe("before\n\nafter");

@@ -961,6 +961,7 @@ struct TranscriptItem: Identifiable, Equatable {
 struct TranscriptGroup: Identifiable, Equatable {
     let id: String
     let turnId: String?
+    let revision: Int
     var items: [TranscriptItem]
     var metadata: TurnMetadata
 

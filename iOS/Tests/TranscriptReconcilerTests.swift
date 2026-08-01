@@ -327,6 +327,27 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertTrue(result.filter { $0.role == .user }.allSatisfy { $0.turnId == "turn.1" })
     }
 
+    func testPlacementsKeepSendOrderWhenFollowUpsShareAStaleAnchor() {
+        let initial = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "开始")
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "检查中", phase: "commentary")
+        let firstFollowUp = item(id: "prompt.2", turnId: "turn.1", role: .user, text: "第一条引导")
+        let secondFollowUp = item(id: "prompt.3", turnId: "turn.1", role: .user, text: "第二条引导")
+        let placements = [
+            "prompt.1": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: nil, sequence: 1),
+            "prompt.2": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 2),
+            "prompt.3": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 3),
+        ]
+
+        let result = TranscriptReconciler.applyUserMessagePlacements(
+            placements,
+            turnId: "turn.1",
+            threadId: "thread.1",
+            to: [secondFollowUp, progress, initial, firstFollowUp]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["prompt.1", "progress.1", "prompt.2", "prompt.3"])
+    }
+
     func testUpsertDoesNotDuplicateUserMessageFromHistory() {
         var messages = [item(id: "client.1", turnId: nil, role: .user, text: "执行测试")]
         TranscriptReconciler.upsert(item(id: "client.1", turnId: "turn.1", role: .user, text: "执行测试"), into: &messages)

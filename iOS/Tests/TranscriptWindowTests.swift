@@ -57,6 +57,45 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertTrue(window.groups.last?.items.first?.text.hasSuffix(String(repeating: ".", count: 100)) == true)
     }
 
+    func testStreamingOnlyChangesTheAffectedGroupRevision() throws {
+        var messages = [
+            TranscriptItem(id: "old", turnId: "turn.old", role: .assistant, kind: .message, text: "old"),
+            TranscriptItem(id: "live", turnId: "turn.live", role: .assistant, kind: .message, text: "live"),
+        ]
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+        let before = index.window(messages: messages, metadata: [:], limit: 10)
+
+        XCTAssertTrue(index.applyDeltaBatch([
+            TranscriptDeltaUpdate(
+                id: "live",
+                turnId: "turn.live",
+                role: .assistant,
+                kind: .message,
+                title: nil,
+                text: ".",
+                detail: ""
+            )
+        ], to: &messages))
+
+        let after = index.window(messages: messages, metadata: [:], limit: 10)
+        XCTAssertEqual(try XCTUnwrap(before.groups.first).revision, try XCTUnwrap(after.groups.first).revision)
+        XCTAssertNotEqual(try XCTUnwrap(before.groups.last).revision, try XCTUnwrap(after.groups.last).revision)
+    }
+
+    func testReturnsOnlyItemsForTheRequestedTurn() {
+        let messages = [
+            TranscriptItem(id: "old", turnId: "turn.old", role: .assistant, kind: .message, text: "old"),
+            TranscriptItem(id: "live.progress", turnId: "turn.live", role: .assistant, kind: .message, text: "working", phase: "commentary"),
+            TranscriptItem(id: "live.command", turnId: "turn.live", role: .tool, kind: .command, text: "npm test"),
+        ]
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+
+        XCTAssertEqual(index.items(forTurnId: "turn.live", messages: messages).map(\.id), ["live.progress", "live.command"])
+        XCTAssertTrue(index.items(forTurnId: "missing", messages: messages).isEmpty)
+    }
+
     func testAdoptsOneHundredSessionPatchesWithoutRebuildingGroups() {
         var messages = (0..<1_000).map { index in
             TranscriptItem(id: "message.\(index)", turnId: "turn.\(index)", role: .assistant, kind: .message, text: "\(index)")
