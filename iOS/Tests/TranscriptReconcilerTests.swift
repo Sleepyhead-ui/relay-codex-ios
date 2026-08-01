@@ -137,6 +137,89 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(result.first?.text, "正在检查 项目")
     }
 
+    func testSnapshotMatchesCodexUserMessageAcrossHistoryAndRolloutIds() {
+        let historyPrompt = item(id: "item-5432", turnId: "turn.1", role: .user, text: "继续")
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "处理中", phase: "commentary")
+        let answer = item(id: "answer.1", turnId: "turn.1", role: .assistant, text: "完成")
+        let rolloutPrompt = TranscriptItem(
+            id: "msg_019fbbb4-b230-7052-bdc3-0adcb08086d1",
+            turnId: "turn.1",
+            role: .user,
+            kind: .message,
+            text: "继续",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let result = TranscriptReconciler.mergeSessionItems(
+            [rolloutPrompt, progress, answer],
+            turnId: "turn.1",
+            into: [progress, answer, historyPrompt]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["item-5432", "progress.1", "answer.1"])
+        XCTAssertEqual(result.filter { $0.role == .user }.count, 1)
+    }
+
+    func testHistoryMovesMatchedInitialPromptAheadOfExistingTurnOutput() {
+        let rolloutPrompt = item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "处理中", phase: "commentary")
+        let answer = item(id: "answer.1", turnId: "turn.1", role: .assistant, text: "完成")
+        let historyPrompt = item(id: "item-1", turnId: "turn.1", role: .user, text: "继续")
+
+        let result = TranscriptReconciler.mergeHistoryItems(
+            [historyPrompt, answer],
+            into: [progress, answer, rolloutPrompt]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["msg_1", "progress.1", "answer.1"])
+    }
+
+    func testSnapshotPreservesTwoGenuineIdenticalPromptsByOccurrence() {
+        let firstHistory = item(id: "item-1", turnId: "turn.1", role: .user, text: "继续")
+        let secondHistory = item(id: "item-2", turnId: "turn.1", role: .user, text: "继续")
+        let firstRollout = item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")
+        let secondRollout = item(id: "msg_2", turnId: "turn.1", role: .user, text: "继续")
+
+        let result = TranscriptReconciler.mergeSessionItems(
+            [firstRollout, secondRollout],
+            turnId: "turn.1",
+            into: [firstHistory, secondHistory]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["item-1", "item-2"])
+    }
+
+    func testUpsertPreservesRepeatedSameSourcePromptInOneTurn() {
+        var messages = [item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")]
+        TranscriptReconciler.upsert(
+            item(id: "msg_2", turnId: "turn.1", role: .user, text: "继续"),
+            into: &messages
+        )
+        XCTAssertEqual(messages.map(\.id), ["msg_1", "msg_2"])
+    }
+
+    func testUpsertMergesOneCodexPromptReportedByHistoryAndRollout() {
+        var messages = [item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")]
+        TranscriptReconciler.upsert(
+            item(id: "item-1", turnId: "turn.1", role: .user, text: "继续"),
+            into: &messages
+        )
+        XCTAssertEqual(messages.map(\.id), ["msg_1"])
+    }
+
+    func testDelayedOlderTurnEventIsInsertedBeforeCurrentTurn() {
+        var messages = [
+            item(id: "old.user", turnId: "turn.old", role: .user, text: "旧任务"),
+            item(id: "live.user", turnId: "turn.live", role: .user, text: "当前任务"),
+            item(id: "live.progress", turnId: "turn.live", role: .assistant, text: "处理中", phase: "commentary"),
+        ]
+        TranscriptReconciler.upsert(
+            TranscriptItem(id: "old.command", turnId: "turn.old", role: .tool, kind: .command, text: "npm test"),
+            into: &messages
+        )
+        XCTAssertEqual(messages.map(\.id), ["old.user", "old.command", "live.user", "live.progress"])
+    }
+
     func testAgentMessageSeparatesThinkingMarkupFromVisibleProgress() throws {
         let content = AgentMessageContent.parse(
             "<thinking>**Planning**\n**Checking layout**</thinking>\n正在检查对话布局。"

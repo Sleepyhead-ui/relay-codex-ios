@@ -124,4 +124,28 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(index.fullRebuildCount, 1)
         XCTAssertEqual(index.incrementalUpdateCount, 2)
     }
+
+    func testDelayedDeltaIsInsertedIntoItsTurnAndRebuildsTheIndex() {
+        var messages = [
+            TranscriptItem(id: "old.user", turnId: "turn.old", role: .user, kind: .message, text: "old"),
+            TranscriptItem(id: "live.user", turnId: "turn.live", role: .user, kind: .message, text: "live"),
+            TranscriptItem(id: "live.progress", turnId: "turn.live", role: .assistant, kind: .message, text: "working", phase: "commentary"),
+        ]
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+        let delta = TranscriptDeltaUpdate(
+            id: "old.command",
+            turnId: "turn.old",
+            role: .tool,
+            kind: .command,
+            title: "Run command",
+            text: "npm test",
+            detail: "passed"
+        )
+
+        XCTAssertTrue(index.applyDeltaBatch([delta], to: &messages))
+        XCTAssertEqual(messages.map(\.id), ["old.user", "old.command", "live.user", "live.progress"])
+        XCTAssertEqual(index.fullRebuildCount, 2)
+        XCTAssertEqual(index.window(messages: messages, metadata: [:], limit: 10).groups.map(\.turnId), ["turn.old", "turn.live"])
+    }
 }

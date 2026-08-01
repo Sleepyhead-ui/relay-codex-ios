@@ -78,13 +78,11 @@ extension RelayStore {
                 if metadata.durationMs == nil, metadata.completedAt == nil { metadata.completedAt = Date() }
                 terminalFailed = terminalFailed || metadata.isFailed
                 turnMetadata[turnId] = metadata
-                for itemJSON in turn["items"]?.arrayValue ?? [] {
-                    if let item = TranscriptItem.from(json: itemJSON, turnId: turnId) { upsert(item) }
-                }
-                let hasOutput = (turn["items"]?.arrayValue ?? []).contains { itemJSON in
-                    guard let item = TranscriptItem.from(json: itemJSON, turnId: turnId) else { return false }
-                    return item.role != .user
-                }
+                let completedItems = turn["items"]?.arrayValue?.compactMap {
+                    TranscriptItem.from(json: $0, turnId: turnId)
+                } ?? []
+                if !completedItems.isEmpty { mergeSessionItems(completedItems, turnId: turnId) }
+                let hasOutput = completedItems.contains { $0.role != .user }
                 reconcileStartedTurnDelivery(
                     turnId: turnId,
                     status: metadata.status,

@@ -50,11 +50,15 @@ struct TranscriptIndex {
                 changed = true
             } else {
                 let item = TranscriptReconciler.item(for: update)
-                let index = messages.count
-                messages.append(item)
-                itemIndexes[item.id] = index
-                itemGroupIds[item.id] = Self.groupKey(item)
-                appendRange(for: item, at: index)
+                let insertion = TranscriptReconciler.insertionAfterTurn(item.turnId, in: messages)
+                messages.insert(item, at: insertion)
+                if insertion == messages.count - 1 {
+                    itemIndexes[item.id] = insertion
+                    itemGroupIds[item.id] = Self.groupKey(item)
+                    appendRange(for: item, at: insertion)
+                } else {
+                    rebuild(messages: messages)
+                }
                 changed = true
             }
         }

@@ -259,7 +259,7 @@ extension RelayStore {
         applyUserMessagePlacements(turnId: turnId, threadId: threadId)
     }
 
-    private func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
+    func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
         flushPendingTextDeltas()
         flushPendingDetailDeltas()
         messages = TranscriptReconciler.mergeSessionItems(snapshotItems, turnId: turnId, into: messages)

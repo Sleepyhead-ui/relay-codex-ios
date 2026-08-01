@@ -44,10 +44,11 @@ enum TranscriptReconciler {
             messages[index] = merge(existing: messages[index], incoming: item)
         } else if let index = messages.firstIndex(where: { semanticallyMatches($0, item) }) {
             messages[index] = merge(existing: messages[index], incoming: item)
-        } else if item.role != .user || !messages.contains(where: {
-            $0.role == .user && $0.text == item.text && $0.imagePaths == item.imagePaths && $0.goal == item.goal
-        }) {
-            messages.append(item)
+        } else if item.role == .user,
+                  let index = messages.firstIndex(where: { shouldMergeUserUpsert($0, item) }) {
+            messages[index] = merge(existing: messages[index], incoming: item)
+        } else {
+            messages.insert(item, at: insertionAfterTurn(item.turnId, in: messages))
         }
     }
 
@@ -60,8 +61,11 @@ enum TranscriptReconciler {
             if let index = indexes[update.id] {
                 applyDelta(update, to: &result[index])
             } else {
-                indexes[update.id] = result.count
-                result.append(item(for: update))
+                let item = item(for: update)
+                let insertion = insertionAfterTurn(item.turnId, in: result)
+                result.insert(item, at: insertion)
+                indexes.removeAll(keepingCapacity: true)
+                for (index, item) in result.enumerated() where indexes[item.id] == nil { indexes[item.id] = index }
             }
         }
         return result
@@ -109,7 +113,8 @@ enum TranscriptReconciler {
         var merged: [TranscriptItem] = []
         for item in snapshotItems {
             if let index = existing.firstIndex(where: {
-                !consumedExistingIds.contains($0.id) && ($0.id == item.id || semanticallyMatches($0, item))
+                !consumedExistingIds.contains($0.id)
+                    && ($0.id == item.id || semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }) {
                 consumedExistingIds.insert(existing[index].id)
                 var combined = merge(existing: existing[index], incoming: item)
@@ -120,6 +125,9 @@ enum TranscriptReconciler {
             }
         }
         for item in existing where !consumedExistingIds.contains(item.id) {
+            if item.role == .user && snapshotItems.contains(where: { equivalentUserMessage($0, item) }) {
+                continue
+            }
             if let index = merged.firstIndex(where: { semanticallyMatches($0, item) }) {
                 merged[index] = merge(existing: merged[index], incoming: item)
             } else {
@@ -156,6 +164,11 @@ enum TranscriptReconciler {
                 result[index] = merge(existing: result[index], incoming: item)
                 continue
             }
+            if item.role == .user,
+               let index = result.firstIndex(where: { equivalentUserMessage($0, item) }) {
+                result[index] = merge(existing: result[index], incoming: item)
+                continue
+            }
             let insertion = (result.lastIndex(where: { $0.turnId == turnId }).map { $0 + 1 }) ?? result.endIndex
             result.insert(item, at: insertion)
             indexes.removeAll(keepingCapacity: true)
@@ -183,7 +196,8 @@ enum TranscriptReconciler {
         var consumedIds = Set<String>()
         for item in historyItems {
             if let index = result.firstIndex(where: {
-                !consumedIds.contains($0.id) && ($0.id == item.id || semanticallyMatches($0, item))
+                !consumedIds.contains($0.id)
+                    && ($0.id == item.id || semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }) {
                 consumedIds.insert(result[index].id)
                 var combined = merge(existing: result[index], incoming: item)
@@ -196,7 +210,28 @@ enum TranscriptReconciler {
                 result.append(item)
             }
         }
-        return reorderKnownHistoryTurns(result, historyItems: historyItems)
+        let ordered = reorderKnownHistoryTurns(result, historyItems: historyItems)
+        return moveInitialHistoryPromptsToTurnStart(ordered, historyItems: historyItems)
+    }
+
+    private static func moveInitialHistoryPromptsToTurnStart(
+        _ messages: [TranscriptItem],
+        historyItems: [TranscriptItem]
+    ) -> [TranscriptItem] {
+        var result = messages
+        var handledTurnIds = Set<String>()
+        for historyItem in historyItems {
+            guard historyItem.role == .user,
+                  let turnId = historyItem.turnId,
+                  handledTurnIds.insert(turnId).inserted,
+                  let currentIndex = result.firstIndex(where: { equivalentUserMessage($0, historyItem) }),
+                  let firstTurnIndex = result.firstIndex(where: { $0.turnId == turnId }),
+                  currentIndex != firstTurnIndex else { continue }
+            let prompt = result.remove(at: currentIndex)
+            let insertion = result.firstIndex(where: { $0.turnId == turnId }) ?? result.endIndex
+            result.insert(prompt, at: insertion)
+        }
+        return result
     }
 
     private static func reorderKnownHistoryTurns(
@@ -343,6 +378,34 @@ enum TranscriptReconciler {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func insertionAfterTurn(_ turnId: String?, in messages: [TranscriptItem]) -> Int {
+        guard let turnId,
+              let lastIndex = messages.lastIndex(where: { $0.turnId == turnId }) else {
+            return messages.endIndex
+        }
+        return lastIndex + 1
+    }
+
+    private static func equivalentUserMessage(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
+        guard lhs.role == .user, rhs.role == .user,
+              lhs.turnId == rhs.turnId || lhs.turnId == nil || rhs.turnId == nil else { return false }
+        return normalizedText(lhs.text) == normalizedText(rhs.text)
+            && lhs.imagePaths == rhs.imagePaths
+            && lhs.goal == rhs.goal
+    }
+
+    private static func shouldMergeUserUpsert(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
+        guard equivalentUserMessage(lhs, rhs) else { return false }
+        if lhs.turnId == nil || rhs.turnId == nil { return true }
+        if let left = lhs.createdAt, let right = rhs.createdAt,
+           abs(left.timeIntervalSince(right)) <= 2 { return true }
+        let lhsIsHistory = lhs.id.hasPrefix("item-")
+        let rhsIsHistory = rhs.id.hasPrefix("item-")
+        let lhsIsRollout = lhs.id.hasPrefix("msg_")
+        let rhsIsRollout = rhs.id.hasPrefix("msg_")
+        return (lhsIsHistory && rhsIsRollout) || (lhsIsRollout && rhsIsHistory)
     }
 
     private static func isInternalEnvironmentContext(_ item: TranscriptItem) -> Bool {
