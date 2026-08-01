@@ -12,7 +12,7 @@ final class DeliveryFailurePolicyTests: XCTestCase {
         XCTAssertFalse(DeliveryFailurePolicy.isRelayClientMessageId("msg_019fb951-a35c-74b3-8ba6-511328bad4e4"))
     }
 
-    func testStartedTurnFailureIsEditableOnlyBeforeAnyOutput() {
+    func testStartedTurnFailureRemainsEditableAfterPartialOutput() {
         XCTAssertEqual(
             DeliveryFailurePolicy.startedTurnDisposition(
                 status: "failed",
@@ -27,7 +27,7 @@ final class DeliveryFailurePolicyTests: XCTestCase {
                 errorMessage: "503 Service Unavailable",
                 hasOutput: true
             ),
-            .resolved
+            .failed
         )
     }
 
