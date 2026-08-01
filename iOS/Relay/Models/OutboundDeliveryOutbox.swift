@@ -68,9 +68,11 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
     let createdAt: Date
     var automaticallyRecoverable: Bool
     var confirmedTurnId: String?
+    var confirmedUnprocessedFailure: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case id, hostId, profileId, draft, sequence, createdAt, automaticallyRecoverable, confirmedTurnId
+        case confirmedUnprocessedFailure
     }
 
     init(
@@ -81,7 +83,8 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         sequence: Int,
         createdAt: Date,
         automaticallyRecoverable: Bool = true,
-        confirmedTurnId: String? = nil
+        confirmedTurnId: String? = nil,
+        confirmedUnprocessedFailure: Bool? = nil
     ) {
         self.id = id
         self.hostId = hostId
@@ -91,6 +94,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         self.createdAt = createdAt
         self.automaticallyRecoverable = automaticallyRecoverable
         self.confirmedTurnId = confirmedTurnId
+        self.confirmedUnprocessedFailure = confirmedUnprocessedFailure
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +107,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         automaticallyRecoverable = try values.decodeIfPresent(Bool.self, forKey: .automaticallyRecoverable) ?? true
         confirmedTurnId = try values.decodeIfPresent(String.self, forKey: .confirmedTurnId)
+        confirmedUnprocessedFailure = try values.decodeIfPresent(Bool.self, forKey: .confirmedUnprocessedFailure)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -115,6 +120,7 @@ struct OutboundDeliveryEnvelope: Codable, Identifiable {
         try values.encode(createdAt, forKey: .createdAt)
         try values.encode(automaticallyRecoverable, forKey: .automaticallyRecoverable)
         try values.encodeIfPresent(confirmedTurnId, forKey: .confirmedTurnId)
+        try values.encodeIfPresent(confirmedUnprocessedFailure, forKey: .confirmedUnprocessedFailure)
     }
 }
 
@@ -160,6 +166,16 @@ enum OutboundDeliveryOutbox {
         return Dictionary(uniqueKeysWithValues: retained.map { ($0.id, $0) })
     }
 
+    static func removingAmbiguousLegacyFailures(
+        _ records: [String: OutboundDeliveryEnvelope]
+    ) -> [String: OutboundDeliveryEnvelope] {
+        records.filter { _, record in
+            record.automaticallyRecoverable
+                || record.confirmedTurnId != nil
+                || record.confirmedUnprocessedFailure != nil
+        }
+    }
+
     static func mergeUnresolved(
         _ unresolved: [UnresolvedOutboundMessage],
         into history: [TranscriptItem],
@@ -183,10 +199,10 @@ enum OutboundDeliveryOutbox {
                 if let candidateSequence = placementSequences[candidate.id], candidateSequence > message.sequence {
                     return true
                 }
-                guard let createdAt = message.createdAt,
-                      let turnId = candidate.turnId,
-                      let startedAt = metadata[turnId]?.startedAt else { return false }
-                return startedAt >= createdAt
+                guard let createdAt = message.createdAt else { return false }
+                let candidateDate = candidate.turnId.flatMap { metadata[$0]?.startedAt }
+                    ?? candidate.createdAt
+                return candidateDate.map { $0 >= createdAt } ?? false
             } ?? result.endIndex
             result.insert(message.item, at: insertion)
         }

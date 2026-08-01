@@ -67,6 +67,7 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
         let decoded = try JSONDecoder().decode(OutboundDeliveryEnvelope.self, from: legacyData)
         XCTAssertTrue(decoded.automaticallyRecoverable)
         XCTAssertNil(decoded.confirmedTurnId)
+        XCTAssertNil(decoded.confirmedUnprocessedFailure)
     }
 
     func testEnvelopeRoundTripPreservesConfirmedTurnObservation() throws {
@@ -78,7 +79,8 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
             sequence: 1,
             createdAt: Date(),
             automaticallyRecoverable: false,
-            confirmedTurnId: "turn-1"
+            confirmedTurnId: "turn-1",
+            confirmedUnprocessedFailure: true
         )
 
         let decoded = try JSONDecoder().decode(
@@ -88,6 +90,44 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
 
         XCTAssertEqual(decoded.confirmedTurnId, "turn-1")
         XCTAssertFalse(decoded.automaticallyRecoverable)
+        XCTAssertEqual(decoded.confirmedUnprocessedFailure, true)
+    }
+
+    func testLegacyMigrationDropsOnlyAmbiguousExplicitFailures() {
+        let now = Date()
+        let legacyFailure = envelope(
+            id: "legacy-failure",
+            hostId: "host",
+            profileId: "profile",
+            sequence: 1,
+            createdAt: now,
+            automaticallyRecoverable: false
+        )
+        let pending = envelope(
+            id: "pending",
+            hostId: "host",
+            profileId: "profile",
+            sequence: 2,
+            createdAt: now
+        )
+        let confirmedFailure = OutboundDeliveryEnvelope(
+            id: "confirmed-failure",
+            hostId: "host",
+            profileId: "profile",
+            draft: OutboundDraft(threadId: "thread", text: "failed", attachments: []),
+            sequence: 3,
+            createdAt: now,
+            automaticallyRecoverable: false,
+            confirmedUnprocessedFailure: true
+        )
+
+        let migrated = OutboundDeliveryOutbox.removingAmbiguousLegacyFailures([
+            legacyFailure.id: legacyFailure,
+            pending.id: pending,
+            confirmedFailure.id: confirmedFailure,
+        ])
+
+        XCTAssertEqual(Set(migrated.keys), ["pending", "confirmed-failure"])
     }
 
     func testDraftRoundTripPreservesCollaborationMode() throws {
@@ -146,6 +186,32 @@ final class OutboundDeliveryOutboxTests: XCTestCase {
         )
 
         XCTAssertEqual(merged.map(\.id), ["first", "second", "answer"])
+    }
+
+    func testMergeUnresolvedFallsBackToMessageTimestampWhenTurnTimeIsMissing() {
+        let failedAt = Date(timeIntervalSince1970: 100)
+        let newerPrompt = TranscriptItem(
+            id: "newer-prompt",
+            turnId: "later",
+            role: .user,
+            kind: .message,
+            text: "newer",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        let unresolved = UnresolvedOutboundMessage(
+            item: item(id: "failed", text: "failed"),
+            sequence: 1,
+            createdAt: failedAt
+        )
+
+        let merged = OutboundDeliveryOutbox.mergeUnresolved(
+            [unresolved],
+            into: [newerPrompt],
+            metadata: [:],
+            placementSequences: [:]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["failed", "newer-prompt"])
     }
 
     func testMergeUnresolvedReusesExistingBubbleInsteadOfDuplicatingIt() {

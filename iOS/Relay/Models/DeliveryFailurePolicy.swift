@@ -25,6 +25,9 @@ enum DeliveryFailurePolicy {
         errorMessage: String?,
         hasOutput: Bool
     ) -> StartedTurnDisposition {
+        // Any assistant/tool output proves the prompt reached Codex and was
+        // processed. A later interruption is not a failed turn start.
+        if hasOutput { return .resolved }
         let normalized = status?
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
@@ -36,10 +39,6 @@ enum DeliveryFailurePolicy {
         if normalized.map { ["completed", "complete", "succeeded", "success"].contains($0) } == true {
             return .resolved
         }
-        // Keep the original prompt until the turn reaches a terminal state.
-        // It is needed to offer edit-and-resend after a manual interruption,
-        // even when commentary or tool output was already streamed.
-        if hasOutput { return .awaitingOutput }
         return .awaitingOutput
     }
 

@@ -302,9 +302,16 @@ final class RelayStore: ObservableObject {
         }
         if let data = UserDefaults.standard.data(forKey: outboundDeliveryOutboxDefaultsKey),
            let records = try? JSONDecoder().decode([OutboundDeliveryEnvelope].self, from: data) {
-            persistedOutboundDeliveries = OutboundDeliveryOutbox.pruned(
+            let restored = OutboundDeliveryOutbox.pruned(
                 records.reduce(into: [:]) { $0[$1.id] = $1 }
             )
+            persistedOutboundDeliveries = OutboundDeliveryOutbox.removingAmbiguousLegacyFailures(restored)
+            if persistedOutboundDeliveries.count != restored.count,
+               let migrated = try? JSONEncoder().encode(
+                   persistedOutboundDeliveries.values.sorted { $0.createdAt < $1.createdAt }
+               ) {
+                UserDefaults.standard.set(migrated, forKey: outboundDeliveryOutboxDefaultsKey)
+            }
         }
 
         socket.onConnected = { [weak self] in
@@ -665,6 +672,7 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
+            bindOutboundDeliveriesToObservedHistory(threadId: id, history: loadedMessages)
             let startedDeliveries = persistedOutboundDeliveries.values.filter {
                 $0.draft.threadId == id && $0.confirmedTurnId != nil
             }
@@ -708,7 +716,11 @@ final class RelayStore: ObservableObject {
                 guard !unresolvedIds.contains(item.id),
                       let placement = userMessagePlacements[item.id],
                       placement.threadId == id else { return nil }
-                return UnresolvedOutboundMessage(item: item, sequence: placement.sequence, createdAt: nil)
+                return UnresolvedOutboundMessage(
+                    item: item,
+                    sequence: placement.sequence,
+                    createdAt: item.createdAt
+                )
             }
             let loadedIds = Set(loadedMessages.map(\.id))
             let placementSequences = userMessagePlacements.reduce(into: [String: Int]()) {
@@ -821,8 +833,23 @@ final class RelayStore: ObservableObject {
                     TranscriptItem.from(json: $0, turnId: turnId)
                 } ?? [])
             }
-            let existingIds = Set(messages.map(\.id))
-            messages = olderMessages.filter { !existingIds.contains($0.id) } + messages
+            bindOutboundDeliveriesToObservedHistory(threadId: threadId, history: olderMessages)
+            let observedTurnIds = Set(olderMessages.compactMap(\.turnId))
+            let startedDeliveries = persistedOutboundDeliveries.values.filter {
+                $0.draft.threadId == threadId
+                    && $0.confirmedTurnId.map { observedTurnIds.contains($0) } == true
+            }
+            for envelope in startedDeliveries {
+                guard let turnId = envelope.confirmedTurnId else { continue }
+                reconcileStartedTurnDelivery(
+                    turnId: turnId,
+                    status: turnMetadata[turnId]?.status,
+                    errorMessage: turnMetadata[turnId]?.errorMessage,
+                    hasOutput: olderMessages.contains { $0.turnId == turnId && $0.role != .user }
+                )
+            }
+            let olderIds = Set(olderMessages.map(\.id))
+            messages = olderMessages + messages.filter { !olderIds.contains($0.id) }
             recordTranscriptTrace(source: "history.prepend", turnId: turns.last?["id"]?.stringValue)
             if let nextCursor = result["nextCursor"]?.stringValue {
                 olderTurnsCursorByThread[threadId] = nextCursor

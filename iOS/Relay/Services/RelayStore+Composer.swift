@@ -16,7 +16,8 @@ extension RelayStore {
             profileId: activeCodexProfileId,
             draft: draft,
             sequence: placement.sequence,
-            createdAt: Date()
+            createdAt: Date(),
+            confirmedTurnId: placement.turnId
         )
         persistOutboundDeliveryOutbox()
     }
@@ -75,10 +76,16 @@ extension RelayStore {
         )
     }
 
-    private func setOutboundDeliveryAutomaticallyRecoverable(_ id: String, _ recoverable: Bool) {
+    private func setOutboundDeliveryAutomaticallyRecoverable(
+        _ id: String,
+        _ recoverable: Bool,
+        confirmedUnprocessedFailure: Bool? = nil
+    ) {
         guard var envelope = persistedOutboundDeliveries[id],
-              envelope.automaticallyRecoverable != recoverable else { return }
+              envelope.automaticallyRecoverable != recoverable
+                || envelope.confirmedUnprocessedFailure != confirmedUnprocessedFailure else { return }
         envelope.automaticallyRecoverable = recoverable
+        envelope.confirmedUnprocessedFailure = confirmedUnprocessedFailure
         persistedOutboundDeliveries[id] = envelope
         persistOutboundDeliveryOutbox()
     }
@@ -87,6 +94,7 @@ extension RelayStore {
         guard var envelope = persistedOutboundDeliveries[id] else { return }
         envelope.automaticallyRecoverable = false
         envelope.confirmedTurnId = turnId
+        envelope.confirmedUnprocessedFailure = nil
         persistedOutboundDeliveries[id] = envelope
         userMessagePlacements[id]?.turnId = turnId
         persistOutboundDeliveryOutbox()
@@ -106,7 +114,7 @@ extension RelayStore {
         acceptedMessageIds.remove(id)
         if var envelope = persistedOutboundDeliveries[id] {
             envelope.automaticallyRecoverable = false
-            envelope.confirmedTurnId = nil
+            envelope.confirmedUnprocessedFailure = true
             persistedOutboundDeliveries[id] = envelope
             persistOutboundDeliveryOutbox()
         }
@@ -129,6 +137,12 @@ extension RelayStore {
                 hasOutput: hasOutput
             ) {
             case .awaitingOutput:
+                updateDeliveryState(
+                    envelope.id,
+                    state: nil,
+                    threadId: envelope.draft.threadId,
+                    turnId: turnId
+                )
                 break
             case .failed:
                 markOutboundDeliveryFailed(
@@ -137,10 +151,38 @@ extension RelayStore {
                     threadId: envelope.draft.threadId
                 )
             case .resolved:
+                updateDeliveryState(
+                    envelope.id,
+                    state: nil,
+                    threadId: envelope.draft.threadId,
+                    turnId: turnId
+                )
                 removeOutboundDelivery(envelope.id)
                 acceptedMessageIds.remove(envelope.id)
             }
         }
+    }
+
+    func bindOutboundDeliveriesToObservedHistory(
+        threadId: String,
+        history: [TranscriptItem]
+    ) {
+        var changed = false
+        let records = persistedOutboundDeliveries.values.filter { $0.draft.threadId == threadId }
+        for record in records {
+            guard let prompt = history.first(where: { $0.id == record.id && $0.role == .user }),
+                  let turnId = prompt.turnId else { continue }
+            if var envelope = persistedOutboundDeliveries[record.id],
+               envelope.confirmedTurnId != turnId || envelope.automaticallyRecoverable {
+                envelope.confirmedTurnId = turnId
+                envelope.automaticallyRecoverable = false
+                envelope.confirmedUnprocessedFailure = nil
+                persistedOutboundDeliveries[record.id] = envelope
+                changed = true
+            }
+            userMessagePlacements[record.id]?.turnId = turnId
+        }
+        if changed { persistOutboundDeliveryOutbox() }
     }
 
     func recoverEditableFailedTurnPrompts(
@@ -712,7 +754,11 @@ extension RelayStore {
                 threadId: threadId
             )
             if !uncertain {
-                setOutboundDeliveryAutomaticallyRecoverable(clientMessageId, false)
+                setOutboundDeliveryAutomaticallyRecoverable(
+                    clientMessageId,
+                    false,
+                    confirmedUnprocessedFailure: true
+                )
             }
             if !uncertain || !wasAccepted {
                 applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: nil, phase: .failed, completedAt: Date()))
@@ -802,7 +848,11 @@ extension RelayStore {
                 threadId: threadId
             )
             if !uncertain {
-                setOutboundDeliveryAutomaticallyRecoverable(clientMessageId, false)
+                setOutboundDeliveryAutomaticallyRecoverable(
+                    clientMessageId,
+                    false,
+                    confirmedUnprocessedFailure: true
+                )
             }
             errorMessage = uncertain
                 ? "引导已保留在实际位置，Relay 将在重连后确认是否送达。"
