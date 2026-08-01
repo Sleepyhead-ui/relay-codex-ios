@@ -31,14 +31,14 @@ final class DeliveryFailurePolicyTests: XCTestCase {
         )
     }
 
-    func testStartedTurnWaitsForOutputAndResolvesNormalCompletion() {
+    func testStartedTurnResolvesAsSoonAsOutputProvesProcessing() {
         XCTAssertEqual(
             DeliveryFailurePolicy.startedTurnDisposition(
                 status: "inProgress",
                 errorMessage: nil,
                 hasOutput: true
             ),
-            .awaitingOutput
+            .resolved
         )
         XCTAssertEqual(
             DeliveryFailurePolicy.startedTurnDisposition(
