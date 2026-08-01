@@ -657,6 +657,7 @@ extension RelayStore {
             imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath),
             createdAt: Date()
         ))
+        revealOutgoingMessage(clientMessageId)
         defer { sendingThreadIds.remove(threadId) }
         do {
             var params: [String: JSONValue] = [
@@ -765,6 +766,7 @@ extension RelayStore {
             imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath),
             createdAt: Date()
         ))
+        revealOutgoingMessage(clientMessageId)
         defer { sendingThreadIds.remove(threadId) }
         do {
             let result = try await socket.rpc(

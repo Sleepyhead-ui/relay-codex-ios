@@ -146,6 +146,52 @@ final class MobileActivityFeedTests: XCTestCase {
         )
     }
 
+    func testLatestReasoningKeepsStableIdentityAcrossStreamingUpdates() throws {
+        let first = TranscriptItem(
+            id: "reasoning.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .reasoning,
+            text: "Planning"
+        )
+        let second = TranscriptItem(
+            id: "reasoning.2",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .reasoning,
+            text: "Checking tests"
+        )
+
+        let firstEntry = try XCTUnwrap(MobileActivityFeed.make(items: [first]).entries.first)
+        let secondEntry = try XCTUnwrap(MobileActivityFeed.make(items: [first, second]).entries.first)
+
+        XCTAssertEqual(firstEntry.id, secondEntry.id)
+        XCTAssertEqual(secondEntry.id, "reasoning.latest")
+    }
+
+    func testKeepsDistinctProgressWithACommonPrefix() {
+        let items = (0..<200).map { index in
+            progress(id: "progress.\(index)", text: "正在检查第 \(index) 个独立步骤")
+        }
+
+        let feed = MobileActivityFeed.make(items: items)
+
+        XCTAssertEqual(feed.progressItems.count, 200)
+    }
+
+    func testCollapsesALongSequenceOfPrefixStreamingFrames() {
+        let text = "正在系统检查这段持续增长的任务进展输出"
+        let items = (4...text.count).map { length in
+            progress(id: "frame.\(length)", text: String(text.prefix(length)))
+        }
+
+        let feed = MobileActivityFeed.make(items: items)
+
+        XCTAssertEqual(feed.progressItems.count, 1)
+        XCTAssertEqual(feed.progressItems.first?.text, text)
+        XCTAssertEqual(feed.progressItems.first?.id, "progress.frame.4")
+    }
+
     private func progress(id: String, text: String) -> TranscriptItem {
         TranscriptItem(
             id: id,

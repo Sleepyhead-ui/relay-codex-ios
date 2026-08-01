@@ -1,9 +1,11 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 struct TurnGroupView: View, Equatable {
     let group: TranscriptGroup
     let isLive: Bool
+    let store: RelayStore
     let onOpenActivity: (MobileActivityPresentation) -> Void
 
     static func == (lhs: TurnGroupView, rhs: TurnGroupView) -> Bool {
@@ -24,7 +26,8 @@ struct TurnGroupView: View, Equatable {
                     TranscriptRow(
                         item: item,
                         isFollowUp: isFollowUp,
-                        timestamp: item.createdAt ?? group.metadata.startedAt
+                        timestamp: item.createdAt ?? group.metadata.startedAt,
+                        store: store
                     )
                 case .activity:
                     EmptyView()
@@ -32,7 +35,8 @@ struct TurnGroupView: View, Equatable {
                     TranscriptRow(
                         item: item,
                         timestamp: item.isFinalAnswer ? (group.metadata.completedAt ?? group.metadata.startedAt) : nil,
-                        forkTurnId: !isLive && item.id == lastAnswerId ? group.turnId : nil
+                        forkTurnId: !isLive && item.id == lastAnswerId ? group.turnId : nil,
+                        store: store
                     )
                 }
             }
@@ -112,18 +116,22 @@ struct TranscriptRow: View {
     let isFollowUp: Bool
     let timestamp: Date?
     let forkTurnId: String?
-    @EnvironmentObject private var store: RelayStore
+    // Intentionally unobserved: the item value owns row updates. Observing the
+    // global store here would invalidate every historical row on each token.
+    let store: RelayStore
 
     init(
         item: TranscriptItem,
         isFollowUp: Bool = false,
         timestamp: Date? = nil,
-        forkTurnId: String? = nil
+        forkTurnId: String? = nil,
+        store: RelayStore
     ) {
         self.item = item
         self.isFollowUp = isFollowUp
         self.timestamp = timestamp
         self.forkTurnId = forkTurnId
+        self.store = store
     }
 
     var body: some View {
@@ -139,7 +147,7 @@ struct TranscriptRow: View {
                             .padding(.trailing, 3)
                     }
                     if !item.imagePaths.isEmpty {
-                        InlineImageGrid(paths: item.imagePaths)
+                        InlineImageGrid(paths: item.imagePaths, store: store)
                     }
                     if !item.text.isEmpty {
                         UserMessageBubble(text: item.text)
@@ -148,7 +156,7 @@ struct TranscriptRow: View {
                         deliveryStatus(deliveryState)
                     }
                     if item.deliveryState == nil, !item.text.isEmpty {
-                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: nil)
+                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: nil, store: store)
                     }
                 }
             }
@@ -166,16 +174,16 @@ struct TranscriptRow: View {
                     }
                     MarkdownContentView(source: item.textWithoutDownloadLinks)
                     if !item.downloadablePaths.isEmpty {
-                        DownloadFileLinks(paths: item.downloadablePaths)
+                        DownloadFileLinks(paths: item.downloadablePaths, store: store)
                     }
                     if !item.text.isEmpty {
-                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: forkTurnId)
+                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: forkTurnId, store: store)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .tool:
-            ToolEventRow(item: item)
+            ToolEventRow(item: item, store: store)
         case .system:
             Text(item.text)
                 .font(.system(size: 13))
@@ -236,7 +244,7 @@ struct QueuedFollowUpRow: View {
             Spacer(minLength: 34)
             VStack(alignment: .trailing, spacing: 5) {
                 if !item.imagePaths.isEmpty {
-                    InlineImageGrid(paths: item.imagePaths)
+                    InlineImageGrid(paths: item.imagePaths, store: store)
                 }
                 if !item.text.isEmpty {
                     UserMessageBubble(text: item.text)
@@ -315,8 +323,9 @@ private struct MessageActionsRow: View {
     let text: String
     let timestamp: Date?
     let forkTurnId: String?
-    @EnvironmentObject private var store: RelayStore
+    let store: RelayStore
     @State private var copied = false
+    @State private var isForking = false
 
     var body: some View {
         HStack(spacing: 13) {
@@ -334,10 +343,14 @@ private struct MessageActionsRow: View {
 
             if let forkTurnId {
                 Button {
-                    Task { await store.forkThread(through: forkTurnId) }
+                    Task {
+                        isForking = true
+                        await store.forkThread(through: forkTurnId)
+                        isForking = false
+                    }
                 } label: {
                     Group {
-                        if store.forkingTurnId == forkTurnId {
+                        if isForking {
                             ProgressView().controlSize(.mini)
                         } else {
                             Image(systemName: "arrow.triangle.branch")
@@ -347,7 +360,7 @@ private struct MessageActionsRow: View {
                     .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
-                .disabled(store.forkingTurnId != nil)
+                .disabled(isForking)
                 .accessibilityLabel("在新任务中继续")
             }
 
@@ -412,16 +425,17 @@ private struct UserMessageBubble: View {
 
 private struct InlineImageGrid: View {
     let paths: [String]
+    let store: RelayStore
 
     var body: some View {
         Group {
             if paths.count == 1, let path = paths.first {
-                InlineMessageImage(path: path, width: 200, height: 150)
+                InlineMessageImage(path: path, width: 200, height: 150, store: store)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 6) {
                         ForEach(paths, id: \.self) { path in
-                            InlineMessageImage(path: path, width: 112, height: 84)
+                            InlineMessageImage(path: path, width: 112, height: 84, store: store)
                         }
                     }
                 }
@@ -441,7 +455,9 @@ private struct InlineMessageImage: View {
     let path: String
     let width: CGFloat
     let height: CGFloat
-    @EnvironmentObject private var store: RelayStore
+    let store: RelayStore
+    @State private var image: UIImage?
+    @State private var isLoading = false
 
     var body: some View {
         Button {
@@ -449,11 +465,11 @@ private struct InlineMessageImage: View {
         } label: {
             ZStack {
                 RelayTheme.softFill
-                if let url = store.imagePreviewURLs[path], let image = UIImage(contentsOfFile: url.path) {
+                if let image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                } else if store.loadingImagePaths.contains(path) {
+                } else if isLoading {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "photo")
@@ -470,29 +486,65 @@ private struct InlineMessageImage: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
-        .task(id: path) { await store.loadImagePreview(path: path) }
+        .task(id: path) { await loadImage() }
+    }
+
+    private func loadImage() async {
+        isLoading = true
+        if store.imagePreviewURLs[path] == nil { await store.loadImagePreview(path: path) }
+        if let url = store.imagePreviewURLs[path] {
+            image = await MessageImageDecoder.image(at: url, maxPixelSize: max(width, height) * 3)
+        }
+        isLoading = false
+    }
+}
+
+private enum MessageImageDecoder {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func image(at url: URL, maxPixelSize: CGFloat) async -> UIImage? {
+        let key = "\(url.path)#\(Int(maxPixelSize))" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+
+        return await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxPixelSize))
+                  ] as CFDictionary) else { return nil }
+            let decoded = UIImage(cgImage: cgImage)
+            cache.setObject(decoded, forKey: key)
+            return decoded
+        }.value
     }
 }
 
 private struct DownloadFileLinks: View {
     let paths: [String]
-    @EnvironmentObject private var store: RelayStore
+    let store: RelayStore
+    @State private var activePath: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(paths, id: \.self) { path in
                 Button {
-                    Task { await store.downloadFile(path: path) }
+                    Task {
+                        activePath = path
+                        await store.downloadFile(path: path)
+                        activePath = nil
+                    }
                 } label: {
                     HStack(spacing: 6) {
-                        if store.downloadingPath == path { ProgressView().controlSize(.mini) }
+                        if activePath == path { ProgressView().controlSize(.mini) }
                         else { Image(systemName: "arrow.down.circle") }
                         Text("下载 \(path.lastPathComponentForDisplay)").lineLimit(1)
                     }
                     .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.downloadingPath != nil)
+                .disabled(activePath != nil)
             }
         }
     }
@@ -578,454 +630,6 @@ private struct StableDisclosureContent<Content: View>: View {
     }
 }
 
-private struct RunActivityView: View {
-    let items: [TranscriptItem]
-    let metadata: TurnMetadata
-    let isLive: Bool
-    let showsHeader: Bool
-    let canExpand: Bool
-    let visibleSectionCount: Int
-    let remainingSectionCount: Int
-    @Binding var expanded: Bool
-    let onShowMore: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if showsHeader {
-                Button {
-                    guard canExpand else { return }
-                    toggleExpanded()
-                } label: {
-                    HStack(alignment: .center, spacing: 7) {
-                        Group {
-                            if isLive {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .tint(.secondary)
-                            } else {
-                                Image(systemName: statusIcon)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(statusColor)
-                            }
-                        }
-                        .frame(width: 14, height: 16, alignment: .center)
-
-                        Group {
-                            if isLive {
-                                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                    Text(activityLabel)
-                                }
-                            } else {
-                                Text(activityLabel)
-                            }
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-
-                        Spacer(minLength: 6)
-                        if canExpand {
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.tertiary)
-                                .rotationEffect(.degrees(expanded ? 180 : 0))
-                                .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: expanded)
-                                .frame(height: 16, alignment: .center)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-            }
-
-            StableDisclosureContent(expanded: expanded) {
-                VStack(alignment: .leading, spacing: 5) {
-                    if visibleSectionCount > 0 {
-                        RunActivityDetails(items: items, visibleSectionCount: visibleSectionCount, isLive: isLive)
-                    }
-                    if remainingSectionCount > 0 {
-                        Button(action: onShowMore) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "ellipsis.circle")
-                                Text("显示更多进展（剩余 \(remainingSectionCount) 条）")
-                            }
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 5)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
-    private func toggleExpanded() {
-        expanded.toggle()
-    }
-
-    private var elapsedMilliseconds: Int {
-        if let duration = metadata.durationMs, duration > 0 { return duration }
-        guard let startedAt = metadata.startedAt else { return 0 }
-        guard isLive || metadata.completedAt != nil else { return 0 }
-        let end = isLive ? Date() : (metadata.completedAt ?? startedAt)
-        return max(0, Int(end.timeIntervalSince(startedAt) * 1000))
-    }
-
-    private var activityLabel: String {
-        let label: String
-        if isLive { label = "正在处理" }
-        else if metadata.status == "failed" { label = "处理失败" }
-        else if metadata.status == "interrupted" { label = "已停止" }
-        else { label = "已处理" }
-        guard hasElapsedTiming else { return label }
-        return "\(label) · \(formatDuration(milliseconds: elapsedMilliseconds))"
-    }
-
-    private var hasElapsedTiming: Bool {
-        if let duration = metadata.durationMs, duration > 0 { return true }
-        return metadata.startedAt != nil && (isLive || metadata.completedAt != nil)
-    }
-
-    private var statusIcon: String {
-        metadata.status == "failed" ? "xmark.circle.fill" : metadata.status == "interrupted" ? "stop.circle.fill" : "checkmark.circle.fill"
-    }
-
-    private var statusColor: Color {
-        metadata.status == "failed" ? .red : metadata.status == "interrupted" ? .secondary : RelayTheme.accent
-    }
-}
-
-private struct RunActivityDetails: View {
-    let items: [TranscriptItem]
-    let visibleSectionCount: Int
-    let isLive: Bool
-
-    var body: some View {
-        let sections = makeActivitySectionPage(items: items, limit: visibleSectionCount).sections
-        LazyVStack(alignment: .leading, spacing: 7) {
-            ForEach(sections) { section in
-                switch section {
-                case .commentary(let item):
-                    MarkdownContentView(source: item.text, baseFontSize: 13, blockSpacing: 6, lineSpacing: 2)
-                        .foregroundStyle(Color.primary.opacity(0.9))
-                case .reasoning(let id, let text):
-                    HStack(alignment: .top, spacing: 7) {
-                        Group {
-                            if isLive {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .tint(.secondary)
-                            } else {
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .frame(width: 14, height: 16, alignment: .center)
-                        CompactMarkdownText(source: text, size: 12)
-                            .foregroundStyle(.secondary)
-                            .id(id)
-                    }
-                case .execution(_, let executionItems):
-                    ExecutionGroupView(items: executionItems)
-                }
-            }
-        }
-    }
-}
-
-private struct ActivitySectionPage {
-    let sections: [ActivitySection]
-    let totalCount: Int
-}
-
-private func makeActivitySectionPage(items: [TranscriptItem], limit: Int) -> ActivitySectionPage {
-    var sections: [ActivitySection] = []
-    var pendingExecution: [TranscriptItem] = []
-    var hasPendingExecution = false
-    var totalCount = 0
-    let visibleItems = deduplicatedActivityItems(items)
-    let latestReasoningId = visibleItems.last(where: {
-        $0.kind == .reasoning || ($0.isCommentary && $0.detail?.nonEmpty != nil)
-    })?.id
-
-    func append(_ section: ActivitySection) {
-        totalCount += 1
-        if sections.count < limit { sections.append(section) }
-    }
-
-    func flushExecution() {
-        guard hasPendingExecution else { return }
-        let id = pendingExecution.first?.id ?? "hidden.\(totalCount)"
-        append(.execution(id: "execution.\(id)", items: pendingExecution))
-        pendingExecution = []
-        hasPendingExecution = false
-    }
-
-    for item in visibleItems where item.kind != .plan {
-        if item.kind == .reasoning {
-            guard item.id == latestReasoningId else { continue }
-            flushExecution()
-            guard let source = item.text.nonEmpty ?? item.detail?.nonEmpty else { continue }
-            totalCount += 1
-            if sections.count < limit, let text = lastNonemptyLine(source) {
-                sections.append(.reasoning(id: "latest", text: text))
-            }
-        } else if item.isCommentary {
-            flushExecution()
-            if item.id == latestReasoningId,
-               let source = item.detail?.nonEmpty,
-               let text = lastNonemptyLine(source) {
-                append(.reasoning(id: "latest", text: text))
-            }
-            if item.text.nonEmpty != nil { append(.commentary(item)) }
-        } else {
-            hasPendingExecution = true
-            if totalCount < limit { pendingExecution.append(item) }
-        }
-    }
-    flushExecution()
-    return ActivitySectionPage(sections: sections, totalCount: totalCount)
-}
-
-private func deduplicatedActivityItems(_ items: [TranscriptItem]) -> [TranscriptItem] {
-    var result: [TranscriptItem] = []
-    for item in items {
-        guard item.isCommentary else {
-            result.append(item)
-            continue
-        }
-        let text = TranscriptReconciler.normalizedText(item.text)
-        guard !text.isEmpty else {
-            result.append(item)
-            continue
-        }
-        if let index = result.firstIndex(where: { candidate in
-            guard candidate.isCommentary else { return false }
-            let candidateText = TranscriptReconciler.normalizedText(candidate.text)
-            guard !candidateText.isEmpty else { return false }
-            if candidateText == text { return true }
-            let shorter = candidateText.count <= text.count ? candidateText : text
-            let longer = candidateText.count <= text.count ? text : candidateText
-            return shorter.count >= 6 && longer.hasPrefix(shorter)
-        }) {
-            if text.count > TranscriptReconciler.normalizedText(result[index].text).count {
-                var replacement = item
-                replacement.id = result[index].id
-                result[index] = replacement
-            }
-        } else {
-            result.append(item)
-        }
-    }
-    return result
-}
-
-private func lastNonemptyLine(_ source: String?) -> String? {
-    guard let source else { return nil }
-    return source.suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
-        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        .first(where: { !$0.isEmpty })
-}
-
-private enum ActivitySection: Identifiable {
-    case commentary(TranscriptItem)
-    case reasoning(id: String, text: String)
-    case execution(id: String, items: [TranscriptItem])
-
-    var id: String {
-        switch self {
-        case .commentary(let item): return "commentary.\(item.id)"
-        case .reasoning(let id, _): return "reasoning.\(id)"
-        case .execution(let id, _): return id
-        }
-    }
-}
-
-private struct CompactMarkdownText: View {
-    let source: String
-    let size: CGFloat
-    var weight: Font.Weight = .regular
-
-    var body: some View {
-        if let attributed = try? AttributedString(
-            markdown: source,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            Text(attributed)
-                .font(.system(size: size, weight: weight))
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            Text(source.replacingOccurrences(of: "**", with: ""))
-                .font(.system(size: size, weight: weight))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-private struct ExecutionGroupView: View {
-    let items: [TranscriptItem]
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        if items.count == 1, let item = items.first {
-            ToolEventRow(item: item)
-        } else {
-            groupedBody
-        }
-    }
-
-    private var groupedBody: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Button {
-                toggleExpanded()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
-                    Text(summary)
-                        .font(.system(size: 13, weight: .semibold))
-                    Spacer(minLength: 6)
-                    groupStatus
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: expanded)
-                }
-                .contentShape(Rectangle())
-                .padding(.vertical, 5)
-            }
-            .buttonStyle(.plain)
-
-            StableDisclosureContent(expanded: expanded, duration: 0.14) {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(items) { item in
-                        if item.kind == .command {
-                            CompactCommandRow(item: item)
-                        } else {
-                            ToolEventRow(item: item)
-                        }
-                    }
-                }
-                .padding(.leading, 18)
-            }
-        }
-    }
-
-    private func toggleExpanded() {
-        expanded.toggle()
-    }
-
-    @ViewBuilder
-    private var groupStatus: some View {
-        if items.contains(where: { $0.isRunningStatus }) {
-            ProgressView().controlSize(.mini)
-        } else if items.contains(where: { $0.isFailedStatus }) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(.red)
-        } else {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 12))
-                .foregroundStyle(RelayTheme.accent)
-        }
-    }
-
-    private var summary: String {
-        let commandCount = items.filter { $0.kind == .command }.count
-        let fileCount = items.filter { $0.kind == .fileChange }.count
-        let otherCount = items.count - commandCount - fileCount
-        var parts: [String] = []
-        if fileCount > 0 { parts.append(fileCount == 1 ? "编辑了文件" : "编辑了多个文件") }
-        if commandCount > 0 { parts.append(commandCount == 1 ? "运行了命令" : "运行了多个命令") }
-        if otherCount > 0 { parts.append(otherCount == 1 ? "使用了工具" : "使用了多个工具") }
-        return parts.isEmpty ? "执行了操作" : parts.joined(separator: "并")
-    }
-}
-
-private struct CompactCommandRow: View {
-    let item: TranscriptItem
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Button {
-                guard hasDetails else { return }
-                expanded.toggle()
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 14)
-                    Text(commandSummary)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(item.isFailedStatus ? Color.red : Color.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 5)
-                    if let exitCode = item.exitCode, exitCode != 0 {
-                        Text("exit \(exitCode)")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.red)
-                    }
-                    if item.isRunningStatus {
-                        ProgressView().controlSize(.mini)
-                    }
-                    if hasDetails {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .rotationEffect(.degrees(expanded ? 180 : 0))
-                            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: expanded)
-                    }
-                }
-                .contentShape(Rectangle())
-                .padding(.vertical, 3)
-            }
-            .buttonStyle(.plain)
-
-            StableDisclosureContent(expanded: expanded, duration: 0.14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    if let error = item.errorMessage?.nonEmpty {
-                        Text(error)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let cwd = item.cwd?.nonEmpty {
-                        Text(cwd)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                    if let detail = item.detail?.nonEmpty {
-                        CompactTechnicalDetail(detail: detail)
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var commandSummary: String {
-        item.text.components(separatedBy: .newlines)
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nonEmpty ?? "命令"
-    }
-    private var hasDetails: Bool {
-        item.detail?.nonEmpty != nil || item.errorMessage?.nonEmpty != nil || item.cwd?.nonEmpty != nil
-    }
-}
-
 private struct CompactTechnicalDetail: View {
     let detail: String
 
@@ -1045,9 +649,10 @@ private struct CompactTechnicalDetail: View {
 
 private struct ToolEventRow: View {
     let item: TranscriptItem
-    @EnvironmentObject private var store: RelayStore
+    let store: RelayStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expanded = false
+    @State private var downloadingPath: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1126,10 +731,14 @@ private struct ToolEventRow: View {
                 VStack(alignment: .leading, spacing: 5) {
                     ForEach(item.downloadablePaths, id: \.self) { path in
                         Button {
-                            Task { await store.downloadFile(path: path) }
+                            Task {
+                                downloadingPath = path
+                                await store.downloadFile(path: path)
+                                downloadingPath = nil
+                            }
                         } label: {
                             HStack(spacing: 6) {
-                                if store.downloadingPath == path {
+                                if downloadingPath == path {
                                     ProgressView().controlSize(.mini)
                                 } else {
                                     Image(systemName: "arrow.down.circle")
@@ -1140,7 +749,7 @@ private struct ToolEventRow: View {
                             .font(.system(size: 12, weight: .semibold))
                         }
                         .buttonStyle(.plain)
-                        .disabled(store.downloadingPath != nil)
+                        .disabled(downloadingPath != nil)
                     }
                 }
                 .padding(.leading, 29)

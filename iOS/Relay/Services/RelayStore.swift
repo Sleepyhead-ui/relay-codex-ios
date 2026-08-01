@@ -25,6 +25,7 @@ final class RelayStore: ObservableObject {
     @Published var isLoadingThread = false
     @Published var isLoadingOlderTurns = false
     @Published var hasOlderTurns = false
+    @Published private(set) var transcriptScrollRequest: TranscriptScrollRequest?
     @Published var modelOptions: [CodexModelOption] = []
     @Published var selectedModelId = ""
     @Published var selectedEffort = ""
@@ -101,6 +102,7 @@ final class RelayStore: ObservableObject {
     var persistedOutboundDeliveries: [String: OutboundDeliveryEnvelope] = [:]
     var userMessagePlacements: [String: UserMessagePlacement] = [:]
     var nextUserMessageSequence = 0
+    var nextTranscriptScrollSequence = 0
     var taskStateCore = TaskStateCore()
     var restorationTask: Task<Void, Never>?
     var bridgeRecoveryPending = false
@@ -208,6 +210,15 @@ final class RelayStore: ObservableObject {
     }
     func transcriptItems(turnId: String) -> [TranscriptItem] {
         transcriptIndex.items(forTurnId: turnId, messages: messages)
+    }
+
+    func revealOutgoingMessage(_ messageId: String) {
+        nextTranscriptScrollSequence += 1
+        transcriptScrollRequest = TranscriptScrollRequest(
+            sequence: nextTranscriptScrollSequence,
+            targetId: messageId,
+            reason: .outgoingMessage
+        )
     }
 
     func collaborationModePayload() -> JSONValue? {

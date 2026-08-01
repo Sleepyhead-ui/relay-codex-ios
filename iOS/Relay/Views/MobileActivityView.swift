@@ -427,16 +427,24 @@ struct MobileActivitySheet: View {
     let presentation: MobileActivityPresentation
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: RelayStore
-    @State private var visibleEntryCount = 18
+    @State private var window: MobileActivityWindow
+
+    init(presentation: MobileActivityPresentation) {
+        self.presentation = presentation
+        _window = State(initialValue: MobileActivityWindow(entries: presentation.feed.entries))
+    }
 
     var body: some View {
         let current = resolvedPresentation
+        let entries = current.feed.entries
+        let visibleEntries = window.visibleEntries(in: entries)
+        let hiddenEntryCount = window.hiddenEntryCount(in: entries)
         NavigationView {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if hiddenEntryCount > 0 {
                         Button {
-                            visibleEntryCount += 18
+                            window.showEarlier(in: entries)
                         } label: {
                             Label("显示更早的 \(hiddenEntryCount) 项", systemImage: "clock.arrow.circlepath")
                                 .font(.system(size: 12, weight: .semibold))
@@ -475,19 +483,14 @@ struct MobileActivitySheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-    }
-
-    private var visibleEntries: ArraySlice<MobileActivityEntry> {
-        resolvedPresentation.feed.entries.suffix(visibleEntryCount)
-    }
-
-    private var hiddenEntryCount: Int {
-        max(0, resolvedPresentation.feed.entries.count - visibleEntryCount)
+        .onChange(of: entries.map(\.id)) { _ in
+            window.synchronize(with: entries)
+        }
     }
 
     private var resolvedPresentation: MobileActivityPresentation {
         let turnId = presentation.isLive ? (store.activeTurnId ?? presentation.id) : presentation.id
-        let items = store.messages.filter { $0.turnId == turnId && $0.isActivity }
+        let items = store.transcriptItems(turnId: turnId).filter(\.isActivity)
         guard !items.isEmpty || store.turnMetadata[turnId] != nil else { return presentation }
         var metadata = store.turnMetadata[turnId] ?? presentation.metadata
         if metadata.startedAt == nil {

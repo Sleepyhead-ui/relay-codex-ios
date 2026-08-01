@@ -187,6 +187,7 @@ struct ConversationView: View {
                                 TurnGroupView(
                                     group: group,
                                     isLive: group.turnId == store.activeTurnId,
+                                    store: store,
                                     onOpenActivity: { activityPresentation = $0 }
                                 )
                                     .equatable()
@@ -285,6 +286,10 @@ struct ConversationView: View {
                         scrollToBottom(proxy, animated: !store.isRunning)
                     }
                 }
+                .onChange(of: store.transcriptScrollRequest) { request in
+                    guard request?.reason == .outgoingMessage else { return }
+                    revealOutgoingMessage(proxy)
+                }
                 .onChange(of: store.currentQueuedFollowUps.map(\.id)) { _ in
                     guard isAtBottom, !isUserScrolling else { return }
                     DispatchQueue.main.async {
@@ -313,6 +318,23 @@ struct ConversationView: View {
 
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func revealOutgoingMessage(_ proxy: ScrollViewProxy) {
+        heldTranscriptWindow = nil
+        heldLiveActivityPresentation = nil
+        isUserScrolling = false
+        isAtBottom = true
+
+        // The running console and keyboard can both change the bottom inset in
+        // the same update. Pin once after insertion and once after layout settles.
+        DispatchQueue.main.async {
+            scrollToBottom(proxy, animated: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            guard isAtBottom, !isUserScrolling else { return }
+            scrollToBottom(proxy, animated: false)
+        }
     }
 
     private func earlierButtonLabel(window: TranscriptWindow) -> String {

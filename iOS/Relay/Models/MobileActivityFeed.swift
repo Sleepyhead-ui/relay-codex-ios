@@ -6,6 +6,8 @@ struct MobileActivityFeed: Equatable {
 
     static func make(items: [TranscriptItem]) -> MobileActivityFeed {
         var normalized: [TranscriptItem] = []
+        var normalizedCommentaryText: [Int: String] = [:]
+        let commentaryIndex = CommentaryPrefixIndex()
         var hiddenPassiveEventCount = 0
 
         for item in items where item.kind != .plan {
@@ -23,21 +25,28 @@ struct MobileActivityFeed: Equatable {
                 if item.detail?.nonEmpty != nil { normalized.append(item) }
                 continue
             }
-            if let index = normalized.firstIndex(where: { candidate in
-                guard candidate.isCommentary else { return false }
-                let candidateText = TranscriptReconciler.normalizedText(candidate.text)
-                if candidateText == text { return true }
-                let shorter = candidateText.count <= text.count ? candidateText : text
-                let longer = candidateText.count <= text.count ? text : candidateText
-                return shorter.count >= 4 && longer.hasPrefix(shorter)
-            }) {
-                if text.count > TranscriptReconciler.normalizedText(normalized[index].text).count {
+            let matchingIndex = commentaryIndex.candidates(for: text)
+                .sorted()
+                .first { index in
+                    guard let candidateText = normalizedCommentaryText[index] else { return false }
+                    if candidateText == text { return true }
+                    let shorter = candidateText.count <= text.count ? candidateText : text
+                    let longer = candidateText.count <= text.count ? text : candidateText
+                    return shorter.count >= 4 && longer.hasPrefix(shorter)
+                }
+            if let index = matchingIndex {
+                if text.count > (normalizedCommentaryText[index]?.count ?? 0) {
                     var replacement = item
                     replacement.id = normalized[index].id
                     normalized[index] = replacement
+                    normalizedCommentaryText[index] = text
+                    commentaryIndex.insert(text, at: index)
                 }
             } else {
+                let index = normalized.count
                 normalized.append(item)
+                normalizedCommentaryText[index] = text
+                commentaryIndex.insert(text, at: index)
             }
         }
 
@@ -64,7 +73,7 @@ struct MobileActivityFeed: Equatable {
                     continue
                 }
                 flushTools()
-                entries.append(.reasoning(id: "reasoning.\(item.id)", text: text))
+                entries.append(.reasoning(id: "reasoning.latest", text: text))
                 if item.isCommentary, let progress = item.text.nonEmpty {
                     entries.append(.progress(id: "progress.\(item.id)", text: progress))
                 }
@@ -160,6 +169,47 @@ struct MobileActivityFeed: Equatable {
             .suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
+    }
+}
+
+private final class CommentaryPrefixIndex {
+    private final class Node {
+        var children: [UInt8: Node] = [:]
+        var terminalIndices: [Int] = []
+        var descendantIndices: [Int] = []
+
+        func appendDescendant(_ index: Int) {
+            if descendantIndices.last != index { descendantIndices.append(index) }
+        }
+
+        func appendTerminal(_ index: Int) {
+            if terminalIndices.last != index { terminalIndices.append(index) }
+        }
+    }
+
+    private let root = Node()
+
+    func insert(_ text: String, at index: Int) {
+        var node = root
+        node.appendDescendant(index)
+        for byte in text.utf8 {
+            if node.children[byte] == nil { node.children[byte] = Node() }
+            node = node.children[byte]!
+            node.appendDescendant(index)
+        }
+        node.appendTerminal(index)
+    }
+
+    func candidates(for text: String) -> Set<Int> {
+        var node = root
+        var result = Set<Int>()
+        for byte in text.utf8 {
+            guard let child = node.children[byte] else { return result }
+            node = child
+            result.formUnion(node.terminalIndices)
+        }
+        result.formUnion(node.descendantIndices)
+        return result
     }
 }
 

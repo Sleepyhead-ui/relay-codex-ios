@@ -290,6 +290,7 @@ extension RelayStore {
         guard selectedThreadId == threadId, userMessagePlacements[messageId]?.threadId == threadId else { return }
         userMessagePlacements[messageId]?.turnId = turnId
         applyUserMessagePlacements(turnId: turnId, threadId: threadId)
+        revealOutgoingMessage(messageId)
     }
 
     func mergeSessionItems(_ snapshotItems: [TranscriptItem], turnId: String) {
