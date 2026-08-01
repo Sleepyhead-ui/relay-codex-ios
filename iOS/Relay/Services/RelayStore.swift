@@ -1175,7 +1175,7 @@ final class RelayStore: ObservableObject {
         guard let threadId = selectedThreadId, socket.state == .connected else { return }
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
-            "summary": .string("detailed"),
+            "summary": .string("auto"),
             "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         ]
         if let model = selectedModel?.model { params["model"] = .string(model) }

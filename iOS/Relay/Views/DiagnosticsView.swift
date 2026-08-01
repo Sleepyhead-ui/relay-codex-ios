@@ -51,6 +51,40 @@ struct DiagnosticsView: View {
                             value: "P95 \(formatMilliseconds(report.bridgePerformance.rpcLatency.p95Ms))",
                             detail: "补丁/快照流量比 \(formatRatio(report.bridgePerformance.patchToSnapshotByteRatio))"
                         )
+                        metricRow(
+                            title: "请求至首个内容",
+                            value: "P95 \(formatDuration(report.bridgePerformance.firstVisibleLatency.p95Ms))",
+                            detail: "最近 \(report.bridgePerformance.firstVisibleLatency.count) 个 Relay 任务"
+                        )
+                    }
+
+                    if !report.bridgePerformance.recentTurnLatencies.isEmpty {
+                        Section {
+                            ForEach(report.bridgePerformance.recentTurnLatencies.prefix(8)) { latency in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(latency.receivedAt.formatted(date: .omitted, time: .standard))
+                                            .font(.system(size: 13, weight: .semibold))
+                                        Spacer(minLength: 10)
+                                        Text("首个内容 \(formatOptionalDuration(latency.totalToFirstVisibleMs))")
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(latencyBreakdown(latency))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.tertiary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text("总计 \(formatDuration(latency.totalDurationMs)) · \(visibleEventName(latency.firstVisibleMethod))")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        } header: {
+                            Text("最近任务延迟")
+                        } footer: {
+                            Text("Relay 转发和 RPC 通常应低于 100 ms；较长的“启动至首个内容”表示等待 Codex 或模型输出。")
+                        }
                     }
 
                     Section("最近事件") {
@@ -139,6 +173,30 @@ struct DiagnosticsView: View {
 
     private func formatMilliseconds(_ value: Double) -> String {
         value < 10 ? String(format: "%.1f ms", value) : String(format: "%.0f ms", value)
+    }
+
+    private func formatDuration(_ value: Double) -> String {
+        value >= 1_000 ? String(format: "%.1f 秒", value / 1_000) : formatMilliseconds(value)
+    }
+
+    private func formatOptionalDuration(_ value: Double?) -> String {
+        guard let value else { return "未记录" }
+        return formatDuration(value)
+    }
+
+    private func latencyBreakdown(_ latency: BridgeTurnLatencyDiagnostic) -> String {
+        "Relay \(formatOptionalDuration(latency.receivedToForwardMs)) · RPC \(formatOptionalDuration(latency.forwardToAcceptedMs)) · 启动 \(formatOptionalDuration(latency.acceptedToStartedMs)) · Codex \(formatOptionalDuration(latency.startedToFirstVisibleMs))"
+    }
+
+    private func visibleEventName(_ method: String?) -> String {
+        switch method {
+        case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta": return "首项：思考"
+        case "item/agentMessage/delta": return "首项：回答"
+        case "turn/plan/updated": return "首项：计划"
+        case "item/started", "item/completed": return "首项：操作"
+        case nil: return "未收到可见事件"
+        default: return "首项：其他"
+        }
     }
 
     private func formatBytes(_ value: Int) -> String {

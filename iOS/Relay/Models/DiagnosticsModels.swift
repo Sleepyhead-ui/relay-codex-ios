@@ -86,17 +86,60 @@ struct ClientDiagnosticPerformance: Equatable {
     }
 }
 
+struct BridgeTurnLatencyDiagnostic: Identifiable, Equatable {
+    let id: String
+    let threadId: String
+    let turnId: String?
+    let model: String?
+    let effort: String?
+    let summary: String?
+    let receivedAt: Date
+    let receivedToForwardMs: Double?
+    let forwardToAcceptedMs: Double?
+    let acceptedToStartedMs: Double?
+    let startedToFirstEventMs: Double?
+    let startedToFirstVisibleMs: Double?
+    let totalToFirstVisibleMs: Double?
+    let totalDurationMs: Double
+    let firstVisibleMethod: String?
+
+    init?(json: JSONValue) {
+        guard let clientUserMessageId = json["clientUserMessageId"]?.stringValue,
+              let threadId = json["threadId"]?.stringValue else { return nil }
+        id = json["turnId"]?.stringValue ?? clientUserMessageId
+        self.threadId = threadId
+        turnId = json["turnId"]?.stringValue
+        model = json["model"]?.stringValue
+        effort = json["effort"]?.stringValue
+        summary = json["summary"]?.stringValue
+        receivedAt = ISO8601DateFormatter().date(from: json["receivedAt"]?.stringValue ?? "") ?? Date()
+        receivedToForwardMs = json["receivedToForwardMs"]?.doubleValue
+        forwardToAcceptedMs = json["forwardToAcceptedMs"]?.doubleValue
+        acceptedToStartedMs = json["acceptedToStartedMs"]?.doubleValue
+        startedToFirstEventMs = json["startedToFirstEventMs"]?.doubleValue
+        startedToFirstVisibleMs = json["startedToFirstVisibleMs"]?.doubleValue
+        totalToFirstVisibleMs = json["totalToFirstVisibleMs"]?.doubleValue
+        totalDurationMs = json["totalDurationMs"]?.doubleValue ?? 0
+        firstVisibleMethod = json["firstVisibleMethod"]?.stringValue
+    }
+}
+
 struct BridgeDiagnosticPerformance: Equatable {
     let snapshots: Int
     let patches: Int
     let patchToSnapshotByteRatio: Double
     let rpcLatency: DiagnosticTimingMetrics
+    let firstVisibleLatency: DiagnosticTimingMetrics
+    let recentTurnLatencies: [BridgeTurnLatencyDiagnostic]
 
     init(json: JSONValue?) {
         snapshots = json?["sessions"]?["snapshots"]?.intValue ?? 0
         patches = json?["sessions"]?["patches"]?.intValue ?? 0
         patchToSnapshotByteRatio = json?["sessions"]?["patchToSnapshotByteRatio"]?.doubleValue ?? 0
         rpcLatency = DiagnosticTimingMetrics(json: json?["rpcLatency"])
+        firstVisibleLatency = DiagnosticTimingMetrics(json: json?["turnLatency"]?["firstVisible"])
+        recentTurnLatencies = (json?["turnLatency"]?["recent"]?.arrayValue ?? [])
+            .compactMap(BridgeTurnLatencyDiagnostic.init(json:))
     }
 }
 

@@ -814,7 +814,7 @@ export default function App() {
       } else {
         updateTaskState(threadId, { type: "starting" });
         const result = await rpc.rpc("turn/start", {
-          threadId, clientUserMessageId: clientId, input, summary: "detailed",
+          threadId, clientUserMessageId: clientId, input, summary: "auto",
           sandboxPolicy: sandboxPolicy(access, selectedThread?.cwd || workspace),
           model: selectedModelOption?.model || selectedModel || undefined,
           effort: effort || undefined,
@@ -1353,7 +1353,19 @@ function DiagnosticsPanel({ report, loading, onRefresh, onClose }: {
             <DiagnosticMetric title="流式内容刷新" value={`P95 ${formatMilliseconds(report.clientPerformance.deltas.flushLatency.p95Ms)}`} detail={`${report.clientPerformance.deltas.frameFlushes} 帧 · 单帧最多 ${report.clientPerformance.deltas.maxItemsPerFrame} 项`}/>
             {report.serviceSupervisor && <DiagnosticMetric title="后台守护" value={report.serviceSupervisor.running ? "运行中" : "未运行"} detail={report.serviceSupervisor.running ? `Host v${report.serviceSupervisor.version || "未知"} · 已恢复 ${report.serviceSupervisor.restartCount || 0} 次` : report.serviceSupervisor.reason || "无心跳"}/>}
             {report.performance && <DiagnosticMetric title="Bridge RPC" value={`P95 ${formatMilliseconds(report.performance.rpcLatency.p95Ms)}`} detail={`补丁/快照流量比 ${formatPercent(report.performance.sessions.patchToSnapshotByteRatio)}`}/>}
+            {report.performance?.turnLatency && <DiagnosticMetric title="请求至首个内容" value={`P95 ${formatDurationMs(report.performance.turnLatency.firstVisible.p95Ms)}`} detail={`最近 ${report.performance.turnLatency.firstVisible.count} 个 Relay 任务`}/>}
           </div>
+        </section>}
+        {!!report.performance?.turnLatency?.recent.length && <section className="diagnostic-section">
+          <h3>最近任务延迟</h3>
+          <div className="diagnostic-metrics">{report.performance.turnLatency.recent.slice(0, 8).map((latency) =>
+            <DiagnosticMetric
+              key={latency.turnId || latency.clientUserMessageId}
+              title={new Date(latency.receivedAt).toLocaleTimeString()}
+              value={`首个内容 ${formatOptionalDurationMs(latency.totalToFirstVisibleMs)}`}
+              detail={`Relay ${formatOptionalDurationMs(latency.receivedToForwardMs)} · RPC ${formatOptionalDurationMs(latency.forwardToAcceptedMs)} · 启动 ${formatOptionalDurationMs(latency.acceptedToStartedMs)} · Codex ${formatOptionalDurationMs(latency.startedToFirstVisibleMs)} · 总计 ${formatDurationMs(latency.totalDurationMs)}`}
+            />
+          )}</div>
         </section>}
         <section className="diagnostic-section events">
           <h3>最近事件</h3>
@@ -1369,6 +1381,8 @@ function DiagnosticMetric({ title, value, detail }: { title: string; value: stri
 }
 
 function formatMilliseconds(value = 0) { return value < 10 ? `${value.toFixed(1)} ms` : `${Math.round(value)} ms`; }
+function formatDurationMs(value = 0) { return value >= 1_000 ? `${(value / 1_000).toFixed(1)} 秒` : formatMilliseconds(value); }
+function formatOptionalDurationMs(value: number | null) { return value === null ? "未记录" : formatDurationMs(value); }
 function formatPercent(value = 0) { return `${(value * 100).toFixed(1)}%`; }
 
 function Modal({ title, children, onClose, closable = true }: { title: string; children: ReactNode; onClose: () => void; closable?: boolean }) { return <div className="modal-backdrop"><div className="modal"><div className="modal-heading"><strong>{title}</strong>{closable && <button className="icon-button" onClick={onClose}><X size={16}/></button>}</div>{children}</div></div>; }

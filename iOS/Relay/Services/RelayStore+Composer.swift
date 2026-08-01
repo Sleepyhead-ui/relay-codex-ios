@@ -306,7 +306,7 @@ extension RelayStore {
                     "threadId": .string(threadId),
                     "clientUserMessageId": .string(id),
                     "input": .array(input),
-                    "summary": .string("detailed"),
+                    "summary": .string("auto"),
                     "sandboxPolicy": draft.sandboxPolicy
                         ?? WorkspaceAccessMode.workspaceWrite.sandboxPolicy(
                             workingDirectory: threads.first(where: { $0.id == threadId })?.cwd ?? host.workingDirectory
@@ -663,7 +663,7 @@ extension RelayStore {
                 "threadId": .string(threadId),
                 "clientUserMessageId": .string(clientMessageId),
                 "input": .array(userInput(text: text, attachments: readyAttachments)),
-                "summary": .string("detailed"),
+                "summary": .string("auto"),
                 "sandboxPolicy": sandboxPolicy
             ]
             if let model { params["model"] = .string(model) }

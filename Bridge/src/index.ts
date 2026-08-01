@@ -89,6 +89,11 @@ const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridg
   rpcStartedAt.delete(bridgeId);
   rpcDiagnostics.lastErrorAt = new Date().toISOString();
   rpcDiagnostics.lastError = `Codex request timed out: ${request.method}`;
+  if (request.method === "turn/start") {
+    performanceMetrics.recordTurnRejected(
+      typeof request.params.clientUserMessageId === "string" ? request.params.clientUserMessageId : undefined,
+    );
+  }
   diagnostics.record("error", "rpc", `Request timed out: ${request.method}`, { bridgeId });
   const response = {
     error: { message: "Codex 长时间没有完成请求，Relay 已释放该请求。" },
@@ -294,7 +299,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     return;
   }
   if (message.type === "rpc") {
-    rpcDiagnostics.lastReceivedAt = new Date().toISOString();
+    const receivedAt = new Date().toISOString();
+    const receivedMs = performance.now();
+    rpcDiagnostics.lastReceivedAt = receivedAt;
     rpcDiagnostics.lastMethod = message.method;
     if (message.method === "relay/diagnostics/report") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
@@ -574,6 +581,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         return;
       }
     }
+    if (message.method === "turn/start") {
+      performanceMetrics.recordTurnReceived(message.params, receivedMs, receivedAt);
+    }
     const bridgeId = `relay.${nextRequestId++}`;
     const params = { ...message.params };
     if (message.method === "thread/start" && config.defaultCwd && !("cwd" in params)) {
@@ -590,11 +600,21 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     if (delivery?.kind === "new") await deliveryRegistry.bindBridgeRequest(delivery.key, bridgeId);
     rpcStartedAt.set(bridgeId, performance.now());
     try {
+      if (message.method === "turn/start") {
+        performanceMetrics.recordTurnForwarded(
+          typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        );
+      }
       codex.send({ method: message.method, id: bridgeId, params });
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
     } catch (error) {
       const pending = pendingClientRequests.take(bridgeId);
+      if (message.method === "turn/start") {
+        performanceMetrics.recordTurnRejected(
+          typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
+        );
+      }
       rpcStartedAt.delete(bridgeId);
       rpcDiagnostics.lastErrorAt = new Date().toISOString();
       rpcDiagnostics.lastError = error instanceof Error ? error.message : "Could not forward RPC to Codex.";
@@ -657,6 +677,15 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
     observeThreadListResult(message.result);
   } else if (["thread/resume", "thread/fork"].includes(pending.method) && "result" in message) {
     sessionActivity.observeThreadResume(message.result);
+  }
+  if (pending.method === "turn/start") {
+    const result = isObject(message.result) ? message.result : {};
+    const turn = isObject(result.turn) ? result.turn : {};
+    const clientUserMessageId = typeof pending.params.clientUserMessageId === "string"
+      ? pending.params.clientUserMessageId
+      : undefined;
+    if ("error" in message) performanceMetrics.recordTurnRejected(clientUserMessageId);
+    else performanceMetrics.recordTurnAccepted(clientUserMessageId, typeof turn.id === "string" ? turn.id : undefined);
   }
   if ("result" in message) observeFileTransferWorkspaces(pending.method, message.result);
   if (pending.method === "turn/start" && !("error" in message)) {
@@ -750,7 +779,24 @@ function rememberThreadTitle(thread: JsonObject): void {
 }
 
 function handleCodexNotification(message: JsonObject): void {
-  if (typeof message.method === "string") performanceMetrics.recordCodexEvent(message.method);
+  if (typeof message.method === "string") {
+    const latency = performanceMetrics.recordCodexEvent(
+      message.method,
+      isObject(message.params) ? message.params : {},
+    );
+    if (latency) {
+      diagnostics.record("info", "latency", "Captured Relay turn latency.", {
+        threadId: latency.threadId,
+        turnId: latency.turnId,
+        totalToFirstVisibleMs: latency.totalToFirstVisibleMs,
+        totalDurationMs: latency.totalDurationMs,
+        firstVisibleMethod: latency.firstVisibleMethod,
+        model: latency.model,
+        effort: latency.effort,
+        summary: latency.summary,
+      });
+    }
+  }
   runtimeState.observeNotification(message);
   broadcast({ type: "event", ...message });
   if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
@@ -1266,17 +1312,25 @@ async function dispatchNextQueuedPrompt(threadId: string, completedTurnId?: stri
       threadId,
       clientUserMessageId: next.clientUserMessageId,
       input: next.input,
-      summary: "detailed",
+      summary: "auto",
       ...(next.sandboxPolicy ? { sandboxPolicy: next.sandboxPolicy } : {}),
       ...(next.model ? { model: next.model } : {}),
       ...(next.effort ? { effort: next.effort } : {}),
     };
+    performanceMetrics.recordTurnReceived(params);
+    performanceMetrics.recordTurnForwarded(next.clientUserMessageId);
     const result = await codexRequest("turn/start", params);
+    const turn = isObject(result.turn) ? result.turn : {};
+    performanceMetrics.recordTurnAccepted(
+      next.clientUserMessageId,
+      typeof turn.id === "string" ? turn.id : undefined,
+    );
     await promptQueue.remove(next.id);
     runtimeState.observeTurnStart(threadId, result.turn);
     desktopSync.activateThread(threadId, "queued-turn-started");
     broadcastPromptQueue(threadId);
   } catch (error) {
+    performanceMetrics.recordTurnRejected(next.clientUserMessageId);
     console.error(`[queue] ${threadId}: ${error instanceof Error ? error.message : error}`);
     scheduleQueueRetry(threadId);
   } finally {

@@ -8,6 +8,42 @@ interface TimingSnapshot extends JsonObject {
   maxMs: number;
 }
 
+interface ActiveTurnTiming {
+  clientUserMessageId: string;
+  threadId: string;
+  turnId?: string;
+  model?: string;
+  effort?: string;
+  summary?: string;
+  receivedAt: string;
+  receivedMs: number;
+  forwardedMs?: number;
+  acceptedMs?: number;
+  startedMs?: number;
+  firstEventMs?: number;
+  firstVisibleMs?: number;
+  firstVisibleMethod?: string;
+}
+
+export interface TurnLatencySnapshot extends JsonObject {
+  clientUserMessageId: string;
+  threadId: string;
+  turnId: string | null;
+  model: string | null;
+  effort: string | null;
+  summary: string | null;
+  receivedAt: string;
+  completedAt: string;
+  receivedToForwardMs: number | null;
+  forwardToAcceptedMs: number | null;
+  acceptedToStartedMs: number | null;
+  startedToFirstEventMs: number | null;
+  startedToFirstVisibleMs: number | null;
+  totalToFirstVisibleMs: number | null;
+  totalDurationMs: number;
+  firstVisibleMethod: string | null;
+}
+
 class BoundedTiming {
   private readonly samples: number[] = [];
   private total = 0;
@@ -51,6 +87,11 @@ export class PerformanceMetrics {
   private codexEvents = 0;
   private codexDeltas = 0;
   private readonly rpcLatency = new BoundedTiming();
+  private readonly firstVisibleLatency = new BoundedTiming();
+  private readonly activeTurnsByClientId = new Map<string, ActiveTurnTiming>();
+  private readonly activeTurnClientByThreadId = new Map<string, string>();
+  private readonly activeTurnClientByTurnId = new Map<string, string>();
+  private readonly recentTurnLatencies: TurnLatencySnapshot[] = [];
 
   recordInbound(bytes: number): void {
     this.inboundMessages += 1;
@@ -72,9 +113,71 @@ export class PerformanceMetrics {
   recordSuppressedSessionUpdate(): void { this.suppressedSessionUpdates += 1; }
   recordRpcLatency(milliseconds: number): void { this.rpcLatency.record(milliseconds); }
 
-  recordCodexEvent(method: string): void {
+  recordTurnReceived(
+    params: JsonObject,
+    receivedMs = performance.now(),
+    receivedAt = new Date().toISOString(),
+  ): void {
+    const clientUserMessageId = stringValue(params.clientUserMessageId);
+    const threadId = stringValue(params.threadId);
+    if (!clientUserMessageId || !threadId) return;
+    const timing: ActiveTurnTiming = {
+      clientUserMessageId,
+      threadId,
+      ...(stringValue(params.model) ? { model: stringValue(params.model)! } : {}),
+      ...(stringValue(params.effort) ? { effort: stringValue(params.effort)! } : {}),
+      ...(stringValue(params.summary) ? { summary: stringValue(params.summary)! } : {}),
+      receivedAt,
+      receivedMs,
+    };
+    this.activeTurnsByClientId.set(clientUserMessageId, timing);
+    this.activeTurnClientByThreadId.set(threadId, clientUserMessageId);
+  }
+
+  recordTurnForwarded(clientUserMessageId: string | undefined): void {
+    const timing = clientUserMessageId ? this.activeTurnsByClientId.get(clientUserMessageId) : undefined;
+    if (timing && timing.forwardedMs === undefined) timing.forwardedMs = performance.now();
+  }
+
+  recordTurnAccepted(clientUserMessageId: string | undefined, turnId: string | undefined): void {
+    const timing = clientUserMessageId ? this.activeTurnsByClientId.get(clientUserMessageId) : undefined;
+    if (!timing) return;
+    if (timing.acceptedMs === undefined) timing.acceptedMs = performance.now();
+    if (turnId) this.bindTurn(timing, turnId);
+  }
+
+  recordTurnRejected(clientUserMessageId: string | undefined): void {
+    if (!clientUserMessageId) return;
+    const timing = this.activeTurnsByClientId.get(clientUserMessageId);
+    if (!timing) return;
+    this.removeActiveTurn(timing);
+  }
+
+  recordCodexEvent(method: string, params: JsonObject = {}): TurnLatencySnapshot | undefined {
     this.codexEvents += 1;
     if (method.endsWith("/delta") || method.toLowerCase().includes("delta")) this.codexDeltas += 1;
+    const threadId = stringValue(params.threadId);
+    const turn = objectValue(params.turn);
+    const turnId = stringValue(params.turnId) ?? stringValue(turn?.id);
+    let clientUserMessageId = turnId ? this.activeTurnClientByTurnId.get(turnId) : undefined;
+    if (!clientUserMessageId && threadId) clientUserMessageId = this.activeTurnClientByThreadId.get(threadId);
+    const timing = clientUserMessageId ? this.activeTurnsByClientId.get(clientUserMessageId) : undefined;
+    if (!timing) return undefined;
+    if (turnId && !timing.turnId) this.bindTurn(timing, turnId);
+    const now = performance.now();
+    if (method === "turn/started" && timing.startedMs === undefined) timing.startedMs = now;
+    if (method !== "turn/started" && timing.firstEventMs === undefined) timing.firstEventMs = now;
+    if (timing.firstVisibleMs === undefined && isVisibleTurnEvent(method, params)) {
+      timing.firstVisibleMs = now;
+      timing.firstVisibleMethod = method;
+    }
+    if (!isTerminalTurnEvent(method)) return undefined;
+    const snapshot = this.completeTurn(timing, now);
+    this.recentTurnLatencies.unshift(snapshot);
+    if (this.recentTurnLatencies.length > 20) this.recentTurnLatencies.length = 20;
+    if (snapshot.totalToFirstVisibleMs !== null) this.firstVisibleLatency.record(snapshot.totalToFirstVisibleMs);
+    this.removeActiveTurn(timing);
+    return snapshot;
   }
 
   report(): JsonObject {
@@ -97,8 +200,75 @@ export class PerformanceMetrics {
       },
       codex: { events: this.codexEvents, deltas: this.codexDeltas },
       rpcLatency: this.rpcLatency.snapshot(),
+      turnLatency: {
+        firstVisible: this.firstVisibleLatency.snapshot(),
+        recent: this.recentTurnLatencies,
+      },
     };
   }
+
+  private bindTurn(timing: ActiveTurnTiming, turnId: string): void {
+    timing.turnId = turnId;
+    this.activeTurnClientByTurnId.set(turnId, timing.clientUserMessageId);
+  }
+
+  private completeTurn(timing: ActiveTurnTiming, completedMs: number): TurnLatencySnapshot {
+    return {
+      clientUserMessageId: timing.clientUserMessageId,
+      threadId: timing.threadId,
+      turnId: timing.turnId ?? null,
+      model: timing.model ?? null,
+      effort: timing.effort ?? null,
+      summary: timing.summary ?? null,
+      receivedAt: timing.receivedAt,
+      completedAt: new Date().toISOString(),
+      receivedToForwardMs: duration(timing.receivedMs, timing.forwardedMs),
+      forwardToAcceptedMs: duration(timing.forwardedMs, timing.acceptedMs),
+      acceptedToStartedMs: duration(timing.acceptedMs, timing.startedMs),
+      startedToFirstEventMs: duration(timing.startedMs, timing.firstEventMs),
+      startedToFirstVisibleMs: duration(timing.startedMs, timing.firstVisibleMs),
+      totalToFirstVisibleMs: duration(timing.receivedMs, timing.firstVisibleMs),
+      totalDurationMs: round(completedMs - timing.receivedMs),
+      firstVisibleMethod: timing.firstVisibleMethod ?? null,
+    };
+  }
+
+  private removeActiveTurn(timing: ActiveTurnTiming): void {
+    this.activeTurnsByClientId.delete(timing.clientUserMessageId);
+    if (this.activeTurnClientByThreadId.get(timing.threadId) === timing.clientUserMessageId) {
+      this.activeTurnClientByThreadId.delete(timing.threadId);
+    }
+    if (timing.turnId && this.activeTurnClientByTurnId.get(timing.turnId) === timing.clientUserMessageId) {
+      this.activeTurnClientByTurnId.delete(timing.turnId);
+    }
+  }
+}
+
+function isVisibleTurnEvent(method: string, params: JsonObject): boolean {
+  if (method.toLowerCase().endsWith("delta")) return Boolean(stringValue(params.delta));
+  if (method === "turn/plan/updated") return true;
+  if (method !== "item/started" && method !== "item/completed") return false;
+  const item = objectValue(params.item);
+  const type = stringValue(item?.type);
+  if (!type || type === "userMessage" || type === "reasoning") return false;
+  if (type === "agentMessage") return Boolean(stringValue(item?.text));
+  return true;
+}
+
+function isTerminalTurnEvent(method: string): boolean {
+  return ["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(method);
+}
+
+function duration(start: number | undefined, end: number | undefined): number | null {
+  return start === undefined || end === undefined ? null : round(Math.max(0, end - start));
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function objectValue(value: unknown): JsonObject | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as JsonObject : undefined;
 }
 
 function percentile(sorted: number[], value: number): number {

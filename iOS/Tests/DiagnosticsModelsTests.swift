@@ -20,7 +20,27 @@ final class DiagnosticsModelsTests: XCTestCase {
         let report = DiagnosticsReport(json: .object([
             "performance": .object([
                 "sessions": .object(["snapshots": .number(4), "patches": .number(12), "patchToSnapshotByteRatio": .number(0.08)]),
-                "rpcLatency": timing(p95: 42)
+                "rpcLatency": timing(p95: 42),
+                "turnLatency": .object([
+                    "firstVisible": timing(p95: 1_234),
+                    "recent": .array([
+                        .object([
+                            "clientUserMessageId": .string("client.1"),
+                            "threadId": .string("thread.1"),
+                            "turnId": .string("turn.1"),
+                            "receivedAt": .string("2026-08-01T08:00:00.000Z"),
+                            "receivedToForwardMs": .number(2),
+                            "forwardToAcceptedMs": .number(4),
+                            "acceptedToStartedMs": .number(8),
+                            "startedToFirstEventMs": .number(1_100),
+                            "startedToFirstVisibleMs": .number(1_220),
+                            "totalToFirstVisibleMs": .number(1_234),
+                            "totalDurationMs": .number(2_500),
+                            "firstVisibleMethod": .string("item/reasoning/summaryTextDelta"),
+                            "summary": .string("auto")
+                        ])
+                    ])
+                ])
             ]),
             "clientPerformance": .object([
                 "network": .object(["inboundMessages": .number(30), "inboundBytes": .number(2_048), "decodeLatency": timing(p95: 7)]),
@@ -31,6 +51,10 @@ final class DiagnosticsModelsTests: XCTestCase {
 
         XCTAssertEqual(report.bridgePerformance.patches, 12)
         XCTAssertEqual(report.bridgePerformance.rpcLatency.p95Ms, 42)
+        XCTAssertEqual(report.bridgePerformance.firstVisibleLatency.p95Ms, 1_234)
+        XCTAssertEqual(report.bridgePerformance.recentTurnLatencies.first?.turnId, "turn.1")
+        XCTAssertEqual(report.bridgePerformance.recentTurnLatencies.first?.startedToFirstVisibleMs, 1_220)
+        XCTAssertEqual(report.bridgePerformance.recentTurnLatencies.first?.summary, "auto")
         XCTAssertEqual(report.clientPerformance.inboundBytes, 2_048)
         XCTAssertEqual(report.clientPerformance.revisionGaps, 1)
         XCTAssertEqual(report.clientPerformance.deltaFlushLatency.p95Ms, 5)

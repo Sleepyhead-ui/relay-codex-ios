@@ -164,6 +164,28 @@ export interface BridgeDiagnosticPerformance {
     patchToSnapshotByteRatio: number;
   };
   rpcLatency: DiagnosticTimingMetrics;
+  turnLatency?: {
+    firstVisible: DiagnosticTimingMetrics;
+    recent: BridgeTurnLatencyDiagnostic[];
+  };
+}
+
+export interface BridgeTurnLatencyDiagnostic {
+  clientUserMessageId: string;
+  threadId: string;
+  turnId: string | null;
+  model: string | null;
+  effort: string | null;
+  summary: string | null;
+  receivedAt: string;
+  receivedToForwardMs: number | null;
+  forwardToAcceptedMs: number | null;
+  acceptedToStartedMs: number | null;
+  startedToFirstEventMs: number | null;
+  startedToFirstVisibleMs: number | null;
+  totalToFirstVisibleMs: number | null;
+  totalDurationMs: number;
+  firstVisibleMethod: string | null;
 }
 
 export interface DiagnosticReport {
