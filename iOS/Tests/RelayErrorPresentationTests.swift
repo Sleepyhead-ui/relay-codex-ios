@@ -50,8 +50,17 @@ final class RelayErrorPresentationTests: XCTestCase {
         let presentation = RelayErrorPresentation.make("Download failed: invalid file data")
 
         XCTAssertEqual(presentation.title, "文件处理失败")
-        XCTAssertFalse(presentation.message.contains("Download failed"))
+        XCTAssertTrue(presentation.message.contains("文件操作"))
+        XCTAssertTrue(presentation.message.contains("Download failed"))
         XCTAssertEqual(presentation.technicalDetails, "Download failed: invalid file data")
+    }
+
+    func testOutsideWorkspaceErrorKeepsTheOriginalReasonVisible() {
+        let raw = "That file is outside the configured workspace and was not referenced by the current conversation."
+        let presentation = RelayErrorPresentation.make(raw)
+
+        XCTAssertTrue(presentation.message.contains("当前对话"))
+        XCTAssertTrue(presentation.message.contains(raw))
     }
 
     func testChineseBusinessGuidanceIsPreserved() {

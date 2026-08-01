@@ -461,7 +461,7 @@ private struct InlineMessageImage: View {
 
     var body: some View {
         Button {
-            Task { await store.shareImagePreview(path: path) }
+            Task { await store.openImagePreview(path: path) }
         } label: {
             ZStack {
                 RelayTheme.softFill
@@ -499,7 +499,7 @@ private struct InlineMessageImage: View {
     }
 }
 
-private enum MessageImageDecoder {
+enum MessageImageDecoder {
     private static let cache = NSCache<NSString, UIImage>()
 
     static func image(at url: URL, maxPixelSize: CGFloat) async -> UIImage? {
@@ -726,6 +726,12 @@ private struct ToolEventRow: View {
                 .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
+
+            if item.kind == .image, let path = item.downloadablePaths.first {
+                InlineMessageImage(path: path, width: 200, height: 150, store: store)
+                    .padding(.leading, 29)
+                    .padding(.bottom, 7)
+            }
 
             if !item.downloadablePaths.isEmpty, expanded || item.kind == .image {
                 VStack(alignment: .leading, spacing: 5) {

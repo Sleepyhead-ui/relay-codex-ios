@@ -53,13 +53,14 @@ struct ConnectionView: View {
                                     .font(.system(size: 16, weight: .semibold))
                                 Spacer()
                             }
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Color.white)
                             .frame(height: 50)
-                            .background(Color.primary)
+                            .background(RelayTheme.accent)
                             .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                         }
                         .buttonStyle(.plain)
                         .disabled(store.socket.state.isConnecting)
+                        .opacity(store.socket.state.isConnecting ? 0.72 : 1)
 
                         Label("远程连接请使用 Tailscale 地址，不要把 Relay 端口直接暴露到公网。", systemImage: "lock.shield")
                             .font(.system(size: 12))

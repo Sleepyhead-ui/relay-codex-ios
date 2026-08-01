@@ -73,6 +73,34 @@ test("allows files from workspaces observed after bridge startup", async (t) => 
   const chunk = await manager.handle("relay/file/download/chunk", { downloadId: download.downloadId, index: 0 });
   assert.equal(Buffer.from(chunk.data, "base64").toString(), "release");
   await assert.rejects(() => manager.handle("relay/file/download/start", { path: outsideFile }), /outside/);
+
+  manager.allowConversationPayload({
+    items: [{ id: "answer.1", type: "agentMessage", text: `[download](${outsideFile})` }],
+  });
+  const referencedDownload = await manager.handle("relay/file/download/start", { path: outsideFile });
+  const referencedChunk = await manager.handle("relay/file/download/chunk", { downloadId: referencedDownload.downloadId, index: 0 });
+  assert.equal(Buffer.from(referencedChunk.data, "base64").toString(), "secret");
+});
+
+test("conversation authorization is exact and does not expose sibling files", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "relay-conversation-file-"));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  const manager = new FileTransferManager(root, path.join(root, ".relay-files"));
+  const referenced = path.join(outside, "result.zip");
+  const sibling = path.join(outside, "private.txt");
+  await writeFile(referenced, "result");
+  await writeFile(sibling, "private");
+
+  manager.allowConversationPayload({
+    type: "event",
+    params: { turn: { items: [{ id: "file.1", type: "fileChange", changes: [{ path: referenced }] }] } },
+  });
+
+  const download = await manager.handle("relay/file/download/start", { path: referenced });
+  const chunk = await manager.handle("relay/file/download/chunk", { downloadId: download.downloadId, index: 0 });
+  assert.equal(Buffer.from(chunk.data, "base64").toString(), "result");
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: sibling }), /not referenced/);
 });
 
 test("previews supported images outside the workspace without exposing other files", async (t) => {

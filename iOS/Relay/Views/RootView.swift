@@ -46,6 +46,9 @@ struct RootView: View {
         .sheet(item: $store.sharedFile) { file in
             ShareSheet(items: [file.url])
         }
+        .fullScreenCover(item: $store.imagePreview) { preview in
+            ImagePreviewView(preview: preview)
+        }
         .alert(errorPresentation?.title ?? "Relay", isPresented: Binding(
             get: { store.errorMessage != nil },
             set: { if !$0 { store.errorMessage = nil } }

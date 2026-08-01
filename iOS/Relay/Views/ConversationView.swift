@@ -11,8 +11,11 @@ struct ConversationView: View {
     @State private var heldLiveActivityPresentation: MobileActivityPresentation?
     @State private var activityPresentation: MobileActivityPresentation?
     @State private var keyboardTransitionID: UUID?
+    @State private var bottomMarkerY = CGFloat.greatestFiniteMagnitude
+    @State private var scrollViewportHeight: CGFloat = 0
 
     private let bottomAnchor = "relay-conversation-bottom"
+    private let scrollCoordinateSpace = "relay-conversation-scroll"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -199,13 +202,13 @@ struct ConversationView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomAnchor)
-                                .onAppear {
-                                    guard !isUserScrolling else { return }
-                                    isAtBottom = true
-                                    heldTranscriptWindow = nil
-                                }
-                                .onDisappear {
-                                    if keyboardTransitionID == nil { isAtBottom = false }
+                                .background {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: ConversationBottomMarkerPreferenceKey.self,
+                                            value: geometry.frame(in: .named(scrollCoordinateSpace)).minY
+                                        )
+                                    }
                                 }
                         }
                         .frame(maxWidth: RelayTheme.contentWidth)
@@ -214,7 +217,24 @@ struct ConversationView: View {
                         .padding(.bottom, 20)
                         .frame(maxWidth: .infinity)
                     }
+                    .coordinateSpace(name: scrollCoordinateSpace)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: ConversationViewportHeightPreferenceKey.self,
+                                value: geometry.size.height
+                            )
+                        }
+                    }
                     .scrollDismissesKeyboard(.interactively)
+                    .onPreferenceChange(ConversationBottomMarkerPreferenceKey.self) { value in
+                        bottomMarkerY = value
+                        refreshBottomVisibility()
+                    }
+                    .onPreferenceChange(ConversationViewportHeightPreferenceKey.self) { value in
+                        scrollViewportHeight = value
+                        refreshBottomVisibility()
+                    }
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 4)
                             .onChanged { _ in
@@ -317,6 +337,19 @@ struct ConversationView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
+    private func refreshBottomVisibility() {
+        let visible = ConversationBottomVisibility.isAtBottom(
+            bottomY: bottomMarkerY,
+            viewportHeight: scrollViewportHeight
+        )
+        if visible {
+            isAtBottom = true
+            if !isUserScrolling { heldTranscriptWindow = nil }
+        } else if keyboardTransitionID == nil {
+            isAtBottom = false
+        }
+    }
+
     private func revealOutgoingMessage(_ proxy: ScrollViewProxy) {
         heldTranscriptWindow = nil
         heldLiveActivityPresentation = nil
@@ -416,6 +449,16 @@ struct ConversationView: View {
         case .failed: return "Windows 连接已断开"
         }
     }
+}
+
+private struct ConversationBottomMarkerPreferenceKey: PreferenceKey {
+    static var defaultValue = CGFloat.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct ConversationViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct LoadingConversationView: View {

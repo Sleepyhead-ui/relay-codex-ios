@@ -83,7 +83,7 @@ struct RelayErrorPresentation: Equatable {
         if containsAny(normalized, fileMarkers) {
             return RelayErrorPresentation(
                 title: "文件处理失败",
-                message: localizedMessage(details, fallback: "Relay 未能完成这次文件操作，请重新选择或稍后再试。"),
+                message: fileMessage(details),
                 technicalDetails: details,
                 recoveryAction: nil
             )
@@ -157,5 +157,21 @@ struct RelayErrorPresentation: Equatable {
 
     private static func localizedMessage(_ value: String, fallback: String) -> String {
         containsHanCharacter(value) ? value : fallback
+    }
+
+    private static func fileMessage(_ details: String) -> String {
+        if containsHanCharacter(details) { return details }
+        let normalized = details.lowercased()
+        let summary: String
+        if normalized.contains("outside the configured workspace") {
+            summary = "该文件不在当前工作区内，且当前对话没有引用这个路径。"
+        } else if normalized.contains("not found") || normalized.contains("enoent") {
+            summary = "Windows 上已找不到这个文件。"
+        } else if normalized.contains("50 mb") || normalized.contains("25 mb") {
+            summary = "文件超过 Relay 当前允许的传输大小。"
+        } else {
+            summary = "Relay 未能完成这次文件操作，请重新选择或稍后再试。"
+        }
+        return "\(summary)\n\n原始错误：\(details)"
     }
 }

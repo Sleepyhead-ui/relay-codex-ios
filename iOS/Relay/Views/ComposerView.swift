@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import PhotosUI
+import CoreTransferable
 
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
@@ -70,7 +71,7 @@ struct ComposerView: View {
                             focused = false
                             showingPhotoPicker = true
                         } label: {
-                            Label("照片图库", systemImage: "photo.on.rectangle")
+                            Label("照片或视频", systemImage: "photo.on.rectangle")
                         }
                         Button {
                             focused = false
@@ -171,16 +172,6 @@ struct ComposerView: View {
                     runConfigurationMenu
                     contextMenu
 
-                    if focused {
-                        Button { focused = false } label: {
-                            Image(systemName: "keyboard.chevron.compact.down")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 32, height: 28)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Hide keyboard")
-                    }
                 }
                 .padding(.leading, 7)
                 .padding(.trailing, 4)
@@ -197,6 +188,15 @@ struct ComposerView: View {
             }
             .shadow(color: .black.opacity(0.16), radius: 16, y: 6)
             .animation(.easeOut(duration: 0.16), value: focused)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 14)
+                    .onEnded { value in
+                        guard focused,
+                              value.translation.height > 36,
+                              abs(value.translation.width) < value.translation.height else { return }
+                        focused = false
+                    }
+            )
         }
         .frame(maxWidth: RelayTheme.contentWidth)
         .padding(.horizontal, 12)
@@ -208,7 +208,7 @@ struct ComposerView: View {
             isPresented: $showingPhotoPicker,
             selection: $selectedPhotos,
             maxSelectionCount: 10,
-            matching: .images,
+            matching: .any(of: [.images, .videos]),
             photoLibrary: .shared()
         )
         .fileImporter(
@@ -247,9 +247,22 @@ struct ComposerView: View {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
             var urls: [URL] = []
-            for (index, photo) in photos.enumerated() {
-                guard let data = try await photo.loadTransferable(type: Data.self) else { continue }
-                let imageType = photo.supportedContentTypes.first(where: { $0.conforms(to: .image) })
+            for (index, item) in photos.enumerated() {
+                if let videoType = item.supportedContentTypes.first(where: { $0.conforms(to: .movie) }) {
+                    guard let video = try await item.loadTransferable(type: PickedVideo.self) else { continue }
+                    defer { try? FileManager.default.removeItem(at: video.localURL.deletingLastPathComponent()) }
+                    let fileExtension = videoType.preferredFilenameExtension ?? video.localURL.pathExtension.nonEmpty ?? "mov"
+                    let url = directory.appendingPathComponent("视频 \(index + 1).\(fileExtension)")
+                    try FileManager.default.copyItem(at: video.localURL, to: url)
+                    urls.append(url)
+                    continue
+                }
+
+                guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                guard data.count <= 50 * 1024 * 1024 else {
+                    throw AttachmentImportError.fileTooLarge("照片 \(index + 1)")
+                }
+                let imageType = item.supportedContentTypes.first(where: { $0.conforms(to: .image) })
                 let fileExtension = imageType?.preferredFilenameExtension ?? "jpg"
                 let url = directory.appendingPathComponent("照片 \(index + 1).\(fileExtension)")
                 try data.write(to: url, options: .atomic)
@@ -258,13 +271,13 @@ struct ComposerView: View {
 
             selectedPhotos = []
             guard !urls.isEmpty else {
-                store.errorMessage = "没有读取到可上传的照片。"
+                store.errorMessage = "没有读取到可上传的照片或视频。"
                 return
             }
             store.addAttachments(urls)
         } catch {
             selectedPhotos = []
-            store.errorMessage = "读取照片失败：\(error.localizedDescription)"
+            store.errorMessage = "读取照片或视频失败：\(error.localizedDescription)"
         }
     }
 
@@ -740,6 +753,30 @@ private enum AttachmentImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .fileTooLarge(let name): return "\(name) 超过 50 MB。"
+        }
+    }
+}
+
+private struct PickedVideo: Transferable {
+    let localURL: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { video in
+            SentTransferredFile(video.localURL)
+        } importing: { received in
+            let values = try received.file.resourceValues(forKeys: [.fileSizeKey])
+            let size = values.fileSize ?? 0
+            guard size <= 50 * 1024 * 1024 else {
+                throw AttachmentImportError.fileTooLarge(received.file.lastPathComponent)
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Relay Video Picker", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let name = received.file.lastPathComponent.nonEmpty ?? "视频.mov"
+            let destination = directory.appendingPathComponent(name)
+            try FileManager.default.copyItem(at: received.file, to: destination)
+            return PickedVideo(localURL: destination)
         }
     }
 }

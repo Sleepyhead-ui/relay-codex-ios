@@ -403,6 +403,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       const result = boundSessionSnapshot(await sessionActivity.turnSnapshot(message.params.threadId));
+      fileTransfer.allowConversationPayload(result);
       send(socket, { type: "rpcResult", id: message.id, result });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
@@ -428,6 +429,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
           performanceMetrics,
         );
         const stopWatching = sessionActivity.subscribe(threadId, (snapshot) => {
+          fileTransfer.allowConversationPayload(snapshot);
           if (sessionSourceOwnership.isRelayOwned(threadId, snapshot.turnId)) {
             performanceMetrics.recordSuppressedSessionUpdate();
             return;
@@ -442,6 +444,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
           },
         });
         const snapshot = await sessionActivity.turnSnapshot(threadId);
+        fileTransfer.allowConversationPayload(snapshot);
         const result = stream.initialize(snapshot);
         send(socket, {
           type: "rpcResult",
@@ -706,7 +709,10 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
       sessionSourceOwnership.bind(pending.params.threadId, turnId);
     }
   }
-  if ("result" in message) observeFileTransferWorkspaces(pending.method, message.result);
+  if ("result" in message) {
+    observeFileTransferWorkspaces(pending.method, message.result);
+    fileTransfer.allowConversationPayload(message.result);
+  }
   if (pending.method === "turn/start" && !("error" in message)) {
     const result = isObject(message.result) ? message.result : {};
     runtimeState.observeTurnStart(pending.params.threadId, result.turn);
@@ -803,6 +809,7 @@ function rememberThreadTitle(thread: JsonObject): void {
 }
 
 function handleCodexNotification(message: JsonObject): void {
+  fileTransfer.allowConversationPayload(message);
   if (typeof message.method === "string") {
     const latency = performanceMetrics.recordCodexEvent(
       message.method,

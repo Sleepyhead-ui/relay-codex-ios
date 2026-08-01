@@ -30,6 +30,7 @@ interface DownloadSession {
 export class FileTransferManager {
   readonly filesRoot: string;
   private readonly allowedRoots = new Set<string>();
+  private readonly referencedFiles = new Set<string>();
   private readonly defaultCwd: string | undefined;
   private readonly uploads = new Map<string, UploadSession>();
   private readonly downloads = new Map<string, DownloadSession>();
@@ -55,6 +56,13 @@ export class FileTransferManager {
   allowWorkspace(workspace: unknown): void {
     if (typeof workspace !== "string" || !workspace.trim()) return;
     this.allowedRoots.add(path.resolve(workspace));
+  }
+
+  /** Authorizes only exact file paths that Codex exposed in conversation data. */
+  allowConversationPayload(payload: unknown): void {
+    for (const candidate of referencedFilePaths(payload)) {
+      this.referencedFiles.add(pathKey(resolveRequestedPath(candidate, this.defaultCwd)));
+    }
   }
 
   async handle(method: string, params: JsonObject): Promise<JsonObject> {
@@ -149,9 +157,10 @@ export class FileTransferManager {
 
   private async startDownload(params: JsonObject): Promise<JsonObject> {
     const suppliedPath = requiredString(params, "path");
-    const requestedPath = path.resolve(path.isAbsolute(suppliedPath) ? suppliedPath : (this.defaultCwd ?? process.cwd()), path.isAbsolute(suppliedPath) ? "" : suppliedPath);
-    if (![...this.allowedRoots].some((root) => isInside(root, requestedPath))) {
-      throw new Error("That file is outside the configured workspace.");
+    const requestedPath = resolveRequestedPath(suppliedPath, this.defaultCwd);
+    const isAllowedRoot = [...this.allowedRoots].some((root) => isInside(root, requestedPath));
+    if (!isAllowedRoot && !this.referencedFiles.has(pathKey(requestedPath))) {
+      throw new Error("That file is outside the configured workspace and was not referenced by the current conversation.");
     }
     return this.createDownload(requestedPath, MAX_FILE_BYTES);
   }
@@ -246,4 +255,68 @@ function safeName(value: string): string {
 function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function referencedFilePaths(payload: unknown): string[] {
+  const paths = new Set<string>();
+
+  const add = (value: unknown, requireAbsolute = false): void => {
+    if (typeof value !== "string") return;
+    const candidate = value.trim().replace(/:\d+$/u, "");
+    if (!candidate || (requireAbsolute && !isAbsolutePath(candidate))) return;
+    paths.add(candidate);
+  };
+
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 12 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    if (typeof value !== "object") return;
+    const object = value as Record<string, unknown>;
+    const type = typeof object.type === "string" ? object.type : "";
+
+    if (type === "agentMessage" && typeof object.text === "string") {
+      const expression = /\]\(<?((?:[A-Za-z]:[\\/]|\/)[^)>\r\n]+)>?\)/gu;
+      for (const match of object.text.matchAll(expression)) add(match[1], true);
+    } else if (type === "fileChange" && Array.isArray(object.changes)) {
+      for (const change of object.changes) {
+        if (change && typeof change === "object") add((change as Record<string, unknown>).path);
+      }
+    } else if (type === "imageView") {
+      add(object.path, true);
+    } else if (type === "imageGeneration") {
+      add(object.savedPath, true);
+      add(object.result, true);
+    } else if (type === "userMessage" && Array.isArray(object.content)) {
+      for (const content of object.content) {
+        if (!content || typeof content !== "object") continue;
+        const item = content as Record<string, unknown>;
+        if (["localImage", "image", "mention"].includes(String(item.type))) add(item.path);
+      }
+    }
+
+    for (const key of ["params", "result", "thread", "turn", "turns", "items", "content", "snapshot", "patch", "upsertItems"]) {
+      visit(object[key], depth + 1);
+    }
+  };
+
+  visit(payload, 0);
+  return [...paths];
+}
+
+function resolveRequestedPath(suppliedPath: string, defaultCwd?: string): string {
+  if (path.isAbsolute(suppliedPath)) return path.resolve(suppliedPath);
+  if (path.win32.isAbsolute(suppliedPath)) return path.win32.normalize(suppliedPath);
+  return path.resolve(defaultCwd ?? process.cwd(), suppliedPath);
+}
+
+function isAbsolutePath(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function pathKey(value: string): string {
+  const normalized = path.win32.isAbsolute(value) ? path.win32.normalize(value) : path.normalize(value);
+  return process.platform === "win32" || path.win32.isAbsolute(value) ? normalized.toLowerCase() : normalized;
 }

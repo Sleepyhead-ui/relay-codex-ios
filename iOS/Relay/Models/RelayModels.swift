@@ -276,6 +276,12 @@ struct SharedFile: Identifiable {
     let url: URL
 }
 
+struct ImagePreviewPresentation: Identifiable, Equatable {
+    var id: String { path }
+    let path: String
+    let url: URL
+}
+
 struct ExecutionPlanStep: Identifiable, Equatable {
     let id: String
     let text: String

@@ -38,6 +38,7 @@ final class RelayStore: ObservableObject {
     @Published var attachments: [PendingAttachment] = []
     @Published var workspaceAccess: WorkspaceAccessMode = .workspaceWrite
     @Published var sharedFile: SharedFile?
+    @Published var imagePreview: ImagePreviewPresentation?
     @Published var downloadingPath: String?
     @Published var imagePreviewURLs: [String: URL] = [:]
     @Published var loadingImagePaths = Set<String>()

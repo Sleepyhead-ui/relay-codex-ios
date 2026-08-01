@@ -75,13 +75,13 @@ extension RelayStore {
         }
     }
 
-    func shareImagePreview(path: String) async {
+    func openImagePreview(path: String) async {
         if imagePreviewURLs[path] == nil { await loadImagePreview(path: path) }
         guard let url = imagePreviewURLs[path] else {
             errorMessage = "图片暂时无法从 Windows 读取。"
             return
         }
-        sharedFile = SharedFile(url: url)
+        imagePreview = ImagePreviewPresentation(path: path, url: url)
     }
 
     private func cleanupStagedAttachment(at url: URL) {
