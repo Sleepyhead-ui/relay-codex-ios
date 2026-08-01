@@ -1,0 +1,57 @@
+[
+  {
+    "source": "upsert",
+    "turnId": "turn.old",
+    "items": [
+      {"id":"progress.old","type":"agentMessage","phase":"commentary","text":"正在检查同步状态。"},
+      {"id":"answer.old","type":"agentMessage","phase":"final_answer","text":"上一轮已经完成。"}
+    ]
+  },
+  {
+    "source": "history",
+    "items": [
+      {"id":"item-5432","turnId":"turn.old","type":"userMessage","content":[{"type":"text","text":"继续"}]},
+      {"id":"progress.old","turnId":"turn.old","type":"agentMessage","phase":"commentary","text":"正在检查同步状态。"},
+      {"id":"answer.old","turnId":"turn.old","type":"agentMessage","phase":"final_answer","text":"上一轮已经完成。"}
+    ]
+  },
+  {
+    "source": "snapshot",
+    "turnId": "turn.old",
+    "items": [
+      {"id":"msg_019fbbb4-b230-7052-bdc3-0adcb08086d1","type":"userMessage","content":[{"type":"text","text":"继续"}]},
+      {"id":"progress.old","type":"agentMessage","phase":"commentary","text":"正在检查同步状态。"},
+      {"id":"answer.old","type":"agentMessage","phase":"final_answer","text":"上一轮已经完成。"}
+    ]
+  },
+  {
+    "source": "snapshot",
+    "turnId": "turn.current",
+    "items": [
+      {"id":"msg_019fbbb4-b230-7052-bdc3-0adcb08086d2","type":"userMessage","content":[{"type":"text","text":"检查下一阶段"}]},
+      {"id":"progress.current","type":"agentMessage","phase":"commentary","text":"正在读取路线。"}
+    ]
+  },
+  {
+    "source": "delta",
+    "delta": {
+      "id": "command.old",
+      "turnId": "turn.old",
+      "role": "tool",
+      "kind": "command",
+      "title": "运行命令",
+      "text": "git status",
+      "detail": "",
+      "phase": null
+    }
+  },
+  {
+    "source": "patch",
+    "turnId": "turn.current",
+    "items": [
+      {"id":"msg_019fbbb4-b230-7052-bdc3-0adcb08086d2","type":"userMessage","content":[{"type":"text","text":"检查下一阶段"}]},
+      {"id":"progress.current","type":"agentMessage","phase":"commentary","text":"正在读取路线和近期提交。"},
+      {"id":"answer.current","type":"agentMessage","phase":"final_answer","text":"进入质量体系阶段。"}
+    ]
+  }
+]

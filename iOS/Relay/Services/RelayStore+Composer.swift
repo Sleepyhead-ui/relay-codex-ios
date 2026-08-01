@@ -70,7 +70,8 @@ extension RelayStore {
                 : (envelope?.automaticallyRecoverable == false
                     ? .failed("上次发送未能启动任务，可编辑后重新发送。")
                     : .uncertain("正在等待 Windows 确认是否送达。")),
-            imagePaths: draft.attachments.filter(\.isImage).compactMap(\.remotePath)
+            imagePaths: draft.attachments.filter(\.isImage).compactMap(\.remotePath),
+            createdAt: envelope?.createdAt
         )
     }
 
@@ -653,7 +654,8 @@ extension RelayStore {
             kind: .message,
             text: displayText,
             deliveryState: .sending,
-            imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath)
+            imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath),
+            createdAt: Date()
         ))
         defer { sendingThreadIds.remove(threadId) }
         do {
@@ -760,7 +762,8 @@ extension RelayStore {
             kind: .message,
             text: displayText,
             deliveryState: .sending,
-            imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath)
+            imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath),
+            createdAt: Date()
         ))
         defer { sendingThreadIds.remove(threadId) }
         do {

@@ -117,6 +117,7 @@ final class RelayStore: ObservableObject {
     var transcriptIndex = TranscriptIndex()
     var isApplyingIndexedTranscriptMutation = false
     private(set) var transcriptRevision = 0
+    let transcriptTrace = TranscriptTraceRecorder()
 
     var needsConnection: Bool { host.endpoint.isEmpty || token.isEmpty }
     var composerText: String {
@@ -694,6 +695,10 @@ final class RelayStore: ObservableObject {
                 messages = TranscriptReconciler.mergeHistoryItems(loadedMessages, into: messages)
                 turnMetadata.merge(loadedMetadata) { _, loaded in loaded }
             }
+            recordTranscriptTrace(
+                source: switchingThreads ? "history.replace" : "history.merge",
+                turnId: turns.last?["id"]?.stringValue
+            )
             let status = result["thread"]?["status"]?["type"]?.stringValue
                 ?? result["thread"]?["status"]?.stringValue
                 ?? "idle"
@@ -778,6 +783,7 @@ final class RelayStore: ObservableObject {
             }
             let existingIds = Set(messages.map(\.id))
             messages = olderMessages.filter { !existingIds.contains($0.id) } + messages
+            recordTranscriptTrace(source: "history.prepend", turnId: turns.last?["id"]?.stringValue)
             if let nextCursor = result["nextCursor"]?.stringValue {
                 olderTurnsCursorByThread[threadId] = nextCursor
                 hasOlderTurns = true
@@ -1218,6 +1224,7 @@ final class RelayStore: ObservableObject {
         pendingTextDeltas.removeAll()
         pendingDetailDeltas.removeAll()
         pendingDeltaOrder.removeAll()
+        transcriptTrace.reset()
         threads = []
         messages = []
         turnMetadata = [:]

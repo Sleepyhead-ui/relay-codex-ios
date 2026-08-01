@@ -182,6 +182,12 @@ extension RelayStore {
         default:
             break
         }
+        if [
+            "turn/started", "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed",
+            "item/started", "item/completed", "thread/compacted"
+        ].contains(method) {
+            recordTranscriptTrace(source: "event.\(method)", turnId: eventTurnId)
+        }
     }
 
     func applyBackgroundEvent(method: String, params: JSONValue, threadId: String) {
@@ -328,6 +334,7 @@ extension RelayStore {
         let events = queuedEvents
         queuedEvents = []
         for event in events { applyEvent(method: event.method, params: event.params) }
+        recordTranscriptTrace(source: "reconciliation.complete")
         cacheCurrentThread()
     }
 

@@ -8,6 +8,18 @@ extension RelayStore {
             let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
             var combined = result.objectValue ?? [:]
             combined["clientPerformance"] = socket.performanceMetrics.report()
+            let timelineViolations = TranscriptTimelineAudit.violations(in: messages)
+            var checks = combined["checks"]?.arrayValue ?? []
+            checks.append(.object([
+                "id": .string("ios-transcript-timeline"),
+                "level": .string(timelineViolations.isEmpty ? "ok" : "error"),
+                "title": .string("对话时间线"),
+                "detail": .string(timelineViolations.isEmpty
+                    ? "当前消息顺序通过唯一 ID、连续任务分组和首条提示词位置检查。"
+                    : "检测到 \(timelineViolations.count) 项顺序异常，诊断导出中包含脱敏回放轨迹。")
+            ]))
+            combined["checks"] = .array(checks)
+            combined["transcriptTrace"] = transcriptTrace.report(currentMessages: messages)
             diagnosticsReport = DiagnosticsReport(json: .object(combined))
         } catch {
             report(error)
@@ -117,6 +129,7 @@ extension RelayStore {
         outboundDrafts = [:]
         forgetOutboundDeliveries(hostId: forgottenHostId)
         threadSnapshots.removeAll()
+        transcriptTrace.reset()
         olderTurnsCursorByThread = [:]
         hasOlderTurns = false
         workingDirectoryOverrides = [:]

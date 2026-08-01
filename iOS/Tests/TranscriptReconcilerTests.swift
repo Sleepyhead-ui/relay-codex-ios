@@ -198,6 +198,15 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(messages.map(\.id), ["msg_1", "msg_2"])
     }
 
+    func testUpsertPreservesSamePromptAcrossDifferentTurns() {
+        var messages = [item(id: "item-1", turnId: "turn.1", role: .user, text: "继续")]
+        TranscriptReconciler.upsert(
+            item(id: "msg_2", turnId: "turn.2", role: .user, text: "继续"),
+            into: &messages
+        )
+        XCTAssertEqual(messages.map(\.id), ["item-1", "msg_2"])
+    }
+
     func testUpsertMergesOneCodexPromptReportedByHistoryAndRollout() {
         var messages = [item(id: "msg_1", turnId: "turn.1", role: .user, text: "继续")]
         TranscriptReconciler.upsert(
@@ -320,8 +329,31 @@ final class TranscriptReconcilerTests: XCTestCase {
 
     func testUpsertDoesNotDuplicateUserMessageFromHistory() {
         var messages = [item(id: "client.1", turnId: nil, role: .user, text: "执行测试")]
-        TranscriptReconciler.upsert(item(id: "history.1", turnId: "turn.1", role: .user, text: "执行测试"), into: &messages)
+        TranscriptReconciler.upsert(item(id: "client.1", turnId: "turn.1", role: .user, text: "执行测试"), into: &messages)
         XCTAssertEqual(messages.count, 1)
+    }
+
+    func testOlderHistoryDoesNotStealAnUnboundRepeatedPrompt() {
+        let pending = TranscriptItem(
+            id: "relay.pending",
+            role: .user,
+            kind: .message,
+            text: "继续",
+            createdAt: Date(timeIntervalSince1970: 2_000)
+        )
+        let older = TranscriptItem(
+            id: "item-old",
+            turnId: "turn.old",
+            role: .user,
+            kind: .message,
+            text: "继续",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let result = TranscriptReconciler.mergeHistoryItems([older], into: [pending])
+
+        XCTAssertEqual(result.map(\.id), ["item-old", "relay.pending"])
+        XCTAssertEqual(result.last?.turnId, nil)
     }
 
     func testSnapshotCacheEvictsOldestUnselectedThread() {

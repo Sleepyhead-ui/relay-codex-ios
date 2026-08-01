@@ -210,6 +210,9 @@ enum TranscriptReconciler {
             } else if let turnId = item.turnId,
                       let lastTurnIndex = result.lastIndex(where: { $0.turnId == turnId }) {
                 result.insert(item, at: lastTurnIndex + 1)
+            } else if item.turnId != nil,
+                      let firstUnboundIndex = result.firstIndex(where: { $0.turnId == nil }) {
+                result.insert(item, at: firstUnboundIndex)
             } else {
                 result.append(item)
             }
@@ -394,17 +397,24 @@ enum TranscriptReconciler {
 
     private static func equivalentUserMessage(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
         guard lhs.role == .user, rhs.role == .user,
-              lhs.turnId == rhs.turnId || lhs.turnId == nil || rhs.turnId == nil else { return false }
-        return normalizedText(lhs.text) == normalizedText(rhs.text)
+              let lhsTurnId = lhs.turnId,
+              lhsTurnId == rhs.turnId else { return false }
+        return sameUserContent(lhs, rhs)
+    }
+
+    private static func sameUserContent(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
+        normalizedText(lhs.text) == normalizedText(rhs.text)
             && lhs.imagePaths == rhs.imagePaths
             && lhs.goal == rhs.goal
     }
 
     private static func shouldMergeUserUpsert(_ lhs: TranscriptItem, _ rhs: TranscriptItem) -> Bool {
-        guard equivalentUserMessage(lhs, rhs) else { return false }
-        if lhs.turnId == nil || rhs.turnId == nil { return true }
-        if let left = lhs.createdAt, let right = rhs.createdAt,
-           abs(left.timeIntervalSince(right)) <= 2 { return true }
+        guard lhs.role == .user, rhs.role == .user, sameUserContent(lhs, rhs) else { return false }
+        if lhs.turnId == nil || rhs.turnId == nil {
+            guard let left = lhs.createdAt, let right = rhs.createdAt else { return false }
+            return abs(left.timeIntervalSince(right)) <= 2
+        }
+        guard lhs.turnId == rhs.turnId else { return false }
         let lhsIsHistory = lhs.id.hasPrefix("item-")
         let rhsIsHistory = rhs.id.hasPrefix("item-")
         let lhsIsRollout = lhs.id.hasPrefix("msg_")

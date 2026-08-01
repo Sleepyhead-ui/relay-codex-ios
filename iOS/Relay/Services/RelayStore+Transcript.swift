@@ -87,9 +87,13 @@ extension RelayStore {
             }
             return nil
         }
+        let previousMessageCount = messages.count
         isApplyingIndexedTranscriptMutation = true
         _ = transcriptIndex.applyDeltaBatch(updates, to: &messages)
         isApplyingIndexedTranscriptMutation = false
+        if messages.count != previousMessageCount {
+            recordTranscriptTrace(source: "delta.insert", turnId: updates.last?.turnId)
+        }
         socket.performanceMetrics.recordDeltaFlush(
             items: updatedItemCount,
             milliseconds: ClientPerformanceClock.milliseconds(since: startedAt)
@@ -170,6 +174,7 @@ extension RelayStore {
         lastSessionUpdateAt[threadId] = Date()
         let snapshotItems = result["items"]?.arrayValue?.compactMap { TranscriptItem.from(json: $0, turnId: turnId) } ?? []
         if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
+        recordTranscriptTrace(source: "session.snapshot", turnId: turnId)
         applySessionStatus(result, threadId: threadId, turnId: turnId)
     }
 
@@ -198,6 +203,7 @@ extension RelayStore {
             })
             adoptReconciledSessionPatch(nextMessages, changedItemIds: changedItemIds, hasRemovals: !removedItemIds.isEmpty)
             applyUserMessagePlacements(turnId: turnId, threadId: threadId)
+            recordTranscriptTrace(source: "session.patch", turnId: turnId)
         }
         applySessionStatus(patch, threadId: threadId, turnId: turnId)
     }
@@ -289,6 +295,16 @@ extension RelayStore {
             to: messages
         )
         if nextMessages != messages { messages = nextMessages }
+    }
+
+    func recordTranscriptTrace(source: String, turnId: String? = nil) {
+        transcriptTrace.record(
+            source: source,
+            threadId: selectedThreadId,
+            turnId: turnId,
+            revision: transcriptRevision,
+            messages: messages
+        )
     }
 
     func cacheCurrentThread() {
