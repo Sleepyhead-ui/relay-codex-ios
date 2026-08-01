@@ -30,6 +30,38 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
         ))
     }
 
+    func testChecksIdleSelectedThreadForExternalTurnEverySecond() {
+        XCTAssertEqual(
+            SelectedSessionSyncPolicy.nextCheckDelay(
+                hasActiveSubscription: true,
+                isLocallyRunning: false
+            ),
+            1_000_000_000
+        )
+        XCTAssertTrue(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
+            isLocallyRunning: false,
+            connected: true
+        ))
+    }
+
+    func testDoesNotProbeExternalRuntimeWhileLocalTurnIsRunningOrDisconnected() {
+        XCTAssertEqual(
+            SelectedSessionSyncPolicy.nextCheckDelay(
+                hasActiveSubscription: true,
+                isLocallyRunning: true
+            ),
+            5_000_000_000
+        )
+        XCTAssertFalse(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
+            isLocallyRunning: true,
+            connected: true
+        ))
+        XCTAssertFalse(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
+            isLocallyRunning: false,
+            connected: false
+        ))
+    }
+
     func testKeepsWatchingAnIdleSelectedThreadForExternalTurns() {
         XCTAssertTrue(SelectedSessionSyncPolicy.shouldContinue(
             initialThreadId: "thread.1",

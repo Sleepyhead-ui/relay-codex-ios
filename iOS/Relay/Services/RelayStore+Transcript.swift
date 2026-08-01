@@ -127,6 +127,7 @@ extension RelayStore {
                 self.lastSessionUpdateAt[initialThreadId] = Date()
                 self.applySessionSnapshot(initial, threadId: initialThreadId)
             }
+            await self.promoteSelectedExternalRuntimeIfNeeded(threadId: initialThreadId)
             while !Task.isCancelled {
                 guard let threadId = self.selectedThreadId,
                       SelectedSessionSyncPolicy.shouldContinue(
@@ -135,8 +136,12 @@ extension RelayStore {
                         showingArchivedThreads: self.showingArchivedThreads,
                         connected: self.socket.state == .connected
                       ) else { break }
-                let retryDelay = SelectedSessionSyncPolicy.retryDelay(hasActiveSubscription: hasActiveSubscription)
+                let retryDelay = SelectedSessionSyncPolicy.nextCheckDelay(
+                    hasActiveSubscription: hasActiveSubscription,
+                    isLocallyRunning: self.isRunning
+                )
                 do { try await Task.sleep(nanoseconds: retryDelay) } catch { break }
+                await self.promoteSelectedExternalRuntimeIfNeeded(threadId: threadId)
                 if SelectedSessionSyncPolicy.shouldRefreshSubscription(
                     hasActiveSubscription: hasActiveSubscription,
                     lastUpdateAt: self.lastSessionUpdateAt[threadId]
@@ -145,6 +150,28 @@ extension RelayStore {
                 }
             }
         }
+    }
+
+    private func promoteSelectedExternalRuntimeIfNeeded(threadId: String) async {
+        guard selectedThreadId == threadId,
+              SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
+                isLocallyRunning: isRunning,
+                connected: socket.state == .connected
+              ),
+              let runtime = try? await socket.rpc(
+                method: "relay/thread/runtime",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 4,
+                reconnectOnTimeout: false
+              ),
+              selectedThreadId == threadId,
+              runtime["known"]?.boolValue == true,
+              runtime["isRunning"]?.boolValue == true else { return }
+        reconcileRuntimeState(runtime)
+        recordTranscriptTrace(
+            source: "runtime.external.promote",
+            turnId: runtime["activeTurnId"]?.stringValue
+        )
     }
 
     @discardableResult
