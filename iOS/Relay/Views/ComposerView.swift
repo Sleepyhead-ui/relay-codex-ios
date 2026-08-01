@@ -295,12 +295,13 @@ struct ComposerView: View {
                     for url in urls {
                         let accessed = url.startAccessingSecurityScopedResource()
                         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-                        guard data.count <= 50 * 1024 * 1024 else {
+                        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                        let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                        guard fileSize <= 50 * 1024 * 1024 else {
                             throw AttachmentImportError.fileTooLarge(url.lastPathComponent)
                         }
                         let destination = directory.appendingPathComponent(url.lastPathComponent)
-                        try data.write(to: destination, options: .atomic)
+                        try FileManager.default.copyItem(at: url, to: destination)
                         staged.append(destination)
                     }
                     continuation.resume(returning: staged)

@@ -192,6 +192,22 @@ final class MobileActivityFeedTests: XCTestCase {
         XCTAssertEqual(feed.progressItems.first?.id, "progress.frame.4")
     }
 
+    func testCachesAFeedUntilTheTranscriptRevisionChanges() {
+        var cache = MobileActivityFeedCache()
+        var evaluations = 0
+        func items() -> [TranscriptItem] {
+            evaluations += 1
+            return [progress(id: "progress.1", text: "Working")]
+        }
+
+        _ = cache.feed(threadId: "thread.1", turnId: "turn.1", transcriptRevision: 10, items: items())
+        _ = cache.feed(threadId: "thread.1", turnId: "turn.1", transcriptRevision: 10, items: items())
+        XCTAssertEqual(evaluations, 1)
+
+        _ = cache.feed(threadId: "thread.1", turnId: "turn.1", transcriptRevision: 11, items: items())
+        XCTAssertEqual(evaluations, 2)
+    }
+
     private func progress(id: String, text: String) -> TranscriptItem {
         TranscriptItem(
             id: id,

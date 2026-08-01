@@ -85,6 +85,7 @@ final class RelayStore: ObservableObject {
     let failedTurnDraftDismissalsDefaultsKey = "relay.failedTurnDraftDismissals.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
+    var backgroundConnectionIdentifier: UUID?
     private var notifiedCompletionTurnIds = Set<String>()
     private var notifiedCompletionTurnOrder: [String] = []
     private var pendingNotificationReplies: [PendingNotificationReply] = []
@@ -109,6 +110,7 @@ final class RelayStore: ObservableObject {
     var liveSessionSyncTask: Task<Void, Never>?
     var liveSessionSyncGeneration = UUID()
     var subscribedSessionThreadId: String?
+    var subscribedSessionId: String?
     var sessionRevisionTracker = SessionRevisionTracker()
     var lastSessionUpdateAt: [String: Date] = [:]
     var recoveringSessionThreadIds = Set<String>()
@@ -117,6 +119,8 @@ final class RelayStore: ObservableObject {
     var pendingDeltaOrder: [String] = []
     var deltaFlushTask: Task<Void, Never>?
     var transcriptIndex = TranscriptIndex()
+    var mobileActivityFeedCache = MobileActivityFeedCache()
+    var attachmentUploadTasks: [UUID: Task<Void, Never>] = [:]
     var isApplyingIndexedTranscriptMutation = false
     private(set) var transcriptRevision = 0
     let transcriptTrace = TranscriptTraceRecorder()
@@ -182,6 +186,15 @@ final class RelayStore: ObservableObject {
     }
     var selectedModel: CodexModelOption? {
         modelOptions.first { $0.id == selectedModelId || $0.model == selectedModelId }
+    }
+
+    func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
+        mobileActivityFeedCache.feed(
+            threadId: threadId,
+            turnId: turnId,
+            transcriptRevision: transcriptRevision,
+            items: turnId.map { transcriptItems(turnId: $0).filter(\.isActivity) } ?? []
+        )
     }
     var planModeAvailable: Bool {
         collaborationModes.contains { option in
@@ -298,11 +311,15 @@ final class RelayStore: ObservableObject {
         }
         socket.onBridgeStatus = { [weak self] message in self?.handleBridgeStatus(message) }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
-        socket.onSessionSnapshot = { [weak self] threadId, snapshot in
-            self?.applySessionSnapshot(snapshot, threadId: threadId)
+        socket.onSessionSnapshot = { [weak self] threadId, subscriptionId, snapshot in
+            guard let self,
+                  subscriptionId == nil || subscriptionId == self.subscribedSessionId else { return }
+            self.applySessionSnapshot(snapshot, threadId: threadId)
         }
-        socket.onSessionPatch = { [weak self] threadId, patch in
-            self?.applySessionPatch(patch, threadId: threadId)
+        socket.onSessionPatch = { [weak self] threadId, subscriptionId, patch in
+            guard let self,
+                  subscriptionId == nil || subscriptionId == self.subscribedSessionId else { return }
+            self.applySessionPatch(patch, threadId: threadId)
         }
         socket.onPromptQueueUpdated = { [weak self] threadId, message in
             self?.applyPromptQueueUpdate(threadId: threadId, items: message["items"]?.arrayValue ?? [])
@@ -542,18 +559,23 @@ final class RelayStore: ObservableObject {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
             if let subscribedSessionThreadId {
+                let subscriptionId = subscribedSessionId
                 sessionRevisionTracker.remove(threadId: subscribedSessionThreadId)
                 lastSessionUpdateAt.removeValue(forKey: subscribedSessionThreadId)
                 recoveringSessionThreadIds.remove(subscribedSessionThreadId)
                 Task { [weak self] in
                     _ = try? await self?.socket.rpc(
                         method: "relay/thread/session/unsubscribe",
-                        params: ["threadId": .string(subscribedSessionThreadId)],
+                        params: [
+                            "threadId": .string(subscribedSessionThreadId),
+                            "subscriptionId": subscriptionId.map(JSONValue.string) ?? .null
+                        ],
                         timeoutSeconds: 4,
                         reconnectOnTimeout: false
                     )
                 }
                 self.subscribedSessionThreadId = nil
+                self.subscribedSessionId = nil
             }
         }
         if switchingThreads { cacheCurrentThread() }
@@ -1232,6 +1254,7 @@ final class RelayStore: ObservableObject {
         liveSessionSyncTask = nil
         deltaFlushTask = nil
         subscribedSessionThreadId = nil
+        subscribedSessionId = nil
         sessionRevisionTracker.removeAll()
         lastSessionUpdateAt.removeAll()
         recoveringSessionThreadIds.removeAll()
@@ -1393,6 +1416,7 @@ final class RelayStore: ObservableObject {
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         subscribedSessionThreadId = nil
+        subscribedSessionId = nil
         await refreshCodexProfiles(showErrors: false)
         restoreOutboundDeliveriesForCurrentScope()
         async let threadsRefresh: Void = refreshThreads(showErrors: false)
@@ -1460,6 +1484,7 @@ final class RelayStore: ObservableObject {
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil
         subscribedSessionThreadId = nil
+        subscribedSessionId = nil
         threadLoadGeneration = UUID()
         threads = []
         messages = []

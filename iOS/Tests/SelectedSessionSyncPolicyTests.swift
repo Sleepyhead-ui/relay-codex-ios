@@ -2,20 +2,20 @@ import XCTest
 @testable import Relay
 
 final class SelectedSessionSyncPolicyTests: XCTestCase {
-    func testRetriesSilentSubscriptionWithinFiveSeconds() {
+    func testRetriesOnlyAfterARealHealthTimeout() {
         XCTAssertEqual(
             SelectedSessionSyncPolicy.retryDelay(hasActiveSubscription: true),
-            5_000_000_000
+            15_000_000_000
         )
         XCTAssertTrue(SelectedSessionSyncPolicy.shouldRefreshSubscription(
             hasActiveSubscription: true,
             lastUpdateAt: Date(timeIntervalSince1970: 10),
-            now: Date(timeIntervalSince1970: 14)
+            now: Date(timeIntervalSince1970: 55)
         ))
         XCTAssertFalse(SelectedSessionSyncPolicy.shouldRefreshSubscription(
             hasActiveSubscription: true,
             lastUpdateAt: Date(timeIntervalSince1970: 11),
-            now: Date(timeIntervalSince1970: 14)
+            now: Date(timeIntervalSince1970: 55)
         ))
     }
 
@@ -30,13 +30,13 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
         ))
     }
 
-    func testChecksIdleSelectedThreadForExternalTurnEverySecond() {
+    func testChecksIdleSelectedThreadWithoutOneSecondPolling() {
         XCTAssertEqual(
             SelectedSessionSyncPolicy.nextCheckDelay(
                 hasActiveSubscription: true,
                 isLocallyRunning: false
             ),
-            1_000_000_000
+            15_000_000_000
         )
         XCTAssertTrue(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
             isLocallyRunning: false,
@@ -50,7 +50,7 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
                 hasActiveSubscription: true,
                 isLocallyRunning: true
             ),
-            5_000_000_000
+            15_000_000_000
         )
         XCTAssertFalse(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
             isLocallyRunning: true,
@@ -89,6 +89,25 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
             selectedThreadId: "thread.1",
             showingArchivedThreads: true,
             connected: true
+        ))
+    }
+
+    func testForegroundSkipsHistoryRestorationWhenConnectionGenerationIsUnchanged() {
+        let generation = UUID()
+        XCTAssertFalse(SelectedSessionSyncPolicy.shouldRestoreOnForeground(
+            connected: true,
+            backgroundConnectionIdentifier: generation,
+            currentConnectionIdentifier: generation
+        ))
+        XCTAssertTrue(SelectedSessionSyncPolicy.shouldRestoreOnForeground(
+            connected: true,
+            backgroundConnectionIdentifier: UUID(),
+            currentConnectionIdentifier: generation
+        ))
+        XCTAssertTrue(SelectedSessionSyncPolicy.shouldRestoreOnForeground(
+            connected: false,
+            backgroundConnectionIdentifier: generation,
+            currentConnectionIdentifier: generation
         ))
     }
 }

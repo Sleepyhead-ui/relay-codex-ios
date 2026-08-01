@@ -84,6 +84,11 @@ export class PerformanceMetrics {
   private sessionPatches = 0;
   private sessionPatchBytes = 0;
   private suppressedSessionUpdates = 0;
+  private coalescedSessionUpdates = 0;
+  private supersededSessionBytes = 0;
+  private sessionBackpressureEvents = 0;
+  private maximumSocketBufferedBytes = 0;
+  private largestSessionFrameBytes = 0;
   private codexEvents = 0;
   private codexDeltas = 0;
   private readonly rpcLatency = new BoundedTiming();
@@ -111,6 +116,18 @@ export class PerformanceMetrics {
   }
 
   recordSuppressedSessionUpdate(): void { this.suppressedSessionUpdates += 1; }
+  recordBackpressure(bufferedAmount: number): void {
+    this.sessionBackpressureEvents += 1;
+    this.maximumSocketBufferedBytes = Math.max(this.maximumSocketBufferedBytes, Math.max(0, bufferedAmount));
+  }
+  recordCoalescedSessionUpdate(estimatedBytes: number): void {
+    this.coalescedSessionUpdates += 1;
+    this.supersededSessionBytes += Math.max(0, estimatedBytes);
+  }
+  recordSessionFrame(frameBytes: number, bufferedAmount: number): void {
+    this.largestSessionFrameBytes = Math.max(this.largestSessionFrameBytes, Math.max(0, frameBytes));
+    this.maximumSocketBufferedBytes = Math.max(this.maximumSocketBufferedBytes, Math.max(0, bufferedAmount));
+  }
   recordRpcLatency(milliseconds: number): void { this.rpcLatency.record(milliseconds); }
 
   recordTurnReceived(
@@ -196,6 +213,11 @@ export class PerformanceMetrics {
         patches: this.sessionPatches,
         patchBytes,
         suppressedUpdates: this.suppressedSessionUpdates,
+        coalescedUpdates: this.coalescedSessionUpdates,
+        supersededEstimatedBytes: this.supersededSessionBytes,
+        backpressureEvents: this.sessionBackpressureEvents,
+        maximumSocketBufferedBytes: this.maximumSocketBufferedBytes,
+        largestFrameBytes: this.largestSessionFrameBytes,
         patchToSnapshotByteRatio: round(fullBytes > 0 ? patchBytes / fullBytes : 0),
       },
       codex: { events: this.codexEvents, deltas: this.codexDeltas },

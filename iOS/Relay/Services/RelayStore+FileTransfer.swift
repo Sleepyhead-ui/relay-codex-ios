@@ -17,28 +17,39 @@ extension RelayStore {
                 state: .uploading,
                 isImage: imageExtensions.contains(url.pathExtension.lowercased())
             ))
-            Task {
+            let uploadTask = Task { [weak self] in
+                guard let self else { return }
+                defer {
+                    self.attachmentUploadTasks.removeValue(forKey: id)
+                    self.cleanupStagedAttachment(at: url)
+                }
                 do {
-                    let uploaded = try await socket.uploadFile(url) { [weak self] progress in
+                    let uploaded = try await self.socket.uploadFile(url) { [weak self] progress in
                         guard let index = self?.attachments.firstIndex(where: { $0.id == id }) else { return }
                         self?.attachments[index].progress = progress
                     }
-                    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
-                    attachments[index].remotePath = uploaded.path
-                    attachments[index].size = uploaded.size
-                    attachments[index].progress = 1
-                    attachments[index].state = .ready
+                    guard !Task.isCancelled,
+                          let index = self.attachments.firstIndex(where: { $0.id == id }) else { return }
+                    self.attachments[index].remotePath = uploaded.path
+                    self.attachments[index].size = uploaded.size
+                    self.attachments[index].progress = 1
+                    self.attachments[index].state = .ready
                 } catch {
-                    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+                    guard !Task.isCancelled,
+                          let index = attachments.firstIndex(where: { $0.id == id }) else { return }
                     attachments[index].state = .failed(error.localizedDescription)
                     errorMessage = "上传 \(attachments[index].name) 失败：\(error.localizedDescription)"
                 }
             }
+            attachmentUploadTasks[id] = uploadTask
         }
     }
 
     func removeAttachment(_ id: UUID) {
+        let localURL = attachments.first(where: { $0.id == id })?.localURL
+        attachmentUploadTasks.removeValue(forKey: id)?.cancel()
         attachments.removeAll { $0.id == id }
+        if let localURL { cleanupStagedAttachment(at: localURL) }
     }
 
     func downloadFile(path: String) async {
@@ -71,5 +82,17 @@ extension RelayStore {
             return
         }
         sharedFile = SharedFile(url: url)
+    }
+
+    private func cleanupStagedAttachment(at url: URL) {
+        let temporaryRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        let staged = url.standardizedFileURL
+        guard staged.path.hasPrefix(temporaryRoot),
+              (staged.path.contains("Relay Imports") || staged.path.contains("Relay Photos")) else { return }
+        try? FileManager.default.removeItem(at: staged)
+        let parent = staged.deletingLastPathComponent()
+        if (try? FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty) == true {
+            try? FileManager.default.removeItem(at: parent)
+        }
     }
 }

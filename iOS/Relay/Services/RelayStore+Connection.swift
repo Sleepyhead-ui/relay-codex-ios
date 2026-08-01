@@ -58,7 +58,15 @@ extension RelayStore {
 
     func applicationBecameActive() {
         applicationIsActive = true
-        if socket.state == .connected {
+        let shouldRestore = SelectedSessionSyncPolicy.shouldRestoreOnForeground(
+            connected: socket.state == .connected,
+            backgroundConnectionIdentifier: backgroundConnectionIdentifier,
+            currentConnectionIdentifier: socket.connectionIdentifier
+        )
+        backgroundConnectionIdentifier = nil
+        if !shouldRestore {
+            ensureLiveSessionSync()
+        } else if socket.state == .connected {
             scheduleRestoration()
         } else {
             socket.reconnectIfNeeded()
@@ -67,6 +75,8 @@ extension RelayStore {
 
     func applicationEnteredBackground() {
         applicationIsActive = false
+        backgroundConnectionIdentifier = socket.connectionIdentifier
+        cacheCurrentThread()
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {

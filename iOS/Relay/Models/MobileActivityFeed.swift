@@ -172,6 +172,36 @@ struct MobileActivityFeed: Equatable {
     }
 }
 
+struct MobileActivityFeedCache {
+    private var key: Key?
+    private var value: MobileActivityFeed?
+
+    mutating func feed(
+        threadId: String,
+        turnId: String?,
+        transcriptRevision: Int,
+        items: @autoclosure () -> [TranscriptItem]
+    ) -> MobileActivityFeed {
+        let nextKey = Key(threadId: threadId, turnId: turnId, transcriptRevision: transcriptRevision)
+        if key == nextKey, let value { return value }
+        let next = MobileActivityFeed.make(items: items())
+        key = nextKey
+        value = next
+        return next
+    }
+
+    mutating func reset() {
+        key = nil
+        value = nil
+    }
+
+    private struct Key: Equatable {
+        let threadId: String
+        let turnId: String?
+        let transcriptRevision: Int
+    }
+}
+
 private final class CommentaryPrefixIndex {
     private final class Node {
         var children: [UInt8: Node] = [:]

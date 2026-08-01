@@ -23,12 +23,14 @@ interface StoredThreadRuntime {
 export class RuntimeStateTracker {
   private readonly threads = new Map<string, StoredThreadRuntime>();
 
+  constructor(private readonly now: () => number = () => Date.now() / 1000) {}
+
   observeTurnStart(threadId: unknown, turn: unknown): void {
     if (typeof threadId !== "string" || !threadId) return;
     const turnObject = isObject(turn) ? turn : {};
     const activeTurnId = typeof turnObject.id === "string" ? turnObject.id : undefined;
-    const startedAt = numberValue(turnObject.startedAt) ?? Date.now() / 1000;
-    const state: StoredThreadRuntime = { isRunning: true, startedAt, updatedAt: Date.now() / 1000 };
+    const startedAt = numberValue(turnObject.startedAt) ?? this.now();
+    const state: StoredThreadRuntime = { isRunning: true, startedAt, updatedAt: this.now() };
     if (activeTurnId) state.activeTurnId = activeTurnId;
     this.set(threadId, state);
   }
@@ -56,13 +58,13 @@ export class RuntimeStateTracker {
           ...(turnId && !existing.activeTurnId ? { activeTurnId: turnId } : {}),
           upstreamRetrying: true,
           ...(upstreamError ? { upstreamError } : {}),
-          updatedAt: Date.now() / 1000,
+          updatedAt: this.now(),
         });
       } else if (params.willRetry === false) {
         this.set(threadId, {
           isRunning: false,
           ...(upstreamError ? { upstreamError } : {}),
-          updatedAt: Date.now() / 1000,
+          updatedAt: this.now(),
         });
       }
       return;
@@ -75,7 +77,7 @@ export class RuntimeStateTracker {
         : typeof params.turnId === "string" ? params.turnId : undefined;
       const existing = this.threads.get(threadId);
       if (!existing || !turnId || !existing.activeTurnId || existing.activeTurnId === turnId) {
-        this.set(threadId, { isRunning: false, updatedAt: Date.now() / 1000 });
+        this.set(threadId, { isRunning: false, updatedAt: this.now() });
       }
       return;
     }
@@ -84,17 +86,17 @@ export class RuntimeStateTracker {
       const existing = this.threads.get(threadId);
       if (existing?.isRunning && existing.upstreamRetrying) {
         const { upstreamRetrying: _retrying, upstreamError: _error, ...active } = existing;
-        this.set(threadId, { ...active, updatedAt: Date.now() / 1000 });
+        this.set(threadId, { ...active, updatedAt: this.now() });
       }
     }
   }
 
   snapshot(threadId: unknown): ThreadRuntimeSnapshot {
     if (typeof threadId !== "string" || !threadId) {
-      return { known: false, isRunning: false, updatedAt: Date.now() / 1000 };
+      return { known: false, isRunning: false, updatedAt: this.now() };
     }
     const state = this.threads.get(threadId);
-    if (!state) return { known: false, isRunning: false, updatedAt: Date.now() / 1000 };
+    if (!state) return { known: false, isRunning: false, updatedAt: this.now() };
     return { known: true, ...state };
   }
 
@@ -103,6 +105,13 @@ export class RuntimeStateTracker {
     const observed = await external.snapshot(threadId);
     if (!observed) return current;
     if (!observed.active) {
+      const sameTurn = Boolean(
+        current.activeTurnId
+        && observed.turnId
+        && current.activeTurnId === observed.turnId,
+      );
+      const activeFreshness = Math.max(current.updatedAt, current.startedAt ?? 0);
+      if (current.isRunning && (!sameTurn || observed.updatedAt < activeFreshness)) return current;
       const completed: StoredThreadRuntime = {
         isRunning: false,
         updatedAt: Math.max(current.updatedAt, observed.updatedAt),
@@ -114,6 +123,14 @@ export class RuntimeStateTracker {
         updatedAt: completed.updatedAt,
       };
     }
+    if (!current.isRunning && current.known && observed.updatedAt < current.updatedAt) return current;
+    if (
+      current.isRunning
+      && current.activeTurnId
+      && observed.turnId
+      && current.activeTurnId !== observed.turnId
+      && observed.updatedAt < current.updatedAt
+    ) return current;
     return {
       known: true,
       isRunning: true,
@@ -132,7 +149,7 @@ export class RuntimeStateTracker {
   }
 
   stopAll(error?: string): void {
-    const updatedAt = Date.now() / 1000;
+    const updatedAt = this.now();
     for (const threadId of [...this.threads.keys()]) {
       this.set(threadId, {
         isRunning: false,

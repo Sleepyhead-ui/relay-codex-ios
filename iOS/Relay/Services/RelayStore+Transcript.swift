@@ -116,16 +116,43 @@ extension RelayStore {
             }
             guard let initialThreadId = self.selectedThreadId else { return }
             var hasActiveSubscription = false
+            let subscriptionId = UUID().uuidString
+            self.subscribedSessionThreadId = initialThreadId
+            self.subscribedSessionId = subscriptionId
             if let initial = try? await self.socket.rpc(
                 method: "relay/thread/session/subscribe",
-                params: ["threadId": .string(initialThreadId), "incremental": .bool(true)],
+                params: [
+                    "threadId": .string(initialThreadId),
+                    "incremental": .bool(true),
+                    "subscriptionId": .string(subscriptionId)
+                ],
                 timeoutSeconds: 12,
                 reconnectOnTimeout: false
             ) {
+                guard !Task.isCancelled,
+                      self.liveSessionSyncGeneration == generation,
+                      self.selectedThreadId == initialThreadId else {
+                    _ = try? await self.socket.rpc(
+                        method: "relay/thread/session/unsubscribe",
+                        params: [
+                            "threadId": .string(initialThreadId),
+                            "subscriptionId": .string(subscriptionId)
+                        ],
+                        timeoutSeconds: 4,
+                        reconnectOnTimeout: false
+                    )
+                    if self.subscribedSessionId == subscriptionId {
+                        self.subscribedSessionThreadId = nil
+                        self.subscribedSessionId = nil
+                    }
+                    return
+                }
                 hasActiveSubscription = true
-                self.subscribedSessionThreadId = initialThreadId
                 self.lastSessionUpdateAt[initialThreadId] = Date()
                 self.applySessionSnapshot(initial, threadId: initialThreadId)
+            } else if self.subscribedSessionId == subscriptionId {
+                self.subscribedSessionThreadId = nil
+                self.subscribedSessionId = nil
             }
             await self.promoteSelectedExternalRuntimeIfNeeded(threadId: initialThreadId)
             while !Task.isCancelled {
@@ -180,13 +207,41 @@ extension RelayStore {
         socket.performanceMetrics.recordSessionRecovery()
         recoveringSessionThreadIds.insert(threadId)
         defer { recoveringSessionThreadIds.remove(threadId) }
+        let subscriptionId = UUID().uuidString
+        subscribedSessionThreadId = threadId
+        subscribedSessionId = subscriptionId
         guard let result = try? await socket.rpc(
             method: "relay/thread/session/subscribe",
-            params: ["threadId": .string(threadId), "incremental": .bool(true)],
+            params: [
+                "threadId": .string(threadId),
+                "incremental": .bool(true),
+                "subscriptionId": .string(subscriptionId)
+            ],
             timeoutSeconds: 12,
             reconnectOnTimeout: false
-        ) else { return false }
-        subscribedSessionThreadId = threadId
+        ) else {
+            if subscribedSessionId == subscriptionId {
+                subscribedSessionThreadId = nil
+                subscribedSessionId = nil
+            }
+            return false
+        }
+        guard selectedThreadId == threadId else {
+            _ = try? await socket.rpc(
+                method: "relay/thread/session/unsubscribe",
+                params: [
+                    "threadId": .string(threadId),
+                    "subscriptionId": .string(subscriptionId)
+                ],
+                timeoutSeconds: 4,
+                reconnectOnTimeout: false
+            )
+            if subscribedSessionId == subscriptionId {
+                subscribedSessionThreadId = nil
+                subscribedSessionId = nil
+            }
+            return false
+        }
         lastSessionUpdateAt[threadId] = Date()
         applySessionSnapshot(result, threadId: threadId)
         return true
@@ -270,7 +325,7 @@ extension RelayStore {
                 )
             }
         }
-        cacheCurrentThread()
+        if result["isRunning"]?.boolValue != true { cacheCurrentThread() }
     }
 
     func bindPendingUserPrompt(to turnId: String, threadId: String) {

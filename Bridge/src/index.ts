@@ -28,7 +28,10 @@ import { queuedPromptWaitSatisfied } from "./queueDispatchPolicy.js";
 import { RequestLifecycle } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
-import { SessionPatchCursor } from "./sessionPatch.js";
+import { boundSessionSnapshot } from "./sessionPatch.js";
+import { SessionStream } from "./sessionStream.js";
+import { SessionSourceOwnership } from "./sessionSourceOwnership.js";
+import { SessionSubscriptionRegistry } from "./sessionSubscriptions.js";
 import { UpdateManager } from "./updateManager.js";
 
 interface PendingServerRequest {
@@ -55,7 +58,7 @@ const pushNotifier = new BarkPushNotifier();
 const threadTitles = new Map<string, string>();
 const clients = new Set<WebSocket>();
 const clientLiveness = new WeakMap<WebSocket, boolean>();
-const sessionSubscriptions = new WeakMap<WebSocket, Map<string, () => void>>();
+const sessionSubscriptions = new SessionSubscriptionRegistry<WebSocket>();
 const socketDiagnostics = {
   lastConnectedAt: null as string | null,
   lastDisconnectedAt: null as string | null,
@@ -93,6 +96,9 @@ const pendingClientRequests = new RequestLifecycle<WebSocket, JsonObject>((bridg
     performanceMetrics.recordTurnRejected(
       typeof request.params.clientUserMessageId === "string" ? request.params.clientUserMessageId : undefined,
     );
+  }
+  if (["turn/start", "turn/steer"].includes(request.method)) {
+    sessionSourceOwnership.finish(request.params.threadId);
   }
   diagnostics.record("error", "rpc", `Request timed out: ${request.method}`, { bridgeId });
   const response = {
@@ -136,6 +142,7 @@ const pendingInternalRequests = new Map<string, PendingInternalRequest>();
 let nextInternalRequestId = 1;
 let runtimeState = new RuntimeStateTracker();
 let sessionActivity = new SessionActivityTracker();
+const sessionSourceOwnership = new SessionSourceOwnership();
 let monitoredThreadIds: string[] = [];
 let pollingExternalSessions = false;
 const externalCompletionTracker = new ExternalCompletionTracker();
@@ -205,7 +212,7 @@ httpServer.on("upgrade", (request, socket, head) => {
 webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
-  sessionSubscriptions.set(socket, new Map());
+  sessionSubscriptions.open(socket);
   socketDiagnostics.lastConnectedAt = new Date().toISOString();
   socketDiagnostics.lastError = null;
   diagnostics.record("info", "socket", "Remote client connected.", { clients: clients.size });
@@ -232,8 +239,7 @@ webSocketServer.on("connection", (socket) => {
   });
   socket.on("pong", () => clientLiveness.set(socket, true));
   socket.on("close", (code, reason) => {
-    for (const stop of sessionSubscriptions.get(socket)?.values() ?? []) stop();
-    sessionSubscriptions.delete(socket);
+    sessionSubscriptions.close(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
     deliveryRegistry.removeWaiter(socket);
@@ -396,7 +402,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     if (message.method === "relay/thread/session/snapshot") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
-      const result = await sessionActivity.turnSnapshot(message.params.threadId);
+      const result = boundSessionSnapshot(await sessionActivity.turnSnapshot(message.params.threadId));
       send(socket, { type: "rpcResult", id: message.id, result });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
@@ -408,41 +414,40 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       try {
         const threadId = String(message.params.threadId ?? "");
         const incremental = message.params.incremental === true;
-        const subscriptions = sessionSubscriptions.get(socket);
-        subscriptions?.get(threadId)?.();
-        const cursor = incremental ? new SessionPatchCursor() : undefined;
-        let ready = false;
-        let queuedSnapshot: Awaited<ReturnType<typeof sessionActivity.turnSnapshot>> | undefined;
-        const stop = sessionActivity.subscribe(threadId, (snapshot) => {
-          if (!ready) {
-            queuedSnapshot = snapshot;
+        const subscriptionId = typeof message.params.subscriptionId === "string" && message.params.subscriptionId
+          ? message.params.subscriptionId
+          : undefined;
+        const stream = new SessionStream(
+          threadId,
+          subscriptionId,
+          incremental,
+          {
+            bufferedAmount: () => socket.bufferedAmount,
+            send: (outbound) => send(socket, outbound),
+          },
+          performanceMetrics,
+        );
+        const stopWatching = sessionActivity.subscribe(threadId, (snapshot) => {
+          if (sessionSourceOwnership.isRelayOwned(threadId, snapshot.turnId)) {
+            performanceMetrics.recordSuppressedSessionUpdate();
             return;
           }
-          if (!cursor) {
-            send(socket, { type: "sessionSnapshot", threadId, snapshot });
-            return;
-          }
-          const update = cursor.update(snapshot);
-          if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
-          else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
-          else performanceMetrics.recordSuppressedSessionUpdate();
+          stream.enqueue(snapshot);
         });
-        subscriptions?.set(threadId, stop);
+        sessionSubscriptions.replace(socket, threadId, {
+          ...(subscriptionId ? { subscriptionId } : {}),
+          stop: () => {
+            stopWatching();
+            stream.dispose();
+          },
+        });
         const snapshot = await sessionActivity.turnSnapshot(threadId);
-        const result = cursor ? cursor.reset(snapshot) : snapshot;
-        send(socket, { type: "rpcResult", id: message.id, result });
-        ready = true;
-        if (queuedSnapshot) {
-          const queued = queuedSnapshot;
-          queuedSnapshot = undefined;
-          if (!cursor) send(socket, { type: "sessionSnapshot", threadId, snapshot: queued });
-          else {
-            const update = cursor.update(queued);
-            if (update?.type === "sessionPatch") send(socket, { type: "sessionPatch", threadId, patch: update.patch });
-            else if (update?.type === "sessionSnapshot") send(socket, { type: "sessionSnapshot", threadId, snapshot: update.snapshot });
-            else performanceMetrics.recordSuppressedSessionUpdate();
-          }
-        }
+        const result = stream.initialize(snapshot);
+        send(socket, {
+          type: "rpcResult",
+          id: message.id,
+          result: { ...result, source: "rollout", ...(subscriptionId ? { subscriptionId } : {}) },
+        });
         rpcDiagnostics.lastCompletedAt = new Date().toISOString();
         rpcDiagnostics.lastCompletedMethod = message.method;
       } catch (error) {
@@ -454,10 +459,11 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
       const threadId = String(message.params.threadId ?? "");
-      const subscriptions = sessionSubscriptions.get(socket);
-      subscriptions?.get(threadId)?.();
-      subscriptions?.delete(threadId);
-      send(socket, { type: "rpcResult", id: message.id, result: {} });
+      const subscriptionId = typeof message.params.subscriptionId === "string" && message.params.subscriptionId
+        ? message.params.subscriptionId
+        : undefined;
+      const unsubscribed = sessionSubscriptions.unsubscribe(socket, threadId, subscriptionId);
+      send(socket, { type: "rpcResult", id: message.id, result: { unsubscribed } });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
@@ -605,6 +611,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
           typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
         );
       }
+      if (["turn/start", "turn/steer"].includes(message.method)) {
+        sessionSourceOwnership.begin(params.threadId);
+      }
       codex.send({ method: message.method, id: bridgeId, params });
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -614,6 +623,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         performanceMetrics.recordTurnRejected(
           typeof params.clientUserMessageId === "string" ? params.clientUserMessageId : undefined,
         );
+      }
+      if (["turn/start", "turn/steer"].includes(message.method)) {
+        sessionSourceOwnership.finish(params.threadId);
       }
       rpcStartedAt.delete(bridgeId);
       rpcDiagnostics.lastErrorAt = new Date().toISOString();
@@ -684,8 +696,15 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
     const clientUserMessageId = typeof pending.params.clientUserMessageId === "string"
       ? pending.params.clientUserMessageId
       : undefined;
-    if ("error" in message) performanceMetrics.recordTurnRejected(clientUserMessageId);
-    else performanceMetrics.recordTurnAccepted(clientUserMessageId, typeof turn.id === "string" ? turn.id : undefined);
+    if ("error" in message) {
+      performanceMetrics.recordTurnRejected(clientUserMessageId);
+      sessionSourceOwnership.finish(pending.params.threadId);
+    }
+    else {
+      const turnId = typeof turn.id === "string" ? turn.id : undefined;
+      performanceMetrics.recordTurnAccepted(clientUserMessageId, turnId);
+      sessionSourceOwnership.bind(pending.params.threadId, turnId);
+    }
   }
   if ("result" in message) observeFileTransferWorkspaces(pending.method, message.result);
   if (pending.method === "turn/start" && !("error" in message)) {
@@ -696,7 +715,12 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   if (pending.method === "turn/steer" && !("error" in message)) {
     const result = isObject(message.result) ? message.result : {};
     runtimeState.observeTurnStart(pending.params.threadId, { id: result.turnId });
+    if (typeof pending.params.threadId === "string" && typeof result.turnId === "string") {
+      sessionSourceOwnership.bind(pending.params.threadId, result.turnId);
+    }
     desktopSync.activateThread(pending.params.threadId, "turn-steered");
+  } else if (pending.method === "turn/steer" && "error" in message) {
+    sessionSourceOwnership.finish(pending.params.threadId);
   }
 }
 
@@ -798,7 +822,7 @@ function handleCodexNotification(message: JsonObject): void {
     }
   }
   runtimeState.observeNotification(message);
-  broadcast({ type: "event", ...message });
+  broadcast({ type: "event", source: "appServer", ...message });
   if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
     clearTerminalApprovals(message.params);
     const params = isObject(message.params) ? message.params : {};
@@ -807,6 +831,7 @@ function handleCodexNotification(message: JsonObject): void {
       const completedTurnId = typeof turn.id === "string"
         ? turn.id
         : typeof params.turnId === "string" ? params.turnId : undefined;
+      sessionSourceOwnership.finish(params.threadId, completedTurnId);
       void dispatchNextQueuedPrompt(params.threadId, completedTurnId);
     }
     void pushTaskCompletion(String(message.method), params);
@@ -911,11 +936,13 @@ async function completionPreview(threadId: string, turnId: string, initialItems?
   return answer ? cleanPreview(answer) : undefined;
 }
 
-function send(socket: WebSocket, message: JsonObject): void {
-  if (socket.readyState !== WebSocket.OPEN) return;
+function send(socket: WebSocket, message: JsonObject): number {
+  if (socket.readyState !== WebSocket.OPEN) return 0;
   const encoded = JSON.stringify(message);
-  performanceMetrics.recordOutbound(message, Buffer.byteLength(encoded));
+  const bytes = Buffer.byteLength(encoded);
+  performanceMetrics.recordOutbound(message, bytes);
   socket.send(encoded);
+  return bytes;
 }
 
 async function completeDelivery(key: string, response: DeliveryResponse): Promise<void> {
@@ -1071,6 +1098,7 @@ async function handleCodexExit(generation: number, code: number | null, signal: 
   codexStartupTimer = undefined;
   await failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
   clearPendingApprovals("codex-exited");
+  sessionSourceOwnership.clear();
   runtimeState.stopAll("Codex App Server exited.");
   diagnostics.record("error", "codex", "Codex App Server exited.", { code, signal });
   broadcast({ ...bridgeStatus("restarting"), code, signal });
@@ -1372,11 +1400,11 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   codexReady = false;
   broadcast(bridgeStatus("switching"));
   for (const client of clients) {
-    for (const stop of sessionSubscriptions.get(client)?.values() ?? []) stop();
-    sessionSubscriptions.set(client, new Map());
+    sessionSubscriptions.open(client);
   }
   sessionActivity.dispose();
   sessionActivity = new SessionActivityTracker();
+  sessionSourceOwnership.clear();
   runtimeState = new RuntimeStateTracker();
   monitoredThreadIds = [];
   externalCompletionTracker.reset();

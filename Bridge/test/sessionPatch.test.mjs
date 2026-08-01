@@ -107,7 +107,7 @@ test("keeps revisions contiguous across one hundred high-frequency updates", () 
   }
 });
 
-test("preserves a ten megabyte command output in the selected wire update", () => {
+test("bounds a ten megabyte command output and marks the omitted range", () => {
   const cursor = new SessionPatchCursor();
   const command = { id: "command.1", type: "commandExecution", aggregatedOutput: "" };
   cursor.reset(snapshot({ items: [command] }));
@@ -118,6 +118,24 @@ test("preserves a ten megabyte command output in the selected wire update", () =
   }));
   assert.ok(update);
   const item = update.type === "sessionPatch" ? update.patch.upsertItems[0] : update.snapshot.items[0];
-  assert.equal(item.aggregatedOutput.length, output.length);
-  assert.equal(item.aggregatedOutput, output);
+  assert.ok(Buffer.byteLength(item.aggregatedOutput) < 200_000);
+  assert.equal(item.aggregatedOutputTruncated, true);
+  assert.equal(item.aggregatedOutputOriginalBytes, output.length);
+  assert.ok(item.aggregatedOutputOmittedBytes > 9_000_000);
+  assert.match(item.aggregatedOutput, /Relay omitted/);
+  assert.ok(Buffer.byteLength(JSON.stringify(update)) < 768 * 1024);
+});
+
+test("bounds a session containing many ordinary items", () => {
+  const cursor = new SessionPatchCursor();
+  const items = Array.from({ length: 2_000 }, (_, index) => ({
+    id: `item.${index}`,
+    type: "agentMessage",
+    text: `${index}:${"x".repeat(1_000)}`,
+  }));
+  const result = cursor.reset(snapshot({ items }));
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 768 * 1024);
+  assert.equal(result.itemsTruncated, true);
+  assert.ok(result.omittedItemCount > 0);
+  assert.equal(result.items.at(-1).id, "item.1999");
 });

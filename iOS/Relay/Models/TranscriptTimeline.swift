@@ -248,15 +248,20 @@ final class TranscriptTraceRecorder {
         revision: Int,
         messages: [TranscriptItem]
     ) {
-        let signature = messages.map {
+        let visibleMessages = messages.suffix(itemLimit)
+        let signature = "\(revision)|\(messages.count)|" + visibleMessages.map {
             "\($0.id)|\($0.turnId ?? "-")|\(roleName($0.role))|\(kindName($0.kind))"
         }.joined(separator: "\n")
+#if DEBUG
         let violations = TranscriptTimelineAudit.violations(in: messages)
+#else
+        let violations: [TranscriptInvariantViolation] = []
+#endif
         guard signature != lastSignature || !violations.isEmpty else { return }
         lastSignature = signature
         sequence += 1
         var visibleItems: [TraceItem] = []
-        for item in messages.suffix(itemLimit) {
+        for item in visibleMessages {
             let itemId = Self.alias(item.id, prefix: "item", in: &itemAliases)
             let itemTurnId = item.turnId.map { Self.alias($0, prefix: "turn", in: &turnAliases) }
             let content = Self.alias(semanticContent(item), prefix: "content", in: &contentAliases)

@@ -86,6 +86,7 @@ export default function App() {
   const threadMessageCacheRef = useRef(new Map<string, TranscriptItem[]>());
   const notifiedTurnIdsRef = useRef(new Set<string>());
   const sessionRevisionRef = useRef(new SessionRevisionTracker());
+  const sessionSubscriptionRef = useRef<{ threadId: string; id: string }>();
   const recoveringSessionRef = useRef(new Set<string>());
   const pendingDeltaRef = useRef(new Map<string, { id: string; turnId: string; kind: "assistant" | "reasoning" | "command"; textChunks: string[]; detailChunks: string[] }>());
   const deltaFrameRef = useRef<number>();
@@ -184,8 +185,18 @@ export default function App() {
 
   messageHandlerRef.current = (message: any) => {
     if (message?.type === "event") handleEvent(String(message.method || ""), message.params || {});
-    else if (message?.type === "sessionSnapshot") handleSessionSnapshot(message.threadId, message.snapshot);
-    else if (message?.type === "sessionPatch") handleSessionPatch(message.threadId, message.patch);
+    else if (message?.type === "sessionSnapshot") {
+      const lease = sessionSubscriptionRef.current;
+      if (!message.subscriptionId || (lease && lease.threadId === message.threadId && lease.id === message.subscriptionId)) {
+        handleSessionSnapshot(message.threadId, message.snapshot);
+      }
+    }
+    else if (message?.type === "sessionPatch") {
+      const lease = sessionSubscriptionRef.current;
+      if (!message.subscriptionId || (lease && lease.threadId === message.threadId && lease.id === message.subscriptionId)) {
+        handleSessionPatch(message.threadId, message.patch);
+      }
+    }
     else if (message?.type === "serverRequest") {
       const incoming = parseApproval(message);
       setApprovals((current) => current.some((item) => String(item.id) === String(incoming.id))
@@ -259,6 +270,7 @@ export default function App() {
       setTaskCore(createTaskStateCore());
       setGoals({});
       sessionRevisionRef.current.clear();
+      sessionSubscriptionRef.current = undefined;
       recoveringSessionRef.current.clear();
       pendingDeltaRef.current.clear();
       if (deltaFrameRef.current !== undefined) cancelAnimationFrame(deltaFrameRef.current);
@@ -394,7 +406,14 @@ export default function App() {
     setTurns({});
     updateTaskState(id, { type: "reset" });
     try {
-      if (previous && previous !== id) void rpc.rpc("relay/thread/session/unsubscribe", { threadId: previous }, 5_000).catch(() => {});
+      const previousSubscription = sessionSubscriptionRef.current;
+      if (previous && previous !== id && previousSubscription?.threadId === previous) {
+        sessionSubscriptionRef.current = undefined;
+        void rpc.rpc("relay/thread/session/unsubscribe", {
+          threadId: previous,
+          subscriptionId: previousSubscription.id,
+        }, 5_000).catch(() => {});
+      }
       const conversationPromise = readingArchived
         ? await Promise.all([
             rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
@@ -449,8 +468,14 @@ export default function App() {
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
       if (!readingArchived) try {
-        const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id, incremental: true }, 12_000);
-        if (selectedRef.current === id) handleSessionSnapshot(id, snapshot);
+        const subscriptionId = crypto.randomUUID();
+        sessionSubscriptionRef.current = { threadId: id, id: subscriptionId };
+        const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id, incremental: true, subscriptionId }, 12_000);
+        if (selectedRef.current === id && sessionSubscriptionRef.current?.id === subscriptionId) {
+          handleSessionSnapshot(id, snapshot);
+        } else {
+          void rpc.rpc("relay/thread/session/unsubscribe", { threadId: id, subscriptionId }, 5_000).catch(() => {});
+        }
       } catch {}
     } catch (reason) { setError(errorText(reason)); }
     finally { if (selectedRef.current === id) setLoadingThread(false); }
@@ -605,8 +630,14 @@ export default function App() {
     performanceMetricsRef.current.recordRecovery();
     recoveringSessionRef.current.add(threadId);
     try {
-      const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId, incremental: true }, 12_000);
-      if (selectedRef.current === threadId) handleSessionSnapshot(threadId, snapshot);
+      const subscriptionId = crypto.randomUUID();
+      sessionSubscriptionRef.current = { threadId, id: subscriptionId };
+      const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId, incremental: true, subscriptionId }, 12_000);
+      if (selectedRef.current === threadId && sessionSubscriptionRef.current?.id === subscriptionId) {
+        handleSessionSnapshot(threadId, snapshot);
+      } else {
+        void rpc.rpc("relay/thread/session/unsubscribe", { threadId, subscriptionId }, 5_000).catch(() => {});
+      }
     } catch {}
     finally { recoveringSessionRef.current.delete(threadId); }
   }

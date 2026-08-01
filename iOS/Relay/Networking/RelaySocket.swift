@@ -39,8 +39,8 @@ final class RelaySocket: ObservableObject {
     var onConnected: (() -> Void)?
     var onBridgeStatus: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
-    var onSessionSnapshot: ((String, JSONValue) -> Void)?
-    var onSessionPatch: ((String, JSONValue) -> Void)?
+    var onSessionSnapshot: ((String, String?, JSONValue) -> Void)?
+    var onSessionPatch: ((String, String?, JSONValue) -> Void)?
     var onPromptQueueUpdated: ((String, JSONValue) -> Void)?
     var onDeliveryUpdated: ((JSONValue) -> Void)?
     var onUpdateProgress: ((JSONValue) -> Void)?
@@ -64,6 +64,8 @@ final class RelaySocket: ObservableObject {
     private var connectionTimeoutTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
     private let decodingQueue = DispatchQueue(label: "dev.relay.websocket.decode", qos: .userInitiated)
+
+    var connectionIdentifier: UUID { connectionGeneration }
 
     func connect(endpoint: String, token: String) throws {
         guard let url = URL(string: endpoint), ["ws", "wss"].contains(url.scheme?.lowercased() ?? "") else {
@@ -112,7 +114,9 @@ final class RelaySocket: ObservableObject {
         guard state == .connected, task != nil else { throw SocketError.disconnected }
         let id = UUID().uuidString
         let requestGeneration = connectionGeneration
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<JSONValue, Error>) in
             pending[id] = continuation
             if let onAccepted {
                 pendingAccepted[id] = onAccepted
@@ -170,6 +174,9 @@ final class RelaySocket: ObservableObject {
                     self.handleConnectionFailure(error, generation: requestGeneration)
                 }
             }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelPendingRPC(id: id) }
         }
     }
 
@@ -215,12 +222,14 @@ final class RelaySocket: ObservableObject {
             return (path, Int64(finished["size"]?.intValue ?? Int(sentSize)))
         } catch {
             try? handle.close()
-            _ = try? await rpc(
-                method: "relay/file/upload/cancel",
-                params: ["uploadId": .string(uploadId)],
-                timeoutSeconds: 4,
-                reconnectOnTimeout: false
-            )
+            Task { [weak self] in
+                _ = try? await self?.rpc(
+                    method: "relay/file/upload/cancel",
+                    params: ["uploadId": .string(uploadId)],
+                    timeoutSeconds: 4,
+                    reconnectOnTimeout: false
+                )
+            }
             throw error
         }
     }
@@ -377,11 +386,12 @@ final class RelaySocket: ObservableObject {
                 guard let self, generation == self.connectionGeneration else { return }
                 switch result {
                 case .success(let message):
-                    self.receiveNext(generation: generation)
                     switch message {
                     case .string(let text): self.decode(Data(text.utf8), generation: generation)
                     case .data(let value): self.decode(value, generation: generation)
-                    @unknown default: self.onNonfatalError?("Ignored one unsupported Bridge message.")
+                    @unknown default:
+                        self.onNonfatalError?("Ignored one unsupported Bridge message.")
+                        self.receiveNext(generation: generation)
                     }
                 case .failure(let error):
                     self.handleConnectionFailure(error, generation: generation)
@@ -401,12 +411,14 @@ final class RelaySocket: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self, generation == self.connectionGeneration else { return }
                     self.handle(message, generation: generation)
+                    self.receiveNext(generation: generation)
                 }
             } catch {
                 metrics.recordDecodeFailure()
                 Task { @MainActor [weak self] in
                     guard let self, generation == self.connectionGeneration else { return }
                     self.onNonfatalError?("Ignored one invalid Bridge message: \(error.localizedDescription)")
+                    self.receiveNext(generation: generation)
                 }
             }
         }
@@ -458,11 +470,11 @@ final class RelaySocket: ObservableObject {
             if let method = message["method"]?.stringValue { onEvent?(method, message["params"] ?? .object([:])) }
         case "sessionSnapshot":
             if let threadId = message["threadId"]?.stringValue {
-                onSessionSnapshot?(threadId, message["snapshot"] ?? .object([:]))
+                onSessionSnapshot?(threadId, message["subscriptionId"]?.stringValue, message["snapshot"] ?? .object([:]))
             }
         case "sessionPatch":
             if let threadId = message["threadId"]?.stringValue {
-                onSessionPatch?(threadId, message["patch"] ?? .object([:]))
+                onSessionPatch?(threadId, message["subscriptionId"]?.stringValue, message["patch"] ?? .object([:]))
             }
         case "promptQueueUpdated":
             if let threadId = message["threadId"]?.stringValue {
@@ -588,5 +600,14 @@ final class RelaySocket: ObservableObject {
         pendingAcceptanceTimeouts.removeAll()
         pendingAccepted.removeAll()
         continuations.forEach { $0.resume(throwing: error) }
+    }
+
+    private func cancelPendingRPC(id: String) {
+        guard let continuation = pending.removeValue(forKey: id) else { return }
+        pendingTimeouts.removeValue(forKey: id)?.cancel()
+        pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()
+        pendingAccepted.removeValue(forKey: id)
+        continuation.resume(throwing: CancellationError())
+        Task { [weak self] in try? await self?.send(["type": "rpcCancel", "id": id]) }
     }
 }

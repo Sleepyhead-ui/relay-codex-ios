@@ -50,16 +50,13 @@ struct ConversationView: View {
     private var liveActivityPresentation: MobileActivityPresentation? {
         guard store.isRunning, let threadId = store.selectedThreadId else { return nil }
         let turnId = store.activeTurnId
-        let items = turnId.map { activeTurnId in
-            store.transcriptItems(turnId: activeTurnId).filter(\.isActivity)
-        } ?? []
         var metadata = turnId.flatMap { store.turnMetadata[$0] } ?? TurnMetadata()
         if metadata.startedAt == nil {
             metadata.startedAt = store.taskRunStates[threadId]?.startedAt
         }
         return MobileActivityPresentation(
             id: turnId ?? "starting.\(threadId)",
-            feed: MobileActivityFeed.make(items: items),
+            feed: store.mobileActivityFeed(threadId: threadId, turnId: turnId),
             metadata: metadata,
             isLive: true,
             plan: store.activePlan

@@ -39,7 +39,7 @@ test("returns unknown when the bridge has not observed a thread", () => {
 });
 
 test("external terminal state clears stale runtime state", async () => {
-  const tracker = new RuntimeStateTracker();
+  const tracker = new RuntimeStateTracker(() => 100);
   tracker.observeTurnStart("thread-stale", { id: "turn-stale", startedAt: 100 });
   const external = {
     snapshot: async () => ({
@@ -52,6 +52,33 @@ test("external terminal state clears stale runtime state", async () => {
   assert.equal(snapshot.known, true);
   assert.equal(snapshot.isRunning, false);
   assert.equal(tracker.activeCount, 0);
+});
+
+test("stale external terminal state cannot clear a fresh active runtime", async () => {
+  const tracker = new RuntimeStateTracker(() => 200);
+  tracker.observeTurnStart("thread-active", { id: "turn-active", startedAt: 200 });
+  const external = {
+    snapshot: async () => ({
+      active: false,
+      turnId: "turn-active",
+      updatedAt: 100,
+    }),
+  };
+  const snapshot = await tracker.snapshotWithExternal("thread-active", external);
+  assert.equal(snapshot.isRunning, true);
+  assert.equal(snapshot.activeTurnId, "turn-active");
+  assert.equal(tracker.activeCount, 1);
+});
+
+test("terminal state from another turn cannot clear the active turn", async () => {
+  const tracker = new RuntimeStateTracker(() => 200);
+  tracker.observeTurnStart("thread-active", { id: "turn-new", startedAt: 200 });
+  const external = {
+    snapshot: async () => ({ active: false, turnId: "turn-old", updatedAt: 300 }),
+  };
+  const snapshot = await tracker.snapshotWithExternal("thread-active", external);
+  assert.equal(snapshot.isRunning, true);
+  assert.equal(snapshot.activeTurnId, "turn-new");
 });
 
 test("marks aborted notifications terminal", () => {

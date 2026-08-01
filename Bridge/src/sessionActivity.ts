@@ -6,7 +6,6 @@ import { RolloutTailReader } from "./rolloutTailReader.js";
 
 interface SessionState {
   path: string;
-  updatedAt: number;
   appServerActive?: boolean;
   signature?: string;
   cachedSnapshot?: SessionTurnSnapshot;
@@ -107,7 +106,7 @@ export class SessionActivityTracker {
       const parsed = await session.reader.read(fileStat.size);
       const snapshot: SessionTurnSnapshot = {
         ...parsed,
-        updatedAt: Math.max(fileStat.mtimeMs / 1000, session.updatedAt),
+        updatedAt: fileStat.mtimeMs / 1000,
       };
       session.signature = signature;
       session.cachedSnapshot = snapshot;
@@ -169,10 +168,9 @@ export class SessionActivityTracker {
     const appServerActive = status ? isActiveStatus(status) : undefined;
     const previous = this.sessions.get(id);
     if (previous?.path === path) {
-      previous.updatedAt = Date.now() / 1000;
       if (appServerActive !== undefined) previous.appServerActive = appServerActive;
     } else {
-      const state: SessionState = { path, updatedAt: Date.now() / 1000 };
+      const state: SessionState = { path };
       if (appServerActive !== undefined) state.appServerActive = appServerActive;
       this.sessions.set(id, state);
     }
@@ -234,7 +232,7 @@ export class SessionActivityTracker {
       ...snapshot,
       isRunning: stale ? false : snapshot.isRunning,
       ...(stale ? { stale: true, completedAt: snapshot.completedAt ?? fileUpdatedAt } : {}),
-      updatedAt: Math.max(fileUpdatedAt, session.updatedAt),
+      updatedAt: fileUpdatedAt,
     };
   }
 

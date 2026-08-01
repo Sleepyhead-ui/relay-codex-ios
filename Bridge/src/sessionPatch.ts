@@ -20,6 +20,9 @@ export type SessionCursorUpdate =
   | { type: "sessionSnapshot"; snapshot: SessionTurnSnapshot }
   | null;
 
+export const maxSessionSnapshotBytes = 768 * 1024;
+export const maxTechnicalTextBytes = 192 * 1024;
+
 /** Maintains the wire-level state for one socket/thread subscription. */
 export class SessionPatchCursor {
   private revision = 0;
@@ -27,6 +30,7 @@ export class SessionPatchCursor {
   private itemSignatures = new Map<string, string>();
 
   reset(snapshot: SessionTurnSnapshot): SessionTurnSnapshot {
+    snapshot = boundSessionSnapshot(snapshot);
     this.revision = 0;
     this.snapshot = snapshot;
     this.itemSignatures = signatures(snapshot.items);
@@ -34,6 +38,7 @@ export class SessionPatchCursor {
   }
 
   update(next: SessionTurnSnapshot): SessionCursorUpdate {
+    next = boundSessionSnapshot(next);
     if (!this.snapshot) return { type: "sessionSnapshot", snapshot: this.reset(next) };
 
     const previous = this.snapshot;
@@ -77,6 +82,83 @@ export class SessionPatchCursor {
     }
     return { type: "sessionPatch", patch };
   }
+}
+
+/**
+ * Session updates are transcript previews, not file-transfer payloads. Keep
+ * them comfortably below the WebSocket frame ceiling while retaining the
+ * beginning and end of command output, where errors and summaries live.
+ */
+export function boundSessionSnapshot(
+  snapshot: SessionTurnSnapshot,
+  maxSnapshotBytes = maxSessionSnapshotBytes,
+): SessionTurnSnapshot {
+  const sourceItems = snapshot.items ?? [];
+  const items = sourceItems.map(boundSessionItem);
+  let result: SessionTurnSnapshot = { ...snapshot, items };
+  if (encodedBytes(result) <= maxSnapshotBytes) return result;
+
+  const { items: _sourceItems, ...metadata } = snapshot;
+  const base: SessionTurnSnapshot = {
+    ...metadata,
+    items: [],
+    itemsTruncated: true,
+    omittedItemCount: sourceItems.length,
+  };
+  let availableBytes = Math.max(0, maxSnapshotBytes - encodedBytes(base));
+  let firstRetainedIndex = items.length;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const itemBytes = encodedBytes(items[index]!) + (firstRetainedIndex < items.length ? 1 : 0);
+    if (itemBytes > availableBytes) break;
+    availableBytes -= itemBytes;
+    firstRetainedIndex = index;
+  }
+  const retained = items.slice(firstRetainedIndex);
+
+  result = {
+    ...metadata,
+    items: retained,
+    itemsTruncated: true,
+    omittedItemCount: sourceItems.length - retained.length,
+  };
+  return result;
+}
+
+function boundSessionItem(item: JsonObject): JsonObject {
+  let changed = false;
+  const bounded: JsonObject = { ...item };
+  for (const key of ["aggregatedOutput", "output", "result"]) {
+    const value = item[key];
+    if (typeof value !== "string" || Buffer.byteLength(value) <= maxTechnicalTextBytes) continue;
+    const preview = headTail(value, maxTechnicalTextBytes);
+    bounded[key] = preview.text;
+    bounded[`${key}Truncated`] = true;
+    bounded[`${key}OriginalBytes`] = preview.originalBytes;
+    bounded[`${key}OmittedBytes`] = preview.omittedBytes;
+    changed = true;
+  }
+  return changed ? bounded : item;
+}
+
+function headTail(value: string, maximumBytes: number): {
+  text: string;
+  originalBytes: number;
+  omittedBytes: number;
+} {
+  const bytes = Buffer.from(value, "utf8");
+  const noticeReserve = 96;
+  const contentBudget = Math.max(0, maximumBytes - noticeReserve);
+  const headBytes = Math.floor(contentBudget * 0.35);
+  const tailBytes = contentBudget - headBytes;
+  const omittedBytes = Math.max(0, bytes.length - headBytes - tailBytes);
+  const notice = `\n... Relay omitted ${omittedBytes} bytes from this transcript preview ...\n`;
+  const head = bytes.subarray(0, headBytes).toString("utf8").replace(/\uFFFD$/u, "");
+  const tail = bytes.subarray(bytes.length - tailBytes).toString("utf8").replace(/^\uFFFD+/u, "");
+  return { text: `${head}${notice}${tail}`, originalBytes: bytes.length, omittedBytes };
+}
+
+function encodedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value));
 }
 
 function signatures(items: JsonObject[] | undefined): Map<string, string> {
