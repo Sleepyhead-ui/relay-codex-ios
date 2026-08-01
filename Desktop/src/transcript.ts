@@ -144,16 +144,27 @@ export function upsert(items: TranscriptItem[], incoming: TranscriptItem) {
   let index = indexes.get(incoming.id) ?? -1;
   if (index < 0) index = items.findIndex((item) => semanticMatch(item, incoming));
   if (index < 0) {
-    const next = [...items, incoming];
-    const nextIndexes = new Map(indexes);
-    nextIndexes.set(incoming.id, items.length);
-    transcriptItemIndexes.set(next, nextIndexes);
+    const insertion = insertionAfterTurn(items, incoming.turnId);
+    const next = [...items.slice(0, insertion), incoming, ...items.slice(insertion)];
+    if (insertion === items.length) {
+      const nextIndexes = new Map(indexes);
+      nextIndexes.set(incoming.id, insertion);
+      transcriptItemIndexes.set(next, nextIndexes);
+    }
     return markTranscriptUpserts(items, next, [incoming.id]);
   }
   const next = [...items];
   next[index] = mergeItem(next[index], incoming);
   transcriptItemIndexes.set(next, indexes);
   return markTranscriptUpserts(items, next, [next[index]!.id]);
+}
+
+function insertionAfterTurn(items: TranscriptItem[], turnId?: string) {
+  if (!turnId) return items.length;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.turnId === turnId) return index + 1;
+  }
+  return items.length;
 }
 
 export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta[]) {
@@ -183,9 +194,7 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
     };
     const index = nextIndexes.get(value.id);
     if (index === undefined) {
-      if (nextIndexes === currentIndexes) nextIndexes = new Map(currentIndexes);
-      nextIndexes.set(value.id, next.length);
-      next.push({
+      const incoming: TranscriptItem = {
         id: value.id,
         turnId: value.turnId,
         kind: value.kind,
@@ -194,7 +203,10 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
         phase: value.kind === "assistant" ? "commentary" : undefined,
         title: value.kind === "reasoning" ? "思考" : value.kind === "command" ? "运行命令" : undefined,
         status: value.kind === "command" ? "inProgress" : undefined,
-      });
+      };
+      const insertion = insertionAfterTurn(next, value.turnId);
+      next.splice(insertion, 0, incoming);
+      nextIndexes = new Map(next.map((item, itemIndex) => [item.id, itemIndex]));
       continue;
     }
     const item = next[index]!;

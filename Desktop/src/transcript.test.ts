@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem, TranscriptGroupIndex, windowTranscriptGroups } from "./transcript";
+import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem, TranscriptGroupIndex, upsert, windowTranscriptGroups } from "./transcript";
 import type { TranscriptItem } from "./types";
 
 describe("desktop transcript", () => {
@@ -15,6 +15,45 @@ describe("desktop transcript", () => {
     ], ["two"], "turn.1");
     expect(merged.map((item) => item.id)).toEqual(["older", "one", "three"]);
     expect(merged[1]?.text).toBe("first expanded");
+  });
+
+  it("keeps delayed events with their original turn instead of interleaving turn timers", () => {
+    let messages: TranscriptItem[] = [
+      { id: "old.user", turnId: "turn.old", kind: "user", text: "old task" },
+      { id: "live.user", turnId: "turn.live", kind: "user", text: "live task" },
+      { id: "live.progress.1", turnId: "turn.live", kind: "assistant", phase: "commentary", text: "working" },
+    ];
+
+    messages = upsert(messages, {
+      id: "old.command.late", turnId: "turn.old", kind: "command", text: "npm test",
+    });
+    messages = upsert(messages, {
+      id: "live.progress.2", turnId: "turn.live", kind: "assistant", phase: "commentary", text: "still working",
+    });
+
+    expect(messages.map((item) => item.id)).toEqual([
+      "old.user", "old.command.late", "live.user", "live.progress.1", "live.progress.2",
+    ]);
+    expect(windowTranscriptGroups(messages, 10).groups.map((group) => group.id)).toEqual([
+      "turn.turn.old", "turn.turn.live",
+    ]);
+  });
+
+  it("keeps a delayed streamed item inside its original turn group", () => {
+    let messages: TranscriptItem[] = [
+      { id: "old.user", turnId: "turn.old", kind: "user", text: "old task" },
+      { id: "live.user", turnId: "turn.live", kind: "user", text: "live task" },
+      { id: "live.progress", turnId: "turn.live", kind: "assistant", phase: "commentary", text: "working" },
+    ];
+    messages = applyDeltaBatch(messages, [{
+      id: "old.reasoning", turnId: "turn.old", kind: "reasoning", text: "late", detail: "",
+    }]);
+    expect(messages.map((item) => item.id)).toEqual([
+      "old.user", "old.reasoning", "live.user", "live.progress",
+    ]);
+    expect(windowTranscriptGroups(messages, 10).groups.map((group) => group.id)).toEqual([
+      "turn.turn.old", "turn.turn.live",
+    ]);
   });
 
   it("uses timestamps when an active turn carries a zero history duration", () => {

@@ -7,6 +7,7 @@ import { CodexAppServer } from "./codexAppServer.js";
 import { resolveCodexExecutable } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { CodexRuntimeConfigMonitor } from "./codexRuntimeConfigMonitor.js";
+import { awaitFinalAnswer } from "./completionPreview.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
 import { DeliveryRegistry, isDurableDeliveryMethod, type DeliveryResponse } from "./deliveryRegistry.js";
@@ -718,18 +719,14 @@ async function pollExternalSessions(): Promise<void> {
       const snapshot = await sessionActivity.turnSnapshot(threadId);
       if (!snapshot.known || !snapshot.turnId) continue;
       if (externalCompletionTracker.observe(threadId, snapshot)) {
-        const final = [...(snapshot.items ?? [])].reverse().find((item) =>
-          item.type === "agentMessage"
-            && item.phase !== "commentary"
-            && typeof item.text === "string"
-            && item.text.trim());
         try {
+          const preview = await completionPreview(threadId, snapshot.turnId, snapshot.items);
           const sent = await pushNotifier.sendTaskCompletion({
             turnId: snapshot.turnId,
             threadId,
             failed: false,
             ...(threadTitles.get(threadId) ? { taskTitle: threadTitles.get(threadId)! } : {}),
-            ...(final && typeof final.text === "string" ? { preview: cleanPreview(final.text) } : {}),
+            ...(preview ? { preview } : {}),
           });
           if (sent) diagnostics.record("info", "push", "Sent an external task completion notification.", { threadId, turnId: snapshot.turnId });
         } catch (error) {
@@ -830,25 +827,42 @@ async function pushTaskCompletion(method: string, params: JsonObject): Promise<v
       : undefined;
   if (!threadId || !turnId) return;
   const items = Array.isArray(turn.items) ? turn.items.filter(isObject) : [];
-  const final = [...items].reverse().find((item) =>
-    item.type === "agentMessage"
-      && item.phase !== "commentary"
-      && typeof item.text === "string"
-      && item.text.trim());
   const taskTitle = threadTitles.get(threadId);
   try {
+    const preview = method === "turn/failed" ? undefined : await completionPreview(threadId, turnId, items);
     const sent = await pushNotifier.sendTaskCompletion({
       turnId,
       threadId,
       failed: method === "turn/failed",
       ...(taskTitle ? { taskTitle } : {}),
-      ...(final && typeof final.text === "string" ? { preview: cleanPreview(final.text) } : {}),
+      ...(preview ? { preview } : {}),
     });
     if (sent) diagnostics.record("info", "push", "Sent a task completion notification.", { threadId, turnId });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "手机任务通知发送失败。";
     diagnostics.record("error", "push", detail, { threadId, turnId });
   }
+}
+
+async function completionPreview(threadId: string, turnId: string, initialItems?: JsonObject[]): Promise<string | undefined> {
+  let registeredSession = false;
+  const answer = await awaitFinalAnswer({
+    turnId,
+    ...(initialItems ? { initialItems } : {}),
+    loadSnapshot: async () => {
+      let snapshot = await sessionActivity.turnSnapshot(threadId);
+      if (!snapshot.known && !registeredSession && codexReady) {
+        registeredSession = true;
+        try {
+          const read = await codexRequest("thread/read", { threadId, includeTurns: true }, 15_000);
+          sessionActivity.observeThreadResume(read);
+          snapshot = await sessionActivity.turnSnapshot(threadId);
+        } catch {}
+      }
+      return snapshot;
+    },
+  });
+  return answer ? cleanPreview(answer) : undefined;
 }
 
 function send(socket: WebSocket, message: JsonObject): void {
