@@ -44,6 +44,32 @@ struct ComposerView: View {
                 }
             }
 
+            if store.isSelectedThreadExternallyOwned {
+                HStack(spacing: 9) {
+                    Image(systemName: "lock.laptopcomputer")
+                        .font(.system(size: 13, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("正在同步 Codex 中的任务")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("当前由 Codex 控制，Relay 暂时只读")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    if let threadId = store.selectedThreadId {
+                        Button("重试") {
+                            Task { await store.selectThread(threadId, closeSidebar: false) }
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(Color.orange)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.09))
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+
             if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {
                 TaskContextPanel(
                     steps: store.activePlan,
@@ -119,7 +145,7 @@ struct ComposerView: View {
                         .frame(width: 36, height: 36)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isImportingAttachments)
+                    .disabled(isImportingAttachments || store.isSelectedThreadExternallyOwned)
                     .accessibilityLabel("添加内容或选择任务模式")
 
                     TextField(composerPlaceholder, text: $draft.text, axis: .vertical)
@@ -127,6 +153,7 @@ struct ComposerView: View {
                         .lineLimit(1...8)
                         .textFieldStyle(.plain)
                         .focused($focused)
+                        .disabled(store.isSelectedThreadExternallyOwned)
                         .padding(.vertical, 9)
                         .frame(minHeight: 44, maxHeight: 164, alignment: .topLeading)
                         .fixedSize(horizontal: false, vertical: true)
@@ -577,6 +604,7 @@ struct ComposerView: View {
     }
 
     private var composerPlaceholder: String {
+        if store.isSelectedThreadExternallyOwned { return "此任务正在 Codex 中运行，可在此查看进展" }
         if store.editingQueuedFollowUp != nil { return "编辑排队消息" }
         if store.isRunning { return "引导当前任务" }
         switch store.composerMode {
@@ -588,10 +616,15 @@ struct ComposerView: View {
 
     private var canSend: Bool {
         let isUploading = store.attachments.contains { $0.state == .uploading }
-        return store.socket.state == .connected && !isUploading && hasDraft
+        return store.socket.state == .connected
+            && !store.isSelectedThreadExternallyOwned
+            && !isUploading
+            && hasDraft
     }
 
-    private var showsStopControl: Bool { store.isRunning && !hasDraft }
+    private var showsStopControl: Bool {
+        store.isRunning && !store.isSelectedThreadExternallyOwned && !hasDraft
+    }
     private var actionEnabled: Bool {
         store.socket.state == .connected && (canSend || showsStopControl)
     }

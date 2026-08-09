@@ -49,6 +49,7 @@ final class RelayStore: ObservableObject {
     @Published var taskRunStates: [String: TaskRunState] = [:]
     @Published var goalStates: [String: GoalState] = [:]
     @Published var sendingThreadIds = Set<String>()
+    @Published var externallyOwnedThreadIds = Set<String>()
     @Published var isPreparingPrompt = false
     @Published var codexProfiles: [CodexProfile] = []
     @Published var activeCodexProfileId = ""
@@ -187,6 +188,10 @@ final class RelayStore: ObservableObject {
     }
     var selectedModel: CodexModelOption? {
         modelOptions.first { $0.id == selectedModelId || $0.model == selectedModelId }
+    }
+    var isSelectedThreadExternallyOwned: Bool {
+        guard let selectedThreadId else { return false }
+        return externallyOwnedThreadIds.contains(selectedThreadId)
     }
 
     func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
@@ -652,6 +657,11 @@ final class RelayStore: ObservableObject {
                 )
             }
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
+            if result["relayThreadAccess"]?["mode"]?.stringValue == "external-read-only" {
+                externallyOwnedThreadIds.insert(id)
+            } else {
+                externallyOwnedThreadIds.remove(id)
+            }
             let pageTurns = result["initialTurnsPage"]?["data"]?.arrayValue ?? []
             let turns = pageTurns.isEmpty
                 ? (result["thread"]?["turns"]?.arrayValue ?? [])
@@ -1315,6 +1325,7 @@ final class RelayStore: ObservableObject {
         taskRunStates = [:]
         taskStateCore.reset()
         goalStates = [:]
+        externallyOwnedThreadIds = []
         collaborationModes = []
         composerMode = .standard
         queuedFollowUps = []
@@ -1538,6 +1549,7 @@ final class RelayStore: ObservableObject {
         tokenUsageByThread = [:]
         taskRunStates = [:]
         goalStates = [:]
+        externallyOwnedThreadIds = []
         collaborationModes = []
         composerMode = .standard
         sendingThreadIds = []

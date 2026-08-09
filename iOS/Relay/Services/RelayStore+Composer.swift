@@ -540,6 +540,10 @@ extension RelayStore {
             errorMessage = "尚未连接到 Windows，消息仍保留在输入框中。Relay 正在重新连接。"
             return
         }
+        guard !isSelectedThreadExternallyOwned else {
+            errorMessage = "此任务正在 Codex 中运行。Relay 会继续同步进展；关闭那里的任务后点击重试即可恢复发送。"
+            return
+        }
         guard !isPreparingPrompt else { return }
         isPreparingPrompt = true
         defer { isPreparingPrompt = false }

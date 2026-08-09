@@ -25,7 +25,7 @@ import {
 import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./protocol.js";
 import { PromptQueue } from "./promptQueue.js";
 import { queuedPromptWaitSatisfied } from "./queueDispatchPolicy.js";
-import { RequestLifecycle } from "./requestLifecycle.js";
+import { RequestLifecycle, type PendingRequest } from "./requestLifecycle.js";
 import { RuntimeStateTracker } from "./runtimeState.js";
 import { SessionActivityTracker } from "./sessionActivity.js";
 import { boundSessionSnapshot } from "./sessionPatch.js";
@@ -674,6 +674,13 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   rpcStartedAt.delete(id);
   rpcDiagnostics.lastCompletedAt = new Date().toISOString();
   rpcDiagnostics.lastCompletedMethod = pending.method;
+  const responseError = "error" in message && isObject(message.error) && typeof message.error.message === "string"
+    ? message.error.message
+    : undefined;
+  if (pending.method === "thread/resume" && responseError && isActiveWriterConflict(responseError)) {
+    await completeReadOnlyThreadResume(pending, responseError);
+    return;
+  }
   if ("error" in message) {
     rpcDiagnostics.lastErrorAt = rpcDiagnostics.lastCompletedAt;
     rpcDiagnostics.lastError = isObject(message.error) && typeof message.error.message === "string"
@@ -728,6 +735,50 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   } else if (pending.method === "turn/steer" && "error" in message) {
     sessionSourceOwnership.finish(pending.params.threadId);
   }
+}
+
+async function completeReadOnlyThreadResume(
+  pending: PendingRequest<WebSocket, JsonObject>,
+  conflictMessage: string,
+): Promise<void> {
+  const threadId = typeof pending.params.threadId === "string" ? pending.params.threadId : undefined;
+  if (!threadId) {
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message: conflictMessage } });
+    return;
+  }
+  try {
+    const pageRequest = isObject(pending.params.initialTurnsPage) ? pending.params.initialTurnsPage : {};
+    const [summary, page] = await Promise.all([
+      codexRequest("thread/read", { threadId, includeTurns: false }, 30_000),
+      codexRequest("thread/turns/list", {
+        threadId,
+        limit: typeof pageRequest.limit === "number" ? pageRequest.limit : 12,
+        sortDirection: typeof pageRequest.sortDirection === "string" ? pageRequest.sortDirection : "desc",
+        itemsView: typeof pageRequest.itemsView === "string" ? pageRequest.itemsView : "full",
+      }, historyRpcTimeoutMs),
+    ]);
+    const result: JsonObject = {
+      ...summary,
+      initialTurnsPage: page,
+      relayThreadAccess: { mode: "external-read-only", reason: "active-writer" },
+    };
+    sessionActivity.observeThreadResume(summary);
+    observeFileTransferWorkspaces("thread/read", summary);
+    fileTransfer.allowConversationPayload(result);
+    rpcDiagnostics.lastError = null;
+    diagnostics.record("warning", "rpc", "Opened a thread read-only because another Codex instance owns its writer lock.", { threadId });
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, result });
+  } catch (fallbackError) {
+    const detail = fallbackError instanceof Error ? fallbackError.message : conflictMessage;
+    rpcDiagnostics.lastErrorAt = new Date().toISOString();
+    rpcDiagnostics.lastError = detail;
+    diagnostics.record("error", "rpc", detail, { method: pending.method, threadId, fallback: "thread/read" });
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message: detail } });
+  }
+}
+
+function isActiveWriterConflict(message: string): boolean {
+  return /already has an active writer|thread-store conflict/i.test(message);
 }
 
 function observeFileTransferWorkspaces(method: string, result: unknown): void {

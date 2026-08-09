@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
   Activity, AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Copy,
-  FileCode2, Folder, FolderOpen, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Target,
+  FileCode2, Folder, FolderOpen, LockKeyhole, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Target,
   Power, RotateCcw, Server, Settings, ShieldCheck, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
@@ -60,6 +60,7 @@ export default function App() {
   const [renamingThread, setRenamingThread] = useState<ThreadSummary>();
   const [renameDraft, setRenameDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [externallyOwnedThreadIds, setExternallyOwnedThreadIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
@@ -98,6 +99,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId);
+  const externallyOwned = selectedThreadId ? externallyOwnedThreadIds.has(selectedThreadId) : false;
   const taskStates = taskCore.states;
   const accessKey = normalizedWorkspaceKey(selectedThread?.cwd || workspace);
   const access = accessKey ? projectAccesses[accessKey] || defaultAccess : defaultAccess;
@@ -429,6 +431,12 @@ export default function App() {
         rpc.rpc("relay/thread/goal", { threadId: id }, 8_000).catch(() => ({ goal: null })),
       ]);
       if (selectedRef.current !== id) return;
+      setExternallyOwnedThreadIds((current) => {
+        const next = new Set(current);
+        if (result.relayThreadAccess?.mode === "external-read-only") next.add(id);
+        else next.delete(id);
+        return next;
+      });
       setGoalState(id, goalResult.goal);
       const page = result.initialTurnsPage?.data || [];
       setOlderTurnsCursor(result.initialTurnsPage?.nextCursor || undefined);
@@ -792,6 +800,10 @@ export default function App() {
       return;
     }
     if (connection !== "connected" || sending) return;
+    if (externallyOwned) {
+      setError("此任务正在 Codex 中运行。Relay 会继续同步进展，关闭那里的任务后点击“重新获取控制”。");
+      return;
+    }
     setSending(true); setComposer("");
     const selectedAttachments = attachments; setAttachments([]);
     let submittedMessageId: string | undefined;
@@ -1049,26 +1061,27 @@ export default function App() {
           {!atBottom && <button className="jump-bottom" onClick={() => { setAtBottom(true); transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" }); }}><ArrowDown size={16}/></button>}
 
           {archivedView ? <div className="archived-bar"><Archive size={14}/><span>此任务已归档，仅供查看</span>{selectedThreadId && <button onClick={() => void unarchiveThread(selectedThreadId)}><RotateCcw size={13}/>恢复任务</button>}</div> : <div className="composer-zone">
+            {externallyOwned && <div className="writer-lock-notice"><LockKeyhole size={14}/><span><strong>正在同步 Codex 中的任务</strong><small>当前由 Codex 控制，Relay 暂时只读</small></span><button onClick={() => selectedThreadId && void selectThread(selectedThreadId)}>重新获取控制</button></div>}
             {plan.length > 0 && <PlanPanel steps={plan}/>
             }
             {currentQueuedPrompts.length > 0 && <PromptQueuePanel items={currentQueuedPrompts} onRemove={removeQueuedPrompt}/>
             }
             {currentGoal && currentGoal.status !== "complete" && <GoalPanel goal={currentGoal} running={running}/>
             }
-            <div className={`composer ${!serviceAvailable || connection !== "connected" ? "offline" : ""}`}>
+            <div className={`composer ${!serviceAvailable || connection !== "connected" || externallyOwned ? "offline" : ""}`}>
               {attachments.length > 0 && <div className="attachments">{attachments.map((item) => <span key={item.path}><FileCode2 size={12}/>{item.name}<button onClick={() => setAttachments((current) => current.filter((value) => value.path !== item.path))}><X size={11}/></button></span>)}</div>}
-              <textarea disabled={!serviceAvailable || connection !== "connected"} value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={!serviceAvailable ? "启动远程服务后开始" : running ? followUpBehavior === "queue" ? "排队到下一轮" : "引导当前任务" : "随心输入"} rows={1} onKeyDown={(event) => {
+              <textarea disabled={!serviceAvailable || connection !== "connected" || externallyOwned} value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={!serviceAvailable ? "启动远程服务后开始" : externallyOwned ? "此任务正在 Codex 中运行，可在此查看进展" : running ? followUpBehavior === "queue" ? "排队到下一轮" : "引导当前任务" : "随心输入"} rows={1} onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
               }}/>
               <div className="composer-controls">
-                <button disabled={!serviceAvailable || connection !== "connected"} className="icon-button attach" onClick={() => void pickFiles()} title="添加文件"><Paperclip size={17}/></button>
+                <button disabled={!serviceAvailable || connection !== "connected" || externallyOwned} className="icon-button attach" onClick={() => void pickFiles()} title="添加文件"><Paperclip size={17}/></button>
                 <div className="generation-controls">
                   {running && <select aria-label="后续消息方式" value={followUpBehavior} onChange={(event) => setFollowUpBehavior(event.target.value as "steer" | "queue")}><option value="steer">引导</option><option value="queue">排队</option></select>}
                   <select disabled={!serviceAvailable || connection !== "connected"} value={selectedModel} onChange={(event) => { setSelectedModel(event.target.value); const model = models.find((item) => item.model === event.target.value); if (model && !model.efforts.includes(effort)) setEffort(model.defaultEffort); }}>
                     {models.map((model) => <option key={model.id} value={model.model}>{model.displayName}</option>)}
                   </select>
                   <select disabled={!serviceAvailable || connection !== "connected"} value={effort} onChange={(event) => setEffort(event.target.value)}>{(selectedModelOption?.efforts.length ? selectedModelOption.efforts : ["low", "medium", "high", "xhigh"]).map((value) => <option key={value} value={value}>{effortName(value)}</option>)}</select>
-                  <button className={`send-button ${running && !composer.trim() && !attachments.length ? "stop" : ""}`} onClick={() => void submit()} disabled={sending || connection !== "connected"}>
+                  <button className={`send-button ${running && !composer.trim() && !attachments.length ? "stop" : ""}`} onClick={() => void submit()} disabled={sending || connection !== "connected" || externallyOwned}>
                     {running && !composer.trim() && !attachments.length
                       ? <CircleStop size={18}/>
                       : <ArrowUp size={18}/>

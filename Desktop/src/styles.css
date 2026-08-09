@@ -172,6 +172,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .composer-zone { width: min(900px, calc(100% - 42px)); margin: 0 auto; padding: 0 0 17px; background: linear-gradient(to bottom, transparent, var(--canvas) 22%); z-index: 4; }
+.writer-lock-notice { min-height: 42px; display: flex; align-items: center; gap: 9px; margin: 0 10px 7px; padding: 7px 8px 7px 11px; border: 1px solid rgba(224,178,91,.2); border-radius: 11px; background: rgba(58,48,29,.92); color: #d9bd83; }
+.writer-lock-notice > span { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 1px; }
+.writer-lock-notice strong { color: #ead29e; font-size: 11px; }
+.writer-lock-notice small { color: #a89369; font-size: 9px; }
+.writer-lock-notice button { flex: none; min-height: 28px; padding: 0 9px; border-radius: 7px; background: rgba(255,255,255,.07); color: #e3c98f; font-size: 10px; font-weight: 650; }
 .composer { padding: 10px 12px 9px; border: 1px solid rgba(255,255,255,.11); border-radius: 20px; background: #242522; box-shadow: 0 14px 40px rgba(0,0,0,.22); }
 .composer.offline { opacity: .58; }
 .composer textarea { width: 100%; max-height: 170px; min-height: 32px; resize: none; border: 0; outline: 0; padding: 5px 4px 3px; background: transparent; color: #eceDE9; font-size: 14px; line-height: 1.45; field-sizing: content; }
