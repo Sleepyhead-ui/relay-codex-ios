@@ -51,13 +51,13 @@ struct ComposerView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("正在同步 Codex 中的任务")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("当前由 Codex 控制，Relay 暂时只读")
+                        Text("Codex 持有写入控制，Relay 暂时只读")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
                     if let threadId = store.selectedThreadId {
-                        Button("重试") {
+                        Button("再次尝试") {
                             Task { await store.acquireThreadControl(threadId) }
                         }
                         .font(.system(size: 11, weight: .semibold))

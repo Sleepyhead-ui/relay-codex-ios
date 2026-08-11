@@ -933,7 +933,7 @@ export default function App() {
       const control = await rpc.rpc("relay/thread/control/acquire", { threadId }, 35_000);
       applyThreadControl([threadId], control.mode);
       if (control.mode === "relay-write") return true;
-      setError("此任务仍由 Codex 控制。Relay 会继续同步进展，关闭 Codex 中的任务后再重试。");
+      setError("Codex 仍持有此任务的控制权。关闭任务后写锁可能继续保留；如需立即切换，请完全退出 Codex 后再次尝试。");
       return false;
     } catch (reason) {
       setError(errorText(reason));
@@ -1126,7 +1126,7 @@ export default function App() {
           {!atBottom && <button className="jump-bottom" onClick={() => { setAtBottom(true); transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" }); }}><ArrowDown size={16}/></button>}
 
           {archivedView ? <div className="archived-bar"><Archive size={14}/><span>此任务已归档，仅供查看</span>{selectedThreadId && <button onClick={() => void unarchiveThread(selectedThreadId)}><RotateCcw size={13}/>恢复任务</button>}</div> : <div className="composer-zone">
-            {externallyOwned && <div className="writer-lock-notice"><LockKeyhole size={14}/><span><strong>正在同步 Codex 中的任务</strong><small>当前由 Codex 控制，Relay 暂时只读</small></span><button onClick={() => selectedThreadId && void acquireThreadControl(selectedThreadId)}>重新获取控制</button></div>}
+            {externallyOwned && <div className="writer-lock-notice"><LockKeyhole size={14}/><span><strong>正在同步 Codex 中的任务</strong><small>Codex 持有写入控制，Relay 暂时只读</small></span><button onClick={() => selectedThreadId && void acquireThreadControl(selectedThreadId)}>再次尝试</button></div>}
             {relayOwned && !running && selectedThreadId && <div className="writer-control-strip"><span>Relay 已取得此任务的控制权</span><button onClick={() => void releaseThreadControl(selectedThreadId)}>释放给 Codex</button></div>}
             {plan.length > 0 && <PlanPanel steps={plan}/>
             }

@@ -607,7 +607,7 @@ final class RelayStore: ObservableObject {
             applyThreadControl(threadId: threadId, mode: mode)
             guard mode == "relay-write" else {
                 if showErrors {
-                    errorMessage = "此任务仍由 Codex 控制。Relay 会继续同步进展，关闭 Codex 中的任务后再重试。"
+                    errorMessage = "Codex 仍持有此任务的控制权。关闭任务后写锁可能继续保留；如需立即切换，请完全退出 Codex 后再次尝试。"
                 }
                 return false
             }

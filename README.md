@@ -116,7 +116,7 @@ Relay Desktop 启动远程服务后会把 Bridge 交给独立的 Service Host。
 
 官方 Codex 仍可继续使用。官方 App 发起的任务通过 rollout 文件变更通知同步，完整进展通常在写盘后几十到几百毫秒出现；由于 rollout 不保存 token delta，只有 Relay Desktop 或 iPhone 发起的同一 app-server 任务才能逐字流式同步。
 
-新版 Codex 对同一任务实行单写入者限制。Relay 打开任务时不会抢占写锁；发送前才尝试获取控制权。如果官方 Codex 正在控制该任务，Relay 会保持只读并保留输入内容。关闭官方任务后可点击“重新获取控制”；Relay 完成任务后可点击“释放给 Codex”，切换离开空闲任务时也会自动请求释放。
+新版 Codex 对同一任务实行单写入者限制。Relay 打开任务时不会抢占写锁；发送前才尝试获取控制权。如果官方 Codex 正在控制该任务，Relay 会保持只读并保留输入内容。关闭官方任务后写锁仍可能保留约 30 分钟，可点击“再次尝试”；需要立即切换时应完全退出官方 Codex。Relay 完成任务后可点击“释放给 Codex”，切换离开空闲任务时也会自动请求释放。
 
 ## 3. 使用 GitHub Actions 构建 IPA 与 Windows 客户端
 
