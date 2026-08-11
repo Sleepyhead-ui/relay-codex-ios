@@ -261,7 +261,13 @@ describe("Relay service host", () => {
     });
     if (host.pid) spawnedPids.add(host.pid);
 
-    await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, PROCESS_READY_TIMEOUT_MS);
+    await waitFor(async () => {
+      try {
+        const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
+        return heartbeat.state === "waiting-for-idle-upgrade"
+          && Number(readText(bridgePidPath).trim()) === oldBridge.pid;
+      } catch { return false; }
+    }, PROCESS_READY_TIMEOUT_MS);
     expect(Number(readText(bridgePidPath).trim())).toBe(oldBridge.pid);
     expect(await health(port, "127.0.0.1")).toBeUndefined();
     fs.writeFileSync(activityPath, "0");
