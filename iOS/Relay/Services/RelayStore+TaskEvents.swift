@@ -304,6 +304,7 @@ extension RelayStore {
             }
             if let selectedThreadId {
                 let reconciledTurnId = runtime["activeTurnId"]?.stringValue
+                    ?? runtime["observedTurnId"]?.stringValue
                     ?? taskRunStates[selectedThreadId]?.turnId
                 applyTaskRunEvent(
                     threadId: selectedThreadId,
@@ -322,7 +323,7 @@ extension RelayStore {
         guard runtime["known"]?.boolValue == true else { return }
         guard selectedThreadId == threadId else {
             let running = runtime["isRunning"]?.boolValue == true
-            let turnId = runtime["activeTurnId"]?.stringValue
+            let turnId = runtime["activeTurnId"]?.stringValue ?? runtime["observedTurnId"]?.stringValue
             if running, let turnId {
                 applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: nil))
             } else if !running {

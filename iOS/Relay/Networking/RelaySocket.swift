@@ -41,6 +41,7 @@ final class RelaySocket: ObservableObject {
     var onRuntimeUpdated: ((String, JSONValue) -> Void)?
     var onThreadControlUpdated: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
+    var onSidebarPreferencesUpdated: ((JSONValue) -> Void)?
     var onSessionSnapshot: ((String, String?, JSONValue) -> Void)?
     var onSessionPatch: ((String, String?, JSONValue) -> Void)?
     var onPromptQueueUpdated: ((String, JSONValue) -> Void)?
@@ -509,6 +510,8 @@ final class RelaySocket: ObservableObject {
             }
         case "event":
             if let method = message["method"]?.stringValue { onEvent?(method, message["params"] ?? .object([:])) }
+        case "sidebarPreferencesUpdated":
+            onSidebarPreferencesUpdated?(message["preferences"] ?? .object([:]))
         case "sessionSnapshot":
             if let threadId = message["threadId"]?.stringValue {
                 onSessionSnapshot?(threadId, message["subscriptionId"]?.stringValue, message["snapshot"] ?? .object([:]))

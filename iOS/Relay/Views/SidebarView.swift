@@ -6,8 +6,6 @@ struct SidebarView: View {
     @State private var collapsedProjects = Set<String>()
     @State private var renamingThread: ThreadSummary?
     @State private var renameDraft = ""
-    @AppStorage("relay.sidebar.organization") private var organizationRaw = SidebarOrganization.byProject.rawValue
-    @AppStorage("relay.sidebar.sort") private var sortRaw = SidebarSort.priority.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -168,24 +166,24 @@ struct SidebarView: View {
     }
 
     private var organization: SidebarOrganization {
-        SidebarOrganization(rawValue: organizationRaw) ?? .byProject
+        store.sidebarOrganization
     }
 
     private var selectedSort: SidebarSort {
-        SidebarSort(rawValue: sortRaw) ?? .priority
+        store.sidebarSort
     }
 
     private var organizationMenu: some View {
         Menu {
             Section("整理") {
-                Button { organizationRaw = SidebarOrganization.byProject.rawValue } label: {
+                Button { store.setSidebarOrganization(.byProject) } label: {
                     if organization == .byProject {
                         Label("按项目", systemImage: "checkmark")
                     } else {
                         Text("按项目")
                     }
                 }
-                Button { organizationRaw = SidebarOrganization.singleList.rawValue } label: {
+                Button { store.setSidebarOrganization(.singleList) } label: {
                     if organization == .singleList {
                         Label("在一个列表中", systemImage: "checkmark")
                     } else {
@@ -194,14 +192,14 @@ struct SidebarView: View {
                 }
             }
             Section("排序方式") {
-                Button { sortRaw = SidebarSort.priority.rawValue } label: {
+                Button { store.setSidebarSort(.priority) } label: {
                     if selectedSort == .priority {
                         Label("优先级", systemImage: "checkmark")
                     } else {
                         Text("优先级")
                     }
                 }
-                Button { sortRaw = SidebarSort.recent.rawValue } label: {
+                Button { store.setSidebarSort(.recent) } label: {
                     if selectedSort == .recent {
                         Label("最近更新", systemImage: "checkmark")
                     } else {
@@ -302,16 +300,6 @@ struct SidebarView: View {
         if store.isThreadRunning(thread.id) { return 2 }
         return 3
     }
-}
-
-private enum SidebarOrganization: String {
-    case byProject
-    case singleList
-}
-
-private enum SidebarSort: String {
-    case priority
-    case recent
 }
 
 private struct ProjectGroup: Identifiable {

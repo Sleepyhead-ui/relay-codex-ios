@@ -124,13 +124,16 @@ export function boundSessionSnapshot(
   return result;
 }
 
-function boundSessionItem(item: JsonObject): JsonObject {
+export function boundSessionItem(item: JsonObject, maximumTechnicalBytes = maxTechnicalTextBytes): JsonObject {
   let changed = false;
   const bounded: JsonObject = { ...item };
-  for (const key of ["aggregatedOutput", "output", "result"]) {
+  for (const key of ["aggregatedOutput", "output", "result", "contentItems"]) {
     const value = item[key];
-    if (typeof value !== "string" || Buffer.byteLength(value) <= maxTechnicalTextBytes) continue;
-    const preview = headTail(value, maxTechnicalTextBytes);
+    const serialized = typeof value === "string"
+      ? value
+      : value === undefined || value === null ? undefined : JSON.stringify(value);
+    if (serialized === undefined || Buffer.byteLength(serialized) <= maximumTechnicalBytes) continue;
+    const preview = headTail(serialized, maximumTechnicalBytes);
     bounded[key] = preview.text;
     bounded[`${key}Truncated`] = true;
     bounded[`${key}OriginalBytes`] = preview.originalBytes;

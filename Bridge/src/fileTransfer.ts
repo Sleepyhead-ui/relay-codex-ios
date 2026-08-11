@@ -45,7 +45,9 @@ export class FileTransferManager {
     this.defaultCwd = defaultCwd ? path.resolve(defaultCwd) : undefined;
     this.allowedRoots.add(this.filesRoot);
     if (this.defaultCwd) this.allowedRoots.add(this.defaultCwd);
-    this.cleanupTimer = setInterval(() => { void this.cleanupExpired(); }, Math.min(sessionTtlMs, 60_000));
+    // Very short test TTLs must not create overlapping cleanup passes. In
+    // production one-second granularity is already far below the ten-minute TTL.
+    this.cleanupTimer = setInterval(() => { void this.cleanupExpired(); }, Math.max(1_000, Math.min(sessionTtlMs, 60_000)));
     this.cleanupTimer.unref();
   }
 

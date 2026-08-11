@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem, TranscriptGroupIndex, upsert, windowTranscriptGroups } from "./transcript";
+import { applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, extractGoalContext, filterThreads, formatElapsed, mergeHistory, mergeSessionPatch, mergeSnapshot, parseApproval, parseItem, TranscriptGroupIndex, upsert, windowTranscriptGroups } from "./transcript";
 import type { TranscriptItem } from "./types";
 
 describe("desktop transcript", () => {
+  it("merges delayed history behind a newer live snapshot", () => {
+    const live: TranscriptItem[] = [
+      { id: "live.user", turnId: "turn.live", kind: "user", text: "current prompt" },
+      { id: "live.progress", turnId: "turn.live", kind: "assistant", phase: "commentary", text: "new progress" },
+    ];
+    const history: TranscriptItem[] = [
+      { id: "old.answer", turnId: "turn.old", kind: "assistant", text: "older answer" },
+      { id: "live.user", turnId: "turn.live", kind: "user", text: "current prompt" },
+    ];
+
+    const merged = mergeHistory(live, history);
+
+    expect(merged.map((item) => item.id)).toEqual(["old.answer", "live.user", "live.progress"]);
+    expect(merged.at(-1)?.text).toBe("new progress");
+  });
+
   it("applies incremental session changes without replacing unrelated turns", () => {
     const existing = [
       { id: "older", turnId: "turn.0", kind: "assistant" as const, text: "older" },

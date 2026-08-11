@@ -51,7 +51,25 @@ test("external terminal state clears stale runtime state", async () => {
   const snapshot = await tracker.snapshotWithExternal("thread-stale", external);
   assert.equal(snapshot.known, true);
   assert.equal(snapshot.isRunning, false);
+  assert.equal(snapshot.observedTurnId, "turn-stale");
   assert.equal(tracker.activeCount, 0);
+});
+
+test("reconciles an already-read external observation without another tracker read", () => {
+  const tracker = new RuntimeStateTracker(() => 100);
+  const snapshot = tracker.snapshotWithObservation("thread-external", {
+    active: true,
+    turnId: "turn-external",
+    startedAt: 80,
+    updatedAt: 90,
+  });
+  assert.deepEqual(snapshot, {
+    known: true,
+    isRunning: true,
+    activeTurnId: "turn-external",
+    startedAt: 80,
+    updatedAt: 100,
+  });
 });
 
 test("stale external terminal state cannot clear a fresh active runtime", async () => {

@@ -1,5 +1,15 @@
 import Foundation
 
+enum SidebarOrganization: String, Equatable {
+    case byProject
+    case singleList
+}
+
+enum SidebarSort: String, Equatable {
+    case priority
+    case recent
+}
+
 struct HostConfiguration: Codable, Equatable {
     var name = "Windows PC"
     var endpoint = "ws://127.0.0.1:8765"

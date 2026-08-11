@@ -50,6 +50,24 @@ describe("task run state", () => {
     expect(core.states["thread.1"]?.phase).toBe("running");
   });
 
+  it("does not let an old terminal snapshot stop a prompt awaiting its turn id", () => {
+    let core = createTaskStateCore();
+    core = reduceTaskStateCore(core, "thread.1", { type: "starting" });
+    core = reduceTaskStateCore(core, "thread.1", { type: "terminal", turnId: "turn.old" });
+
+    expect(core.states["thread.1"]?.phase).toBe("starting");
+    expect(core.states["thread.1"]?.turnId).toBeUndefined();
+  });
+
+  it("adopts a new external turn after a terminal snapshot for the previous turn", () => {
+    let core = createTaskStateCore();
+    core = reduceTaskStateCore(core, "thread.1", { type: "hydrate", running: false, turnId: "turn.old" });
+    core = reduceTaskStateCore(core, "thread.1", { type: "progress", turnId: "turn.new", startedAt: 123 });
+
+    expect(core.states["thread.1"]).toMatchObject({ phase: "running", turnId: "turn.new", startedAt: 123 });
+    expect(core.completedTurnIds.has("turn.old")).toBe(true);
+  });
+
   it("decodes plans as progress bound to the current turn", () => {
     const transition = decodeTaskRunEvents("turn/plan/updated", {
       threadId: "thread.1", turnId: "turn.1", plan: [{ step: "检查状态", status: "inProgress" }],

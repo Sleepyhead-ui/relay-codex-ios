@@ -14,6 +14,7 @@ export function installDevBridge() {
     barkUrl: "",
     pushIncludePreview: false,
   };
+  let sidebarPreferences = { organization: "byProject", sort: "priority" };
   let update = { state: "current" as const, currentVersion: "preview", message: "开发预览版" };
   const items = [
     { id: "goal.1", type: "userMessage", content: [{ type: "text", text: "<codex_internal_context source=\"goal\"><objective>完成第二、第三和第四阶段</objective></codex_internal_context>" }] },
@@ -62,6 +63,12 @@ export function installDevBridge() {
       else if (message.method === "relay/thread/control/status" || message.method === "relay/thread/control/acquire") rpcResult(message, { mode: "relay-write" });
       else if (message.method === "relay/thread/control/release") rpcResult(message, { mode: "relay-write", release: "scheduled" });
       else if (message.method === "relay/thread/session/subscribe") rpcResult(message, { known: true, isRunning: true, turnId, startedAt: now - 67, items });
+      else if (message.method === "relay/preferences/get") rpcResult(message, { sidebar: sidebarPreferences });
+      else if (message.method === "relay/preferences/update") {
+        sidebarPreferences = { ...sidebarPreferences, ...(message.params?.sidebar || {}) };
+        rpcResult(message, { sidebar: sidebarPreferences });
+        setTimeout(() => emit({ type: "sidebarPreferencesUpdated", preferences: { sidebar: sidebarPreferences } }), 1);
+      }
       else if (message.method === "relay/thread/goal") rpcResult(message, { goal: { threadId, id: "preview.goal", objective: "完成第二、第三和第四阶段", status: "active", tokenBudget: null, tokensUsed: 2381362, timeUsedSeconds: 4156, createdAt: now - 4900, updatedAt: now - 67 } });
       else if (message.method === "relay/diagnostics/report") rpcResult(message, { generatedAt: new Date().toISOString(), summary: "warning", checks: [
         { id: "bridge", level: "ok", title: "Relay Bridge", detail: "已运行 2 小时 14 分钟" },

@@ -5,10 +5,17 @@ import QuartzCore
 struct DiffContentView: View {
     private let lines: [DiffLine]
     private let lineHeight: CGFloat = 19
-    private var height: CGFloat { CGFloat(min(max(lines.count, 2), 18)) * lineHeight + 16 }
+    private var height: CGFloat { CGFloat(max(lines.count, 2)) * lineHeight + 16 }
 
     init(source: String) {
-        lines = DiffLine.parse(source)
+        let parsed = DiffLine.parse(source)
+        if parsed.count > 18 {
+            lines = Array(parsed.prefix(9)) + [
+                DiffLine(id: Int.min, text: "... Relay omitted \(parsed.count - 17) lines from this inline preview ...", kind: .header)
+            ] + Array(parsed.suffix(8))
+        } else {
+            lines = parsed
+        }
     }
 
     var body: some View {
@@ -63,7 +70,7 @@ private final class DiffScrollContainerView: UIView {
         scrollView.backgroundColor = .clear
         scrollView.isDirectionalLockEnabled = true
         scrollView.showsHorizontalScrollIndicator = true
-        scrollView.showsVerticalScrollIndicator = true
+        scrollView.showsVerticalScrollIndicator = false
         scrollView.scrollsToTop = false
         scrollView.delaysContentTouches = false
         scrollView.decelerationRate = .normal
@@ -90,12 +97,12 @@ private final class DiffScrollContainerView: UIView {
 
     private func layoutCanvas(preserving offset: CGPoint) {
         let contentWidth = max(minimumWidth, canvas.requiredWidth)
-        let contentHeight = max(bounds.height, canvas.requiredHeight)
+        let contentHeight = bounds.height
         let size = CGSize(width: contentWidth, height: contentHeight)
         if canvas.frame.size != size { canvas.frame = CGRect(origin: .zero, size: size) }
         if scrollView.contentSize != size { scrollView.contentSize = size }
         scrollView.alwaysBounceHorizontal = contentWidth > bounds.width + 0.5
-        scrollView.alwaysBounceVertical = contentHeight > bounds.height + 0.5
+        scrollView.alwaysBounceVertical = false
 
         guard !scrollView.isDragging, !scrollView.isDecelerating else { return }
         let maximum = CGPoint(

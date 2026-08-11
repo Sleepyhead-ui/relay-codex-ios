@@ -258,6 +258,7 @@ extension RelayStore {
         if !snapshotItems.isEmpty { mergeSessionItems(snapshotItems, turnId: turnId) }
         recordTranscriptTrace(source: "session.snapshot", turnId: turnId)
         applySessionStatus(result, threadId: threadId, turnId: turnId)
+        if selectedThreadId == threadId { isLoadingThread = false }
     }
 
     func applySessionPatch(_ patch: JSONValue, threadId: String) {

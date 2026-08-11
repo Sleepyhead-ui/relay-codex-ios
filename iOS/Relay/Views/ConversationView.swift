@@ -7,11 +7,8 @@ struct ConversationView: View {
     @State private var isUserScrolling = false
     @State private var autoScrollScheduled = false
     @State private var visibleGroupLimit = 24
-    @State private var heldTranscriptWindow: TranscriptWindow?
-    @State private var heldLiveActivityPresentation: MobileActivityPresentation?
     @State private var activityPresentation: MobileActivityPresentation?
     @State private var keyboardTransitionID: UUID?
-    @State private var bottomMarkerY = CGFloat.greatestFiniteMagnitude
     @State private var scrollViewportHeight: CGFloat = 0
 
     private let bottomAnchor = "relay-conversation-bottom"
@@ -25,10 +22,10 @@ struct ConversationView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
-                if let presentation = heldLiveActivityPresentation ?? liveActivityPresentation {
+                if let presentation = liveActivityPresentation {
                     MobileLiveActivityConsole(
                         presentation: presentation,
-                        compact: store.composerIsFocused
+                        compact: store.composerIsFocused || !isAtBottom
                     ) {
                         activityPresentation = presentation
                     }
@@ -157,7 +154,7 @@ struct ConversationView: View {
             EmptyConversationView()
         } else {
             ScrollViewReader { proxy in
-                let window = heldTranscriptWindow ?? store.transcriptWindow(limit: visibleGroupLimit)
+                let window = store.transcriptWindow(limit: visibleGroupLimit)
                 ZStack(alignment: .bottom) {
                     ScrollView {
                         LazyVStack(spacing: 30) {
@@ -228,26 +225,21 @@ struct ConversationView: View {
                     }
                     .scrollDismissesKeyboard(.interactively)
                     .onPreferenceChange(ConversationBottomMarkerPreferenceKey.self) { value in
-                        bottomMarkerY = value
-                        refreshBottomVisibility()
+                        refreshBottomVisibility(bottomMarkerY: value)
                     }
                     .onPreferenceChange(ConversationViewportHeightPreferenceKey.self) { value in
+                        guard abs(scrollViewportHeight - value) > 0.5 else { return }
                         scrollViewportHeight = value
-                        refreshBottomVisibility()
                     }
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 4)
                             .onChanged { _ in
                                 guard !isUserScrolling else { return }
-                                heldTranscriptWindow = window
-                                heldLiveActivityPresentation = liveActivityPresentation
                                 isUserScrolling = true
                             }
                             .onEnded { _ in
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                                     isUserScrolling = false
-                                    heldLiveActivityPresentation = nil
-                                    if isAtBottom { heldTranscriptWindow = nil }
                                 }
                             }
                     )
@@ -255,8 +247,6 @@ struct ConversationView: View {
 
                     if !isAtBottom {
                         Button {
-                            heldTranscriptWindow = nil
-                            heldLiveActivityPresentation = nil
                             isAtBottom = true
                             DispatchQueue.main.async {
                                 scrollToBottom(proxy, animated: true)
@@ -279,8 +269,6 @@ struct ConversationView: View {
                 .onAppear { scrollToBottom(proxy, animated: false) }
                 .onChange(of: store.selectedThreadId) { _ in
                     isAtBottom = true
-                    heldTranscriptWindow = nil
-                    heldLiveActivityPresentation = nil
                     visibleGroupLimit = 24
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         scrollToBottom(proxy, animated: false)
@@ -288,8 +276,6 @@ struct ConversationView: View {
                 }
                 .onChange(of: store.isLoadingThread) { loading in
                     guard !loading else { return }
-                    heldTranscriptWindow = nil
-                    heldLiveActivityPresentation = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                         scrollToBottom(proxy, animated: false)
                     }
@@ -337,22 +323,17 @@ struct ConversationView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    private func refreshBottomVisibility() {
+    private func refreshBottomVisibility(bottomMarkerY: CGFloat) {
         let visible = ConversationBottomVisibility.isAtBottom(
             bottomY: bottomMarkerY,
             viewportHeight: scrollViewportHeight
         )
-        if visible {
-            isAtBottom = true
-            if !isUserScrolling { heldTranscriptWindow = nil }
-        } else if keyboardTransitionID == nil {
-            isAtBottom = false
-        }
+        guard visible != isAtBottom else { return }
+        if visible { isAtBottom = true }
+        else if keyboardTransitionID == nil { isAtBottom = false }
     }
 
     private func revealOutgoingMessage(_ proxy: ScrollViewProxy) {
-        heldTranscriptWindow = nil
-        heldLiveActivityPresentation = nil
         isUserScrolling = false
         isAtBottom = true
 

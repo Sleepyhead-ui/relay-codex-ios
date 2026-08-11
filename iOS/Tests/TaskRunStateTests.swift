@@ -152,6 +152,25 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertFalse(state.isRunning)
     }
 
+    func testNewExternalTurnCanReplacePreviousTerminalSnapshot() {
+        var states: [String: TaskRunState] = [:]
+        var core = TaskStateCore()
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .hydrate(running: false, turnId: "turn.old", startedAt: nil),
+            to: &states
+        ))
+
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .progress(turnId: "turn.new", startedAt: Date(timeIntervalSince1970: 123)),
+            to: &states
+        ))
+        XCTAssertEqual(states["thread.1"]?.phase, .running)
+        XCTAssertEqual(states["thread.1"]?.turnId, "turn.new")
+        XCTAssertTrue(core.isCompleted("turn.old"))
+    }
+
     func testStalePlanCannotReplaceCurrentTurnPlan() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.started(turnId: "turn.2", startedAt: nil))
@@ -183,6 +202,23 @@ final class TaskRunStateTests: XCTestCase {
 
         XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
         XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.external")
+    }
+
+    func testOldTerminalSnapshotCannotStopPromptBeforeTurnIdArrives() {
+        var states: [String: TaskRunState] = [:]
+        var core = TaskStateCore()
+        XCTAssertTrue(core.apply(
+            threadId: "thread.1",
+            event: .starting(startedAt: nil),
+            to: &states
+        ))
+        XCTAssertFalse(core.apply(
+            threadId: "thread.1",
+            event: .terminal(turnId: "turn.old", phase: .completed, completedAt: nil),
+            to: &states
+        ))
+        XCTAssertEqual(states["thread.1"]?.phase, .starting)
+        XCTAssertNil(states["thread.1"]?.turnId)
     }
 
     func testAuthoritativeRuntimeTerminalUsesTrackedTurnWhenSnapshotOmitsTurnId() {

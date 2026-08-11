@@ -30,13 +30,13 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
         ))
     }
 
-    func testChecksIdleSelectedThreadWithoutOneSecondPolling() {
+    func testChecksIdleSelectedThreadQuicklyEnoughForExternalTurns() {
         XCTAssertEqual(
             SelectedSessionSyncPolicy.nextCheckDelay(
                 hasActiveSubscription: true,
                 isLocallyRunning: false
             ),
-            15_000_000_000
+            3_000_000_000
         )
         XCTAssertTrue(SelectedSessionSyncPolicy.shouldProbeExternalRuntime(
             isLocallyRunning: false,

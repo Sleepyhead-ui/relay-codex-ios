@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
 import {
-  applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeSessionPatch, mergeSnapshot, parseApproval,
+  applyContextCompaction, applyDeltaBatch, applyUserMessagePlacements, bindUserPrompt, diffLineKind, filterThreads, formatElapsed, groupProjects, isRunningStatus, mergeHistory, mergeSessionPatch, mergeSnapshot, parseApproval,
   parseItem, parseModel, parseThread, parseTurn, TranscriptGroupIndex, upsert,
 } from "./transcript";
 import type { UserMessagePlacement } from "./transcript";
@@ -19,7 +19,7 @@ import { IncrementalMarkdownChunks } from "./markdownChunks";
 import { previewTechnicalText } from "./technicalText";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
-  GoalState, PlanStep, QueuedPrompt, ServiceStatus, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
+  GoalState, PlanStep, QueuedPrompt, ServiceStatus, SidebarPreferences, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
 const imageExtensions = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "bmp", "tiff"]);
@@ -77,6 +77,7 @@ export default function App() {
     barkUrl: "",
     pushIncludePreview: false,
   });
+  const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>({ organization: "byProject", sort: "priority" });
   const [update, setUpdate] = useState<DesktopUpdateState>({ state: "idle" });
   const selectedRef = useRef<string>();
   const activeTurnRef = useRef<string>();
@@ -120,13 +121,27 @@ export default function App() {
   const approvalQueue = selectedApprovals.length ? selectedApprovals : approvals;
   const approval = approvalQueue[0];
   const approvalThreadIds = useMemo(() => new Set(approvals.flatMap((item) => item.threadId ? [item.threadId] : [])), [approvals]);
-  const projects = useMemo(() => groupProjects(sortPinnedThreads(filterThreads(threads, threadSearch), pinnedThreadIds)), [threads, threadSearch, pinnedThreadIds]);
+  const sidebarThreads = useMemo(() => {
+    const filtered = filterThreads(threads, threadSearch);
+    return [...filtered].sort((left, right) => {
+      if (sidebarPreferences.sort === "recent") return right.updatedAt - left.updatedAt;
+      const rank = (thread: ThreadSummary) => pinnedThreadIds.has(thread.id) ? 0 : approvalThreadIds.has(thread.id) ? 1 : isRunningStatus(thread.status) ? 2 : 3;
+      return rank(left) - rank(right) || right.updatedAt - left.updatedAt;
+    });
+  }, [threads, threadSearch, pinnedThreadIds, approvalThreadIds, sidebarPreferences.sort]);
+  const projects = useMemo(() => groupProjects(sidebarThreads), [sidebarThreads]);
   const currentQueuedPrompts = queuedPrompts.filter((item) => item.threadId === selectedThreadId);
   const currentGoal = selectedThreadId ? goals[selectedThreadId] : undefined;
-  messagesRef.current = messages;
-
   function updateTaskState(threadId: string, event: TaskRunEvent) {
     setTaskCore((current) => reduceTaskStateCore(current, threadId, event));
+  }
+
+  function commitMessages(threadId: string, update: (current: TranscriptItem[]) => TranscriptItem[]) {
+    if (selectedRef.current !== threadId) return;
+    const next = update(messagesRef.current);
+    messagesRef.current = next;
+    threadMessageCacheRef.current.set(threadId, next);
+    setMessages(next);
   }
 
   function setAccess(value: WorkspaceAccess) {
@@ -215,12 +230,15 @@ export default function App() {
         ...(message.items || []),
       ].sort((left, right) => left.createdAt - right.createdAt));
     }
+    else if (message?.type === "runtimeUpdated") handleRuntimeUpdate(String(message.threadId || ""), message.runtime || {});
+    else if (message?.type === "sidebarPreferencesUpdated") applySidebarPreferences(message.preferences);
     else if (message?.type === "bridgeStatus") handleBridgeStatus(message);
     else if (message?.type === "bridgeError") setError(message.message || "Bridge 出错");
   };
 
   async function initialize() {
     try {
+      void loadSidebarPreferences();
       const [threadResult, modelResult, profileResult, queueResult] = await Promise.all([
         rpc.rpc("thread/list", { limit: 200, sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true }),
         rpc.rpc("model/list", { limit: 100, includeHidden: false }),
@@ -274,6 +292,7 @@ export default function App() {
       selectedRef.current = undefined;
       setThreads([]);
       setMessages([]);
+      messagesRef.current = [];
       setApprovals([]);
       setQueuedPrompts([]);
       userMessagePlacementsRef.current.clear();
@@ -411,13 +430,13 @@ export default function App() {
     selectedRef.current = id;
     setSelectedThreadId(id);
     localStorage.setItem("relay.desktop.thread", id);
-    setLoadingThread(true);
-    setOlderTurnsCursor(undefined);
     const cachedMessages = threadMessageCacheRef.current.get(id) || [];
+    setLoadingThread(cachedMessages.length === 0);
+    setOlderTurnsCursor(undefined);
     setMessages(cachedMessages);
     messagesRef.current = cachedMessages;
     setTurns({});
-    updateTaskState(id, { type: "reset" });
+    let sessionSnapshotApplied = false;
     try {
       const previousSubscription = sessionSubscriptionRef.current;
       if (previous && previous !== id && previousSubscription?.threadId === previous) {
@@ -425,17 +444,30 @@ export default function App() {
         void rpc.rpc("relay/thread/session/unsubscribe", {
           threadId: previous,
           subscriptionId: previousSubscription.id,
-          releaseControl: true,
         }, 5_000).catch(() => {});
-      } else if (previous && previous !== id && relayOwnedThreadIds.has(previous)) {
-        void rpc.rpc("relay/thread/control/release", { threadId: previous }, 5_000).catch(() => {});
       }
+      const sessionPromise = !readingArchived ? (() => {
+        const subscriptionId = crypto.randomUUID();
+        sessionSubscriptionRef.current = { threadId: id, id: subscriptionId };
+        return rpc.rpc("relay/thread/session/subscribe", { threadId: id, incremental: true, subscriptionId }, 12_000)
+          .then((snapshot) => {
+            if (selectedRef.current === id && sessionSubscriptionRef.current?.id === subscriptionId) {
+              sessionSnapshotApplied = true;
+              handleSessionSnapshot(id, snapshot);
+              setLoadingThread(false);
+            } else {
+              void rpc.rpc("relay/thread/session/unsubscribe", { threadId: id, subscriptionId }, 5_000).catch(() => {});
+            }
+            return snapshot;
+          })
+          .catch(() => undefined);
+      })() : Promise.resolve(undefined);
       const conversationPromise = await Promise.all([
         rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
-        rpc.rpc("thread/turns/list", { threadId: id, limit: 12, sortDirection: "desc", itemsView: "full" }, 120_000),
+        rpc.rpc("thread/turns/list", { threadId: id, limit: 3, sortDirection: "desc", itemsView: "full" }, 120_000),
         readingArchived
           ? Promise.resolve({ mode: "unowned" })
-          : rpc.rpc("relay/thread/control/status", { threadId: id }, 12_000),
+          : rpc.rpc("relay/thread/control/status", { threadId: id }, 12_000).catch(() => ({ mode: "unowned" })),
       ]).then(([summary, page, control]) => ({ ...summary, initialTurnsPage: page, relayThreadAccess: control }));
       const [result, goalResult] = await Promise.all([
         conversationPromise,
@@ -480,28 +512,27 @@ export default function App() {
       const orderedMessages = nextActiveTurnId
         ? applyUserMessagePlacements(loadedMessages, userMessagePlacementsRef.current.values(), id, nextActiveTurnId)
         : loadedMessages;
-      setMessages(orderedMessages);
-      messagesRef.current = orderedMessages;
-      threadMessageCacheRef.current.set(id, orderedMessages);
-      setTurns(loadedTurns);
-      updateTaskState(id, {
-        type: "hydrate",
-        running: Boolean(nextActiveTurnId) || threadActive,
-        turnId: nextActiveTurnId,
-        startedAt: nextActiveTurnId ? loadedTurns[nextActiveTurnId]?.startedAt : undefined,
-      });
+      if (sessionSnapshotApplied) {
+        commitMessages(id, (current) => {
+          const next = mergeHistory(current, orderedMessages);
+          return next;
+        });
+        setTurns((current) => ({ ...loadedTurns, ...current }));
+      } else {
+        setMessages(orderedMessages);
+        messagesRef.current = orderedMessages;
+        threadMessageCacheRef.current.set(id, orderedMessages);
+        setTurns(loadedTurns);
+        updateTaskState(id, {
+          type: "hydrate",
+          running: Boolean(nextActiveTurnId) || threadActive,
+          turnId: nextActiveTurnId,
+          startedAt: nextActiveTurnId ? loadedTurns[nextActiveTurnId]?.startedAt : undefined,
+        });
+      }
       if (result.model) setSelectedModel(result.model);
       if (result.reasoningEffort) setEffort(result.reasoningEffort);
-      if (!readingArchived) try {
-        const subscriptionId = crypto.randomUUID();
-        sessionSubscriptionRef.current = { threadId: id, id: subscriptionId };
-        const snapshot = await rpc.rpc("relay/thread/session/subscribe", { threadId: id, incremental: true, subscriptionId }, 12_000);
-        if (selectedRef.current === id && sessionSubscriptionRef.current?.id === subscriptionId) {
-          handleSessionSnapshot(id, snapshot);
-        } else {
-          void rpc.rpc("relay/thread/session/unsubscribe", { threadId: id, subscriptionId }, 5_000).catch(() => {});
-        }
-      } catch {}
+      await sessionPromise;
     } catch (reason) { setError(errorText(reason)); }
     finally { if (selectedRef.current === id) setLoadingThread(false); }
   }
@@ -532,7 +563,7 @@ export default function App() {
       const result = await rpc.rpc("thread/turns/list", {
         threadId,
         cursor,
-        limit: 12,
+        limit: 8,
         sortDirection: "desc",
         itemsView: "full",
       }, 120_000);
@@ -550,12 +581,9 @@ export default function App() {
         }
       }
       setTurns((current) => ({ ...olderTurns, ...current }));
-      setMessages((current) => {
+      commitMessages(threadId, (current) => {
         const existingIds = new Set(current.map((item) => item.id));
-        const next = [...olderMessages.filter((item) => !existingIds.has(item.id)), ...current];
-        messagesRef.current = next;
-        threadMessageCacheRef.current.set(threadId, next);
-        return next;
+        return [...olderMessages.filter((item) => !existingIds.has(item.id)), ...current];
       });
       setOlderTurnsCursor(result.nextCursor || undefined);
       return page.length;
@@ -581,7 +609,7 @@ export default function App() {
     const live = snapshot.isRunning === true && snapshot.stale !== true;
     if (live) bindPendingStartMessage(snapshot.turnId);
     const snapshotItems = (snapshot.items || []).map((value: any) => parseItem(value, snapshot.turnId)).filter(Boolean) as TranscriptItem[];
-    if (snapshotItems.length) setMessages((current) => {
+    if (snapshotItems.length) commitMessages(threadId, (current) => {
       const next = applyUserMessagePlacements(
         mergeSnapshot(current, snapshotItems, snapshot.turnId),
         userMessagePlacementsRef.current.values(),
@@ -635,7 +663,7 @@ export default function App() {
       .map((value: any) => parseItem(value, patch.turnId))
       .filter(Boolean) as TranscriptItem[];
     if (upserts.length || patch.removedItemIds?.length) {
-      setMessages((current) => {
+      commitMessages(threadId, (current) => {
         const next = applyUserMessagePlacements(
           mergeSessionPatch(current, upserts, patch.removedItemIds || [], patch.turnId),
           userMessagePlacementsRef.current.values(),
@@ -648,6 +676,42 @@ export default function App() {
     }
     handleSessionSnapshot(threadId, { ...patch, items: [], revision: patch.revision }, false);
     if (!upserts.length && !patch.removedItemIds?.length) recordPatch();
+  }
+
+  function handleRuntimeUpdate(threadId: string, runtime: any) {
+    if (!threadId || runtime?.known !== true) return;
+    const live = runtime.isRunning === true;
+    const turnId = runtime.activeTurnId || runtime.observedTurnId
+      ? String(runtime.activeTurnId || runtime.observedTurnId)
+      : undefined;
+    setThreads((current) => current.map((thread) => thread.id === threadId
+      ? { ...thread, status: live ? "active" : "idle" }
+      : thread));
+    if (live) {
+      updateTaskState(threadId, turnId
+        ? { type: "progress", turnId, startedAt: runtime.startedAt }
+        : { type: "starting", startedAt: runtime.startedAt });
+      if (selectedRef.current === threadId && turnId) {
+        setTurns((current) => ({
+          ...current,
+          [turnId]: {
+            ...(current[turnId] || { id: turnId }),
+            id: turnId,
+            status: "inProgress",
+            startedAt: runtime.startedAt || current[turnId]?.startedAt,
+            completedAt: undefined,
+            durationMs: undefined,
+          },
+        }));
+      }
+      return;
+    }
+    updateTaskState(threadId, {
+      type: "terminal",
+      turnId,
+      phase: runtime.upstreamError ? "failed" : "completed",
+      completedAt: runtime.updatedAt,
+    });
   }
 
   async function recoverSessionSubscription(threadId: string) {
@@ -705,7 +769,7 @@ export default function App() {
       return;
     }
     if (method === "thread/compacted" && turnId) {
-      setMessages((current) => applyContextCompaction(current, turnId));
+      commitMessages(threadId, (current) => applyContextCompaction(current, turnId));
       return;
     }
     if (terminal) {
@@ -714,9 +778,11 @@ export default function App() {
         const metadata: TurnMetadata = parseTurn(params.turn || { id: turnId }) || { id: String(turnId), status: "completed" };
         const status = method.includes("failed") ? "failed" : method.includes("abort") || method.includes("interrupt") ? "interrupted" : metadata.status;
         setTurns((current) => ({ ...current, [turnId]: { ...current[turnId], ...metadata, status, completedAt: metadata.completedAt || Date.now() / 1000 } }));
-        for (const rawItem of params.turn?.items || []) {
-          const item = parseItem(rawItem, turnId);
-          if (item) setMessages((current) => upsert(current, item));
+        const completedItems = (params.turn?.items || [])
+          .map((rawItem: any) => parseItem(rawItem, turnId))
+          .filter(Boolean) as TranscriptItem[];
+        if (completedItems.length) {
+          commitMessages(threadId, (current) => completedItems.reduce((next, item) => upsert(next, item), current));
         }
       }
       void refreshThreads();
@@ -725,7 +791,7 @@ export default function App() {
     if (method === "item/started" || method === "item/completed") {
       flushPendingDeltas();
       const item = parseItem(params.item, turnId);
-      if (item) setMessages((current) => upsert(current, item));
+      if (item) commitMessages(threadId, (current) => upsert(current, item));
       return;
     }
     if (method === "item/agentMessage/delta") appendText(params.itemId, params.delta, turnId, "assistant");
@@ -781,7 +847,9 @@ export default function App() {
     const startedAt = performance.now();
     let performanceRecorded = false;
     pendingDeltaRef.current.clear();
-    setMessages((current) => {
+    const threadId = selectedRef.current;
+    if (!threadId) return;
+    commitMessages(threadId, (current) => {
       const next = applyDeltaBatch(current, pending);
       if (!performanceRecorded) {
         performanceRecorded = true;
@@ -792,7 +860,6 @@ export default function App() {
   }
 
   async function createThread(cwd = workspace) {
-    const previousThreadId = selectedRef.current;
     if (archivedView) setArchivedView(false);
     const threadAccess = accessForWorkspace(cwd, defaultAccess, projectAccesses);
     const result = await rpc.rpc("thread/start", {
@@ -805,12 +872,11 @@ export default function App() {
     const id = result.thread?.id;
     if (!id) throw new Error("Codex 未返回对话编号");
     applyThreadControl([id], "relay-write");
-    if (previousThreadId && previousThreadId !== id && relayOwnedThreadIds.has(previousThreadId)) {
-      void rpc.rpc("relay/thread/control/release", { threadId: previousThreadId }, 5_000).catch(() => {});
-    }
     if (cwd) { setWorkspace(cwd); setNewTaskCwd(cwd); }
     await refreshThreads();
     setSelectedThreadId(id); selectedRef.current = id; setMessages([]); setTurns({}); updateTaskState(id, { type: "reset" });
+    messagesRef.current = [];
+    threadMessageCacheRef.current.set(id, []);
     localStorage.setItem("relay.desktop.thread", id);
     return id as string;
   }
@@ -869,14 +935,14 @@ export default function App() {
       });
       const imagePaths = selectedAttachments.filter((item) => item.isImage).map((item) => item.path);
       const display = [text, ...selectedAttachments.filter((item) => !item.isImage).map((item) => `附件 ${item.name}`)].filter(Boolean).join("\n\n");
-      setMessages((current) => [...current, { id: clientId, kind: "user", text: display, imagePaths }]);
+      commitMessages(threadId, (current) => [...current, { id: clientId, kind: "user", text: display, imagePaths }]);
       if (!activeTurnRef.current) pendingStartMessageRef.current = clientId;
       if (activeTurnRef.current) {
         const result = await rpc.rpc("turn/steer", { threadId, expectedTurnId: activeTurnRef.current, clientUserMessageId: clientId, input }, 120_000);
         const confirmed = result.turnId || activeTurnRef.current;
         const placement = userMessagePlacementsRef.current.get(clientId);
         if (placement && confirmed) userMessagePlacementsRef.current.set(clientId, { ...placement, turnId: confirmed });
-        setMessages((current) => current.map((item) => item.id === clientId ? { ...item, turnId: confirmed } : item));
+        commitMessages(threadId, (current) => current.map((item) => item.id === clientId ? { ...item, turnId: confirmed } : item));
       } else {
         updateTaskState(threadId, { type: "starting" });
         const result = await rpc.rpc("turn/start", {
@@ -955,10 +1021,12 @@ export default function App() {
     pendingStartMessageRef.current = undefined;
     const placement = userMessagePlacementsRef.current.get(messageId);
     if (placement) userMessagePlacementsRef.current.set(messageId, { ...placement, turnId });
-    setMessages((current) => applyUserMessagePlacements(
+    const threadId = selectedRef.current || placement?.threadId;
+    if (!threadId) return;
+    commitMessages(threadId, (current) => applyUserMessagePlacements(
       bindUserPrompt(current, messageId, turnId),
       userMessagePlacementsRef.current.values(),
-      selectedRef.current || placement?.threadId || "",
+      threadId,
       turnId,
     ));
   }
@@ -1028,6 +1096,24 @@ export default function App() {
     catch (reason) { setError(errorText(reason)); }
   }
 
+  function applySidebarPreferences(value: any) {
+    const sidebar = value?.sidebar || value || {};
+    setSidebarPreferences((current) => ({
+      organization: sidebar.organization === "singleList" || sidebar.organization === "byProject" ? sidebar.organization : current.organization,
+      sort: sidebar.sort === "recent" || sidebar.sort === "priority" ? sidebar.sort : current.sort,
+    }));
+  }
+
+  async function loadSidebarPreferences() {
+    try { applySidebarPreferences(await rpc.rpc("relay/preferences/get", {}, 8_000)); }
+    catch { /* Older Bridges do not know this optional RPC. */ }
+  }
+
+  async function updateSidebarPreferences(patch: Partial<SidebarPreferences>) {
+    try { applySidebarPreferences(await rpc.rpc("relay/preferences/update", { sidebar: patch }, 8_000)); }
+    catch (reason) { setError(errorText(reason)); }
+  }
+
   async function testRemotePush(barkUrl: string) {
     try {
       setPreferences(await window.relayDesktop.setPreferences({
@@ -1067,8 +1153,9 @@ export default function App() {
               : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void startRemoteService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
           </div>
           <div className="sidebar-search"><Search size={13}/><input aria-label="搜索对话" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="搜索对话"/>{threadSearch && <button className="icon-button" title="清除搜索" onClick={() => setThreadSearch("")}><X size={12}/></button>}</div>
+          <SidebarPreferencesMenu preferences={sidebarPreferences} onChange={updateSidebarPreferences}/>
           <div className="project-list">
-            {projects.map((project) => <ProjectGroup
+            {sidebarPreferences.organization === "byProject" ? projects.map((project) => <ProjectGroup
               key={project.path}
               project={project}
               selectedId={selectedThreadId}
@@ -1080,7 +1167,7 @@ export default function App() {
               onRename={(thread) => { setRenamingThread(thread); setRenameDraft(thread.title); }}
               onArchive={archiveThread}
               onUnarchive={unarchiveThread}
-            />) }
+            />) : <div className="thread-list flat-thread-list">{sidebarThreads.map((thread) => <ThreadRow key={thread.id} thread={thread} selected={selectedThreadId === thread.id} needsApproval={approvalThreadIds.has(thread.id)} pinned={pinnedThreadIds.has(thread.id)} archived={archivedView} onSelect={selectThread} onTogglePin={toggleThreadPin} onRename={(item) => { setRenamingThread(item); setRenameDraft(item.title); }} onArchive={archiveThread} onUnarchive={unarchiveThread}/>)}</div>}
             {!projects.length && <div className="empty-sidebar">{threadSearch ? "没有匹配的对话" : "暂无对话"}</div>}
           </div>
           <button className={`archive-mode ${archivedView ? "active" : ""}`} onClick={() => void setArchivedMode(!archivedView)}>
@@ -1171,6 +1258,23 @@ export default function App() {
   );
 }
 
+function SidebarPreferencesMenu({ preferences, onChange }: { preferences: SidebarPreferences; onChange: (patch: Partial<SidebarPreferences>) => Promise<void> }) {
+  return <div className="sidebar-preferences">
+    <MenuButton label="整理方式" icon={<MoreHorizontal size={13}/>}>
+      <button onClick={() => void onChange({ organization: "byProject" })}>{preferences.organization === "byProject" ? <Check size={12}/> : <span className="menu-check-placeholder"/>}<span>按项目</span></button>
+      <button onClick={() => void onChange({ organization: "singleList" })}>{preferences.organization === "singleList" ? <Check size={12}/> : <span className="menu-check-placeholder"/>}<span>统一列表</span></button>
+      <div className="menu-divider"/>
+      <button onClick={() => void onChange({ sort: "priority" })}>{preferences.sort === "priority" ? <Check size={12}/> : <span className="menu-check-placeholder"/>}<span>按优先级</span></button>
+      <button onClick={() => void onChange({ sort: "recent" })}>{preferences.sort === "recent" ? <Check size={12}/> : <span className="menu-check-placeholder"/>}<span>最近更新</span></button>
+    </MenuButton>
+  </div>;
+}
+
+function MenuButton({ label, icon, children }: { label: string; icon: ReactNode; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return <div className="menu-button-wrap"><button className="sidebar-menu-button" title={label} onClick={() => setOpen((value) => !value)}>{icon}<span>{label}</span><ChevronDown size={11}/></button>{open && <div className="sidebar-menu" onMouseLeave={() => setOpen(false)}>{children}</div>}</div>;
+}
+
 function ProjectGroup({ project, selectedId, approvalThreadIds, pinnedThreadIds, archived, onSelect, onTogglePin, onRename, onArchive, onUnarchive }: {
   project: ReturnType<typeof groupProjects>[number]; selectedId?: string; approvalThreadIds: Set<string>; pinnedThreadIds: Set<string>; archived: boolean;
   onSelect: (id: string) => Promise<void>; onTogglePin: (id: string) => void; onRename: (thread: ThreadSummary) => void;
@@ -1243,7 +1347,7 @@ const TurnBlock = memo(function TurnBlock({ groupId, items, metadata, live }: { 
   const firstActivityIndex = segments.findIndex((segment) => segment.type === "activity");
   const hasActivityContent = segments.some((segment) => segment.type === "activity" && segment.items.some((item) => item.kind !== "plan"));
   const [activityExpanded, setActivityExpanded] = useState(live || !metadata);
-  useEffect(() => { setActivityExpanded(live || !metadata); }, [live, metadata]);
+  useEffect(() => { if (live) setActivityExpanded(true); }, [live]);
   return <div id={transcriptGroupDOMId(groupId)} className={`turn-block ${live ? "live" : ""}`}>{segments.map((segment, index) => segment.type === "activity" ? <ActivityBlock
     key={`${segment.id}.${index}`}
     items={segment.items}

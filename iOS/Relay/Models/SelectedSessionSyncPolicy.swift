@@ -3,7 +3,7 @@ import Foundation
 enum SelectedSessionSyncPolicy {
     static let subscribedRetryDelayNanoseconds: UInt64 = 15_000_000_000
     static let disconnectedRetryDelayNanoseconds: UInt64 = 2_000_000_000
-    static let idleRuntimeProbeDelayNanoseconds: UInt64 = 15_000_000_000
+    static let idleRuntimeProbeDelayNanoseconds: UInt64 = 3_000_000_000
     static let subscribedSilenceThreshold: TimeInterval = 45
 
     static func retryDelay(hasActiveSubscription: Bool) -> UInt64 {

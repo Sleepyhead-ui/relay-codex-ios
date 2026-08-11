@@ -96,8 +96,16 @@ export function reduceTaskStateCore(core: TaskStateCore, threadId: string, event
   const previous = core.states[threadId] || idleTaskState(threadId);
   const turnId = referencedTurnId(event);
   if (turnId && core.completedTurnIds.has(turnId) && isReplayableProgress(event)) return core;
+  if (event.type === "terminal" && event.turnId && !previous.turnId && isTaskRunning(previous)) return core;
 
-  const next = reduceTaskRunState(previous, event);
+  const canAdoptNewTurn = Boolean(
+    turnId
+    && isReplayableProgress(event)
+    && !core.completedTurnIds.has(turnId!)
+    && !previous.turnId
+    && !isTaskRunning(previous),
+  );
+  const next = reduceTaskRunState(canAdoptNewTurn ? idleTaskState(threadId) : previous, event);
   let completed = core.completedTurnIds;
   const mutableCompleted = () => {
     if (completed === core.completedTurnIds) completed = new Set(completed);

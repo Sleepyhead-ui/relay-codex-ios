@@ -300,6 +300,31 @@ export function mergeSessionPatch(existing: TranscriptItem[], upserts: Transcrip
   return arraysEqual(next, existing) ? existing : markTranscriptUpserts(existing, next, changedItemIds);
 }
 
+/** Adds bounded history without replacing a newer live session snapshot. */
+export function mergeHistory(existing: TranscriptItem[], history: TranscriptItem[]) {
+  if (!existing.length) return history;
+  let next = [...history];
+  for (const incoming of existing) {
+    let index = next.findIndex((item) => item.id === incoming.id);
+    if (index < 0) index = next.findIndex((item) => semanticMatch(item, incoming));
+    if (index >= 0) {
+      next[index] = mergeItem(next[index], incoming);
+      continue;
+    }
+    let insertion = next.length;
+    if (incoming.turnId) {
+      for (let candidate = next.length - 1; candidate >= 0; candidate -= 1) {
+        if (next[candidate]?.turnId === incoming.turnId) {
+          insertion = candidate + 1;
+          break;
+        }
+      }
+    }
+    next.splice(insertion, 0, incoming);
+  }
+  return next;
+}
+
 function arraysEqual(left: TranscriptItem[], right: TranscriptItem[]) {
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }

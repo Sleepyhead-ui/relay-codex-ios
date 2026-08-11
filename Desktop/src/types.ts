@@ -22,6 +22,12 @@ export interface DesktopPreferences {
   barkUrl: string;
   pushIncludePreview: boolean;
 }
+export type SidebarOrganization = "byProject" | "singleList";
+export type SidebarSort = "priority" | "recent";
+export interface SidebarPreferences {
+  organization: SidebarOrganization;
+  sort: SidebarSort;
+}
 export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "deferred" | "installing" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string; blockers?: string[] }
 export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
 

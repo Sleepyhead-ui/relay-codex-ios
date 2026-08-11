@@ -1,10 +1,11 @@
 import { isObject, type JsonObject } from "./protocol.js";
-import type { SessionActivityTracker } from "./sessionActivity.js";
+import type { SessionActivitySnapshot, SessionActivityTracker } from "./sessionActivity.js";
 
 export interface ThreadRuntimeSnapshot extends JsonObject {
   known: boolean;
   isRunning: boolean;
   activeTurnId?: string;
+  observedTurnId?: string;
   startedAt?: number;
   upstreamRetrying?: boolean;
   upstreamError?: string;
@@ -101,8 +102,12 @@ export class RuntimeStateTracker {
   }
 
   async snapshotWithExternal(threadId: unknown, external: SessionActivityTracker): Promise<ThreadRuntimeSnapshot> {
-    const current = this.snapshot(threadId);
     const observed = await external.snapshot(threadId);
+    return this.snapshotWithObservation(threadId, observed);
+  }
+
+  snapshotWithObservation(threadId: unknown, observed: SessionActivitySnapshot | null): ThreadRuntimeSnapshot {
+    const current = this.snapshot(threadId);
     if (!observed) return current;
     if (!observed.active) {
       const sameTurn = Boolean(
@@ -120,6 +125,7 @@ export class RuntimeStateTracker {
       return {
         known: true,
         isRunning: false,
+        ...(observed.turnId ? { observedTurnId: observed.turnId } : {}),
         updatedAt: completed.updatedAt,
       };
     }

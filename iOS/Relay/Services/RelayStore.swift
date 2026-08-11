@@ -16,6 +16,8 @@ final class RelayStore: ObservableObject {
     }
     let composerDraft = ComposerDraftState()
     @Published var sidebarOpen = false
+    @Published var sidebarOrganization: SidebarOrganization = SidebarOrganization(rawValue: UserDefaults.standard.string(forKey: "relay.sidebar.organization") ?? "") ?? .byProject
+    @Published var sidebarSort: SidebarSort = SidebarSort(rawValue: UserDefaults.standard.string(forKey: "relay.sidebar.sort") ?? "") ?? .priority
     @Published var showingConnection = false
     @Published var showingSettings = false
     @Published var showingNewTask = false
@@ -326,6 +328,7 @@ final class RelayStore: ObservableObject {
 
         socket.onConnected = { [weak self] in
             self?.scheduleRestoration()
+            Task { @MainActor [weak self] in await self?.loadSidebarPreferences() }
         }
         socket.onBridgeStatus = { [weak self] message in self?.handleBridgeStatus(message) }
         socket.onRuntimeUpdated = { [weak self] threadId, runtime in
@@ -335,6 +338,9 @@ final class RelayStore: ObservableObject {
             self?.applyThreadControlUpdate(message)
         }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
+        socket.onSidebarPreferencesUpdated = { [weak self] preferences in
+            self?.applySidebarPreferences(preferences, persist: true)
+        }
         socket.onSessionSnapshot = { [weak self] threadId, subscriptionId, snapshot in
             guard let self,
                   subscriptionId == nil || subscriptionId == self.subscribedSessionId else { return }
@@ -471,7 +477,6 @@ final class RelayStore: ObservableObject {
 
     @discardableResult
     func newThread(workingDirectory: String? = nil) async -> Bool {
-        let previousThreadId = selectedThreadId
         if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
@@ -499,18 +504,6 @@ final class RelayStore: ObservableObject {
             }
             relayOwnedThreadIds.insert(id)
             externallyOwnedThreadIds.remove(id)
-            if let previousThreadId,
-               previousThreadId != id,
-               relayOwnedThreadIds.contains(previousThreadId) {
-                Task { [weak self] in
-                    _ = try? await self?.socket.rpc(
-                        method: "relay/thread/control/release",
-                        params: ["threadId": .string(previousThreadId)],
-                        timeoutSeconds: 4,
-                        reconnectOnTimeout: false
-                    )
-                }
-            }
             cacheCurrentThread()
             setSelectedThread(id)
             hasOlderTurns = false
@@ -661,7 +654,6 @@ final class RelayStore: ObservableObject {
         if switchingThreads {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
-            var requestedControlRelease = false
             if let subscribedSessionThreadId {
                 let subscriptionId = subscribedSessionId
                 sessionRevisionTracker.remove(threadId: subscribedSessionThreadId)
@@ -672,28 +664,14 @@ final class RelayStore: ObservableObject {
                         method: "relay/thread/session/unsubscribe",
                         params: [
                             "threadId": .string(subscribedSessionThreadId),
-                            "subscriptionId": subscriptionId.map(JSONValue.string) ?? .null,
-                            "releaseControl": .bool(true)
+                            "subscriptionId": subscriptionId.map(JSONValue.string) ?? .null
                         ],
                         timeoutSeconds: 4,
                         reconnectOnTimeout: false
                     )
                 }
-                requestedControlRelease = true
                 self.subscribedSessionThreadId = nil
                 self.subscribedSessionId = nil
-            }
-            if !requestedControlRelease,
-               let previousThreadId = selectedThreadId,
-               relayOwnedThreadIds.contains(previousThreadId) {
-                Task { [weak self] in
-                    _ = try? await self?.socket.rpc(
-                        method: "relay/thread/control/release",
-                        params: ["threadId": .string(previousThreadId)],
-                        timeoutSeconds: 4,
-                        reconnectOnTimeout: false
-                    )
-                }
             }
         }
         if switchingThreads { cacheCurrentThread() }
@@ -706,10 +684,14 @@ final class RelayStore: ObservableObject {
         if switchingThreads && !restoredFromCache {
             messages = []
             turnMetadata = [:]
-            applyTaskRunEvent(threadId: id, event: .reset)
+            if taskRunStates[id] == nil {
+                applyTaskRunEvent(threadId: id, event: .reset)
+            }
         }
         if closeSidebar { sidebarOpen = false }
         isLoadingThread = switchingThreads && !restoredFromCache
+        let historyLoadStartedAt = Date()
+        if !showingArchivedThreads { ensureLiveSessionSync() }
         defer {
             if threadLoadGeneration == loadGeneration {
                 isLoadingThread = false
@@ -728,7 +710,7 @@ final class RelayStore: ObservableObject {
                 method: "thread/turns/list",
                 params: [
                     "threadId": .string(id),
-                    "limit": .number(8),
+                    "limit": .number(2),
                     "sortDirection": .string("desc"),
                     "itemsView": .string("full")
                 ],
@@ -833,6 +815,10 @@ final class RelayStore: ObservableObject {
                 metadata: loadedMetadata,
                 placementSequences: placementSequences
             )
+            let receivedFreshSessionUpdate = ThreadLoadReconciliationPolicy.receivedLiveSessionUpdate(
+                lastSessionUpdateAt: lastSessionUpdateAt[id],
+                historyLoadStartedAt: historyLoadStartedAt
+            )
             for deliveredId in unresolvedMessages.map(\.item.id).filter({
                 loadedIds.contains($0)
                     && persistedOutboundDeliveries[$0]?.confirmedTurnId == nil
@@ -841,7 +827,7 @@ final class RelayStore: ObservableObject {
                 removeOutboundDelivery(deliveredId)
                 acceptedMessageIds.remove(deliveredId)
             }
-            if switchingThreads {
+            if switchingThreads && !receivedFreshSessionUpdate {
                 messages = loadedMessages
                 turnMetadata = loadedMetadata
             } else {
@@ -863,14 +849,16 @@ final class RelayStore: ObservableObject {
             if let loadedActiveTurnId {
                 applyUserMessagePlacements(turnId: loadedActiveTurnId, threadId: id)
             }
-            applyTaskRunEvent(
-                threadId: id,
-                event: .hydrate(
-                    running: threadIsActive || loadedActiveTurnId != nil,
-                    turnId: loadedActiveTurnId,
-                    startedAt: loadedActiveTurnId.flatMap { turnMetadata[$0]?.startedAt }
+            if !receivedFreshSessionUpdate {
+                applyTaskRunEvent(
+                    threadId: id,
+                    event: .hydrate(
+                        running: threadIsActive || loadedActiveTurnId != nil,
+                        turnId: loadedActiveTurnId,
+                        startedAt: loadedActiveTurnId.flatMap { turnMetadata[$0]?.startedAt }
+                    )
                 )
-            )
+            }
             if let runtime = try? await socket.rpc(
                 method: "relay/thread/runtime",
                 params: ["threadId": .string(id)]
@@ -917,7 +905,7 @@ final class RelayStore: ObservableObject {
                 params: [
                     "threadId": .string(threadId),
                     "cursor": .string(cursor),
-                    "limit": .number(8),
+                    "limit": .number(6),
                     "sortDirection": .string("desc"),
                     "itemsView": .string("full")
                 ],

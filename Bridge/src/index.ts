@@ -7,6 +7,7 @@ import { CodexAppServer } from "./codexAppServer.js";
 import { resolveCodexExecutable } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { CodexRuntimeConfigMonitor } from "./codexRuntimeConfigMonitor.js";
+import { ClientPreferencesStore } from "./clientPreferences.js";
 import { awaitFinalAnswer } from "./completionPreview.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
@@ -14,6 +15,7 @@ import { DeliveryRegistry, isDurableDeliveryMethod, type DeliveryResponse } from
 import { DiagnosticsLog } from "./diagnostics.js";
 import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
+import { boundHistoryPage, boundThreadHistoryResult } from "./historyPayload.js";
 import { PerformanceMetrics } from "./performanceMetrics.js";
 import { BarkPushNotifier, cleanPreview, ExternalCompletionTracker } from "./pushNotifications.js";
 import {
@@ -26,8 +28,8 @@ import { isAuthorized, isObject, parseClientMessage, type JsonObject } from "./p
 import { PromptQueue } from "./promptQueue.js";
 import { queuedPromptWaitSatisfied } from "./queueDispatchPolicy.js";
 import { RequestLifecycle, type PendingRequest } from "./requestLifecycle.js";
-import { RuntimeStateTracker } from "./runtimeState.js";
-import { SessionActivityTracker } from "./sessionActivity.js";
+import { RuntimeStateTracker, type ThreadRuntimeSnapshot } from "./runtimeState.js";
+import { SessionActivityTracker, type SessionTurnSnapshot } from "./sessionActivity.js";
 import { boundSessionSnapshot } from "./sessionPatch.js";
 import { SessionStream } from "./sessionStream.js";
 import { SessionSourceOwnership } from "./sessionSourceOwnership.js";
@@ -54,7 +56,8 @@ const relayVersion = process.env.RELAY_SERVICE_VERSION ?? "unknown";
 
 async function main(): Promise<void> {
 const codexProfiles = await CodexProfileRegistry.create();
-const config = await loadConfig(codexProfiles.activeCodexHome);
+  const config = await loadConfig(codexProfiles.activeCodexHome);
+  const clientPreferences = await ClientPreferencesStore.create(process.env.RELAY_CLIENT_PREFERENCES_STORE?.trim());
 const pushNotifier = new BarkPushNotifier();
 const threadTitles = new Map<string, string>();
 const clients = new Set<WebSocket>();
@@ -153,6 +156,7 @@ const sessionSourceOwnership = new SessionSourceOwnership();
 let monitoredThreadIds: string[] = [];
 let pollingExternalSessions = false;
 const externalCompletionTracker = new ExternalCompletionTracker();
+const publishedRuntimeSignatures = new Map<string, string>();
 
 const externalSessionPollInterval = setInterval(() => void pollExternalSessions(), 1_500);
 externalSessionPollInterval.unref();
@@ -357,6 +361,22 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
+    if (message.method === "relay/preferences/get") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      send(socket, { type: "rpcResult", id: message.id, result: clientPreferences.get() });
+      return;
+    }
+    if (message.method === "relay/preferences/update") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      try {
+        const preferences = await clientPreferences.update(message.params);
+        send(socket, { type: "rpcResult", id: message.id, result: preferences });
+        broadcast({ type: "sidebarPreferencesUpdated", preferences });
+      } catch (error) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: error instanceof Error ? error.message : "Could not update Relay preferences." } });
+      }
+      return;
+    }
     if (["relay/thread/control/status", "relay/thread/control/acquire", "relay/thread/control/release"].includes(message.method)) {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -468,6 +488,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
             performanceMetrics.recordSuppressedSessionUpdate();
             return;
           }
+          void publishExternalRuntime(threadId, snapshot);
           stream.enqueue(snapshot);
         });
         sessionSubscriptions.replace(socket, threadId, {
@@ -480,6 +501,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         const snapshot = await sessionActivity.turnSnapshot(threadId);
         fileTransfer.allowConversationPayload(snapshot);
         observeExternalThreadControl(threadId, snapshot.known && snapshot.isRunning);
+        if (!sessionSourceOwnership.isRelayOwned(threadId, snapshot.turnId)) {
+          void publishExternalRuntime(threadId, snapshot);
+        }
         const result = stream.initialize(snapshot);
         send(socket, {
           type: "rpcResult",
@@ -743,7 +767,13 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
     rpcDiagnostics.lastError = null;
   }
   const response: DeliveryResponse = {};
-  if ("result" in message) response.result = message.result;
+  if ("result" in message) {
+    response.result = pending.method === "thread/turns/list"
+      ? boundHistoryPage(message.result)
+      : ["thread/start", "thread/resume", "thread/read", "thread/fork"].includes(pending.method)
+        ? boundThreadHistoryResult(message.result)
+        : message.result;
+  }
   if ("error" in message) response.error = message.error;
   if (pending.deliveryKey) await completeDelivery(pending.deliveryKey, response);
   else send(pending.socket, { type: "rpcResult", id: pending.clientId, ...response });
@@ -815,7 +845,7 @@ async function completeReadOnlyThreadResume(
     ]);
     const result: JsonObject = {
       ...summary,
-      initialTurnsPage: page,
+      initialTurnsPage: boundHistoryPage(page),
       relayThreadAccess: { mode: "external-read-only", reason: "active-writer" },
     };
     sessionActivity.observeThreadResume(summary);
@@ -1001,10 +1031,25 @@ function observeThreadListResult(result: unknown): void {
   sessionActivity.observeThreadList(result);
   const object = isObject(result) ? result : {};
   const threads = Array.isArray(object.data) ? object.data.filter(isObject) : [];
-  monitoredThreadIds = threads
+  const recentIds = threads
     .flatMap((thread) => typeof thread.id === "string" ? [thread.id] : [])
     .slice(0, 8);
+  const activeIds = threads
+    .filter(threadLooksActive)
+    .flatMap((thread) => typeof thread.id === "string" ? [thread.id] : []);
+  monitoredThreadIds = [...new Set([...activeIds, ...recentIds])].slice(0, 32);
+  const monitored = new Set(monitoredThreadIds);
+  for (const threadId of publishedRuntimeSignatures.keys()) {
+    if (!monitored.has(threadId)) publishedRuntimeSignatures.delete(threadId);
+  }
   for (const thread of threads) rememberThreadTitle(thread);
+}
+
+function threadLooksActive(thread: JsonObject): boolean {
+  const status = typeof thread.status === "string"
+    ? thread.status
+    : isObject(thread.status) && typeof thread.status.type === "string" ? thread.status.type : "";
+  return /active|running|progress|started|processing|pending|queued/i.test(status);
 }
 
 async function refreshExternalSessionMonitoring(): Promise<void> {
@@ -1027,6 +1072,9 @@ async function pollExternalSessions(): Promise<void> {
     for (const threadId of monitoredThreadIds) {
       const snapshot = await sessionActivity.turnSnapshot(threadId);
       observeExternalThreadControl(threadId, snapshot.known && snapshot.isRunning);
+      if (!sessionSourceOwnership.isRelayOwned(threadId, snapshot.turnId)) {
+        await publishExternalRuntime(threadId, snapshot);
+      }
       if (!snapshot.known || !snapshot.turnId) continue;
       if (externalCompletionTracker.observe(threadId, snapshot)) {
         try {
@@ -1049,6 +1097,34 @@ async function pollExternalSessions(): Promise<void> {
   } finally {
     pollingExternalSessions = false;
   }
+}
+
+async function publishExternalRuntime(threadId: string, snapshot?: SessionTurnSnapshot): Promise<void> {
+  const runtime = snapshot
+    ? runtimeState.snapshotWithObservation(threadId, snapshot.known ? {
+      active: snapshot.isRunning,
+      ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+      ...(snapshot.startedAt ? { startedAt: snapshot.startedAt } : {}),
+      updatedAt: snapshot.updatedAt,
+    } : null)
+    : await runtimeState.snapshotWithExternal(threadId, sessionActivity);
+  if (!runtime.known) return;
+  const signature = runtimeSignature(runtime);
+  if (publishedRuntimeSignatures.get(threadId) === signature) return;
+  publishedRuntimeSignatures.set(threadId, signature);
+  broadcast({ type: "runtimeUpdated", threadId, runtime });
+}
+
+function runtimeSignature(runtime: ThreadRuntimeSnapshot): string {
+  return JSON.stringify({
+    known: runtime.known,
+    isRunning: runtime.isRunning,
+    activeTurnId: runtime.activeTurnId,
+    observedTurnId: runtime.observedTurnId,
+    startedAt: runtime.startedAt,
+    upstreamRetrying: runtime.upstreamRetrying,
+    upstreamError: runtime.upstreamError,
+  });
 }
 
 function rememberThreadTitle(thread: JsonObject): void {
@@ -1685,6 +1761,7 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   sessionSourceOwnership.clear();
   clearThreadControl("profile-switch");
   runtimeState = new RuntimeStateTracker();
+  publishedRuntimeSignatures.clear();
   monitoredThreadIds = [];
   externallyRunningThreadIds.clear();
   externalCompletionTracker.reset();

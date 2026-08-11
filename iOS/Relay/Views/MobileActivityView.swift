@@ -168,6 +168,7 @@ private struct MobileProgressWindow: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                     }
+                    .scrollDisabled(feed.progressItems.count <= 4)
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 5)
                             .onChanged { _ in followsLatest = false }
@@ -258,6 +259,7 @@ private struct MobileToolWindow: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                     }
+                    .scrollDisabled(feed.toolItems.count <= 4)
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 5)
                             .onChanged { _ in followsLatest = false }

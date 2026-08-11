@@ -25,8 +25,24 @@ struct TaskStateCore {
            turnId == nil {
             return false
         }
+        if case .terminal(let turnId, _, _) = event,
+           turnId != nil,
+           previous.turnId == nil,
+           previous.isRunning {
+            return false
+        }
 
         var next = previous
+        if let turnId = event.referencedTurnId,
+           event.isReplayableProgress,
+           !completedTurnIds.contains(turnId),
+           previous.turnId == nil,
+           !previous.isRunning {
+            // A terminal snapshot for the previous turn can arrive just before
+            // the first rollout update for a new externally-started turn.
+            // Replay protection above still rejects the completed turn itself.
+            next = TaskRunState(threadId: threadId)
+        }
         next.apply(event)
         let completionsBefore = completedTurnIds
         switch event {
