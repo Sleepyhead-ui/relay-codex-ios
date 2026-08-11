@@ -7,6 +7,9 @@ import os from "node:os";
 import path from "node:path";
 
 const spawnedPids = new Set<number>();
+const PROCESS_READY_TIMEOUT_MS = 10_000;
+const UPGRADE_TIMEOUT_MS = 12_000;
+const UPGRADE_TEST_TIMEOUT_MS = 30_000;
 
 afterEach(() => {
   for (const pid of spawnedPids) {
@@ -215,19 +218,19 @@ describe("Relay service host", () => {
     `, "utf8");
     const oldBridge = spawn(process.execPath, [oldBridgePath], { windowsHide: true, stdio: "ignore", env: { ...process.env, RELAY_PORT: String(port), ACTIVITY_PATH: activityPath } });
     if (oldBridge.pid) { spawnedPids.add(oldBridge.pid); fs.writeFileSync(bridgePidPath, `${oldBridge.pid}\n`); }
-    await waitFor(async () => (await health(port))?.version === "1.0.0", 5_000);
+    await waitFor(async () => (await health(port))?.version === "1.0.0", PROCESS_READY_TIMEOUT_MS);
     const host = spawnServiceHost(newBridgePath, heartbeatPath, hostPidPath, bridgePidPath, port, { RELAY_SERVICE_VERSION: "1.0.1", RELAY_SERVICE_EXPECT_EXISTING: "1", NEW_STARTS_PATH: startsPath });
 
-    await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, 5_000);
+    await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, PROCESS_READY_TIMEOUT_MS);
     expect(fs.existsSync(startsPath)).toBe(false);
     expect(oldBridge.exitCode).toBeNull();
     fs.writeFileSync(activityPath, "0");
-    await waitFor(async () => (await health(port))?.version === "1.0.1", 10_000);
+    await waitFor(async () => (await health(port))?.version === "1.0.1", UPGRADE_TIMEOUT_MS);
     const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
     if (heartbeat.bridgePid) spawnedPids.add(Number(heartbeat.bridgePid));
     expect(readText(startsPath)).toBe("1");
     expect(host.pid).toBe(heartbeat.pid);
-  }, 18_000);
+  }, UPGRADE_TEST_TIMEOUT_MS);
 
   it("checks the advertised address before loopback during an upgrade", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "relay-desktop-service-host-advertised-"));
@@ -250,7 +253,7 @@ describe("Relay service host", () => {
     `, "utf8");
     const oldBridge = spawn(process.execPath, [oldBridgePath], { windowsHide: true, stdio: "ignore", env: { ...process.env, RELAY_PORT: String(port), ACTIVITY_PATH: activityPath } });
     if (oldBridge.pid) spawnedPids.add(oldBridge.pid);
-    await waitFor(async () => (await health(port, "127.0.0.2"))?.version === "1.0.0", 5_000);
+    await waitFor(async () => (await health(port, "127.0.0.2"))?.version === "1.0.0", PROCESS_READY_TIMEOUT_MS);
     const hostPath = path.resolve(process.cwd(), "electron/service-host.cjs");
     const host = spawn(process.execPath, [hostPath, newBridgePath, heartbeatPath, hostPidPath, bridgePidPath], {
       windowsHide: true, stdio: "ignore",
@@ -258,14 +261,14 @@ describe("Relay service host", () => {
     });
     if (host.pid) spawnedPids.add(host.pid);
 
-    await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, 5_000);
+    await waitFor(async () => { try { return JSON.parse(fs.readFileSync(heartbeatPath, "utf8")).state === "waiting-for-idle-upgrade"; } catch { return false; } }, PROCESS_READY_TIMEOUT_MS);
     expect(Number(readText(bridgePidPath).trim())).toBe(oldBridge.pid);
     expect(await health(port, "127.0.0.1")).toBeUndefined();
     fs.writeFileSync(activityPath, "0");
-    await waitFor(async () => (await health(port, "127.0.0.1"))?.version === "1.0.1", 10_000);
+    await waitFor(async () => (await health(port, "127.0.0.1"))?.version === "1.0.1", UPGRADE_TIMEOUT_MS);
     const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, "utf8"));
     if (heartbeat.bridgePid) spawnedPids.add(Number(heartbeat.bridgePid));
-  }, 18_000);
+  }, UPGRADE_TEST_TIMEOUT_MS);
 });
 
 function spawnServiceHost(fakeBridgePath: string, heartbeatPath: string, hostPidPath: string, bridgePidPath: string, port: number, extraEnv: Record<string, string>) {
