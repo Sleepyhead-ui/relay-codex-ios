@@ -78,13 +78,26 @@ describe("desktop transcript", () => {
     expect(item?.detail).toContain("Exit code: 0");
   });
 
-  it("removes the desktop attachment wrapper from user prompts", () => {
+  it.each(["## My request for Codex:", "## My request:"])("removes the desktop attachment wrapper marked by %s", (marker) => {
     const item = parseItem({
       id: "user.1",
       type: "userMessage",
-      content: [{ type: "text", text: "# Files mentioned by the user:\n\nimage.png: C:\\\\Temp\\\\image.png\n\n## My request for Codex:\n\n输入文字应该正常显示" }],
+      content: [{
+        type: "text",
+        text: `# Files mentioned by the user:\n\nimage.png: C:\\Temp\\image.png\n\n${marker}\n\n输入文字应该正常显示\n\n<image name=[Image #1] path="C:\\Temp\\image.png">\n</image>`,
+      }],
     }, "turn.1");
     expect(item?.text).toBe("输入文字应该正常显示");
+    expect(item?.imagePaths).toEqual(["C:\\Temp\\image.png"]);
+  });
+
+  it("does not strip an inline mention of the request marker", () => {
+    const item = parseItem({
+      id: "user.inline",
+      type: "userMessage",
+      content: [{ type: "text", text: "Keep the phrase My request: in this ordinary message." }],
+    }, "turn.1");
+    expect(item?.text).toBe("Keep the phrase My request: in this ordinary message.");
   });
 
   it("keeps local images as structured user-message media", () => {

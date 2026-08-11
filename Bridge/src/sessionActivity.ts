@@ -284,7 +284,7 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
     }).join("\n");
     if (role === "user") {
       if (isInternalEnvironmentContext(text)) return null;
-      return { id, type: "userMessage", content: [{ type: "text", text }] };
+      return { id, type: "userMessage", content: [{ type: "text", text: cleanDesktopUserText(text) }] };
     }
     if (role !== "assistant") return null;
     return {
@@ -322,4 +322,9 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
 
 function isInternalEnvironmentContext(text: string): boolean {
   return /^\s*<environment_context\b[^>]*>[\s\S]*<\/environment_context>\s*$/i.test(text);
+}
+
+function cleanDesktopUserText(text: string): string {
+  const marker = /^\s*#{0,6}\s*My request(?: for Codex)?:\s*$/im.exec(text);
+  return marker ? text.slice((marker.index ?? 0) + marker[0].length).trim() : text;
 }

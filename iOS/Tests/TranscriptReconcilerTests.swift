@@ -76,6 +76,25 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(parsed.imagePaths, ["C:\\Temp\\screen.png"])
     }
 
+    func testRemovesOldAndNewDesktopAttachmentWrappersWithoutLosingImages() throws {
+        for (index, marker) in ["## My request for Codex:", "## My request:"].enumerated() {
+            let message = JSONValue.object([
+                "id": .string("wrapped.\(index)"),
+                "type": .string("userMessage"),
+                "content": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("# Files mentioned by the user:\n\nimage.png: C:\\Temp\\image.png\n\n\(marker)\n\n检查这张图\n\n<image name=[Image #1] path=\"C:\\Temp\\image.png\">\n</image>")
+                    ])
+                ])
+            ])
+
+            let parsed = try XCTUnwrap(TranscriptItem.from(json: message, turnId: "turn.1"))
+            XCTAssertEqual(parsed.text, "检查这张图")
+            XCTAssertEqual(parsed.imagePaths, ["C:\\Temp\\image.png"])
+        }
+    }
+
     func testRecoversUserMessageTimeFromCodexUUIDv7() throws {
         let message = JSONValue.object([
             "id": .string("msg_019fb832-5405-7561-a0f1-c8d22a20bff0"),

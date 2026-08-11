@@ -466,7 +466,7 @@ function isInternalEnvironmentContext(value: string) {
   return /^\s*<environment_context\b[^>]*>[\s\S]*<\/environment_context>\s*$/i.test(value);
 }
 function cleanDesktopUserText(value: string) {
-  const marker = /^\s*#{0,6}\s*My request for Codex:\s*$/im.exec(value);
+  const marker = /^\s*#{0,6}\s*My request(?: for Codex)?:\s*$/im.exec(value);
   return marker ? value.slice((marker.index || 0) + marker[0].length).trim() : value;
 }
 function arrayText(values: any[]) { return (values || []).map((item) => typeof item === "string" ? item : item.text || "").filter(Boolean).join("\n\n"); }

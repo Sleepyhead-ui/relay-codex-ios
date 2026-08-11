@@ -843,7 +843,7 @@ struct TranscriptItem: Identifiable, Equatable {
     }
 
     private static func cleanDesktopUserText(_ text: String) -> String {
-        let pattern = #"(?im)^\s*#{0,6}\s*My request for Codex:\s*$"#
+        let pattern = #"(?im)^\s*#{0,6}\s*My request(?: for Codex)?:\s*$"#
         guard let expression = try? NSRegularExpression(pattern: pattern),
               let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let markerRange = Range(match.range, in: text) else { return text }

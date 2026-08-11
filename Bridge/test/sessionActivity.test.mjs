@@ -22,7 +22,14 @@ test("infers an active desktop turn from the rollout file after bridge restart",
       {
         timestamp: "2026-07-19T16:16:27.000Z",
         type: "response_item",
-        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Inspect this task" }] },
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: "# Files mentioned by the user:\n\nimage.png: C:\\Temp\\image.png\n\n## My request:\n\nInspect this task",
+          }],
+        },
       },
       {
         timestamp: "2026-07-19T16:16:27.001Z",
