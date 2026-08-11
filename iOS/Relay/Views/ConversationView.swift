@@ -231,18 +231,16 @@ struct ConversationView: View {
                         guard abs(scrollViewportHeight - value) > 0.5 else { return }
                         scrollViewportHeight = value
                     }
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 4)
-                            .onChanged { _ in
-                                guard !isUserScrolling else { return }
-                                isUserScrolling = true
-                            }
-                            .onEnded { _ in
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                                    isUserScrolling = false
-                                }
-                            }
-                    )
+                    // Observe the native scroll view rather than attaching a
+                    // second DragGesture, which can compete with UIKit's pan
+                    // recognizer during inertial scrolling.
+                    .background {
+                        ScrollActivityObserver { active in
+                            guard isUserScrolling != active else { return }
+                            isUserScrolling = active
+                        }
+                        .frame(width: 1, height: 1)
+                    }
                     .onTapGesture { dismissKeyboard() }
 
                     if !isAtBottom {
@@ -440,6 +438,89 @@ private struct ConversationBottomMarkerPreferenceKey: PreferenceKey {
 private struct ConversationViewportHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct ScrollActivityObserver: UIViewRepresentable {
+    let onChanged: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onChanged: onChanged)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.isUserInteractionEnabled = false
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view)
+        }
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.onChanged = onChanged
+        DispatchQueue.main.async {
+            context.coordinator.attach(to: view)
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var onChanged: (Bool) -> Void
+        private weak var scrollView: UIScrollView?
+        private var isActive = false
+        private var resetWorkItem: DispatchWorkItem?
+
+        init(onChanged: @escaping (Bool) -> Void) {
+            self.onChanged = onChanged
+        }
+
+        func attach(to view: UIView) {
+            guard scrollView == nil else { return }
+            var ancestor = view.superview
+            while let candidate = ancestor {
+                if let scrollView = candidate as? UIScrollView {
+                    self.scrollView = scrollView
+                    scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
+                    return
+                }
+                ancestor = candidate.superview
+            }
+        }
+
+        @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            switch recognizer.state {
+            case .began, .changed:
+                resetWorkItem?.cancel()
+                resetWorkItem = nil
+                guard !isActive else { return }
+                isActive = true
+                onChanged(true)
+            case .ended, .cancelled, .failed:
+                resetWorkItem?.cancel()
+                let workItem = DispatchWorkItem { [weak self] in self?.finishWhenIdle() }
+                resetWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
+            default:
+                break
+            }
+        }
+
+        private func finishWhenIdle() {
+            guard isActive else { return }
+            if scrollView?.isDragging == true || scrollView?.isDecelerating == true {
+                let workItem = DispatchWorkItem { [weak self] in self?.finishWhenIdle() }
+                resetWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+                return
+            }
+            isActive = false
+            onChanged(false)
+        }
+
+        deinit {
+            resetWorkItem?.cancel()
+            scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(handlePan(_:)))
+        }
+    }
 }
 
 private struct LoadingConversationView: View {
