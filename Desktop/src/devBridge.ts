@@ -54,11 +54,13 @@ export function installDevBridge() {
       else if (message.method === "model/list") rpcResult(message, { data: [
         { id: "gpt-5.6-sol", model: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }, { reasoningEffort: "xhigh" }], defaultReasoningEffort: "high" },
       ] });
-      else if (message.method === "thread/resume") rpcResult(message, { model: "gpt-5.6-sol", reasoningEffort: "high", thread: { id: threadId, status: { type: "active" } }, initialTurnsPage: { data: [{ id: turnId, status: "inProgress", startedAt: now - 67, items }], nextCursor: "preview.older" } });
-      else if (message.method === "thread/turns/list") rpcResult(message, { data: [{ id: "preview.older.turn", status: "completed", startedAt: now - 7200, completedAt: now - 7100, items: [
+      else if (message.method === "thread/read") rpcResult(message, { model: "gpt-5.6-sol", reasoningEffort: "high", thread: { id: threadId, status: { type: "active" } } });
+      else if (message.method === "thread/turns/list") rpcResult(message, { data: [{ id: turnId, status: "inProgress", startedAt: now - 67, items }, { id: "preview.older.turn", status: "completed", startedAt: now - 7200, completedAt: now - 7100, items: [
         { id: "preview.older.user", type: "userMessage", content: [{ type: "text", text: "先审计现有同步链路" }] },
         { id: "preview.older.answer", type: "agentMessage", phase: "final_answer", text: "已完成基础链路审计，并记录了断线恢复缺口。" },
-      ] }] });
+      ] }], nextCursor: "preview.older" });
+      else if (message.method === "relay/thread/control/status" || message.method === "relay/thread/control/acquire") rpcResult(message, { mode: "relay-write" });
+      else if (message.method === "relay/thread/control/release") rpcResult(message, { mode: "relay-write", release: "scheduled" });
       else if (message.method === "relay/thread/session/subscribe") rpcResult(message, { known: true, isRunning: true, turnId, startedAt: now - 67, items });
       else if (message.method === "relay/thread/goal") rpcResult(message, { goal: { threadId, id: "preview.goal", objective: "完成第二、第三和第四阶段", status: "active", tokenBudget: null, tokensUsed: 2381362, timeUsedSeconds: 4156, createdAt: now - 4900, updatedAt: now - 67 } });
       else if (message.method === "relay/diagnostics/report") rpcResult(message, { generatedAt: new Date().toISOString(), summary: "warning", checks: [

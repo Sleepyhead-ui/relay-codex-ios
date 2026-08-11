@@ -61,6 +61,7 @@ export default function App() {
   const [renameDraft, setRenameDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [externallyOwnedThreadIds, setExternallyOwnedThreadIds] = useState<Set<string>>(new Set());
+  const [relayOwnedThreadIds, setRelayOwnedThreadIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
@@ -100,6 +101,7 @@ export default function App() {
 
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId);
   const externallyOwned = selectedThreadId ? externallyOwnedThreadIds.has(selectedThreadId) : false;
+  const relayOwned = selectedThreadId ? relayOwnedThreadIds.has(selectedThreadId) : false;
   const taskStates = taskCore.states;
   const accessKey = normalizedWorkspaceKey(selectedThread?.cwd || workspace);
   const access = accessKey ? projectAccesses[accessKey] || defaultAccess : defaultAccess;
@@ -253,8 +255,17 @@ export default function App() {
       setPinnedThreadIds(storedPinnedThreads(message.codexProfile.id));
       setCodexProfiles((current) => current.map((profile) => ({ ...profile, active: profile.id === message.codexProfile.id })));
     }
+    else if (message?.type === "threadControlUpdated") {
+      const ids = Array.isArray(message.threadIds)
+        ? message.threadIds
+        : typeof message.threadId === "string" ? [message.threadId] : [];
+      applyThreadControl(ids, message.control?.mode);
+    }
     if (message.status === "ready") {
       void rpc.resumeDurable().catch((reason) => setError(errorText(reason)));
+    }
+    if (["restarting", "reloading", "switching"].includes(message.status)) {
+      setRelayOwnedThreadIds(new Set());
     }
     if (message.status === "switching") {
       profileSwitchingRef.current = true;
@@ -414,18 +425,18 @@ export default function App() {
         void rpc.rpc("relay/thread/session/unsubscribe", {
           threadId: previous,
           subscriptionId: previousSubscription.id,
+          releaseControl: true,
         }, 5_000).catch(() => {});
+      } else if (previous && previous !== id && relayOwnedThreadIds.has(previous)) {
+        void rpc.rpc("relay/thread/control/release", { threadId: previous }, 5_000).catch(() => {});
       }
-      const conversationPromise = readingArchived
-        ? await Promise.all([
-            rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
-            rpc.rpc("thread/turns/list", { threadId: id, limit: 12, sortDirection: "desc", itemsView: "full" }, 120_000),
-          ]).then(([summary, page]) => ({ ...summary, initialTurnsPage: page }))
-        : rpc.rpc("thread/resume", {
-            threadId: id,
-            excludeTurns: true,
-            initialTurnsPage: { limit: 12, sortDirection: "desc", itemsView: "full" },
-          }, 30_000);
+      const conversationPromise = await Promise.all([
+        rpc.rpc("thread/read", { threadId: id, includeTurns: false }, 30_000),
+        rpc.rpc("thread/turns/list", { threadId: id, limit: 12, sortDirection: "desc", itemsView: "full" }, 120_000),
+        readingArchived
+          ? Promise.resolve({ mode: "unowned" })
+          : rpc.rpc("relay/thread/control/status", { threadId: id }, 12_000),
+      ]).then(([summary, page, control]) => ({ ...summary, initialTurnsPage: page, relayThreadAccess: control }));
       const [result, goalResult] = await Promise.all([
         conversationPromise,
         rpc.rpc("relay/thread/goal", { threadId: id }, 8_000).catch(() => ({ goal: null })),
@@ -434,6 +445,12 @@ export default function App() {
       setExternallyOwnedThreadIds((current) => {
         const next = new Set(current);
         if (result.relayThreadAccess?.mode === "external-read-only") next.add(id);
+        else next.delete(id);
+        return next;
+      });
+      setRelayOwnedThreadIds((current) => {
+        const next = new Set(current);
+        if (result.relayThreadAccess?.mode === "relay-write") next.add(id);
         else next.delete(id);
         return next;
       });
@@ -775,6 +792,7 @@ export default function App() {
   }
 
   async function createThread(cwd = workspace) {
+    const previousThreadId = selectedRef.current;
     if (archivedView) setArchivedView(false);
     const threadAccess = accessForWorkspace(cwd, defaultAccess, projectAccesses);
     const result = await rpc.rpc("thread/start", {
@@ -786,6 +804,10 @@ export default function App() {
     });
     const id = result.thread?.id;
     if (!id) throw new Error("Codex 未返回对话编号");
+    applyThreadControl([id], "relay-write");
+    if (previousThreadId && previousThreadId !== id && relayOwnedThreadIds.has(previousThreadId)) {
+      void rpc.rpc("relay/thread/control/release", { threadId: previousThreadId }, 5_000).catch(() => {});
+    }
     if (cwd) { setWorkspace(cwd); setNewTaskCwd(cwd); }
     await refreshThreads();
     setSelectedThreadId(id); selectedRef.current = id; setMessages([]); setTurns({}); updateTaskState(id, { type: "reset" });
@@ -800,15 +822,16 @@ export default function App() {
       return;
     }
     if (connection !== "connected" || sending) return;
-    if (externallyOwned) {
-      setError("此任务正在 Codex 中运行。Relay 会继续同步进展，关闭那里的任务后点击“重新获取控制”。");
-      return;
-    }
-    setSending(true); setComposer("");
-    const selectedAttachments = attachments; setAttachments([]);
+    setSending(true);
+    const selectedAttachments = attachments;
+    let composerCleared = false;
     let submittedMessageId: string | undefined;
     try {
       const threadId = selectedRef.current || await createThread(workspace);
+      if (!await acquireThreadControl(threadId)) return;
+      setComposer("");
+      setAttachments([]);
+      composerCleared = true;
       const clientId = crypto.randomUUID();
       submittedMessageId = clientId;
       const currentTurnId = activeTurnRef.current;
@@ -879,9 +902,51 @@ export default function App() {
       if (pendingStartMessageRef.current) {
         pendingStartMessageRef.current = undefined;
       }
-      setComposer(text); setAttachments(selectedAttachments); setError(errorText(reason));
+      if (composerCleared) { setComposer(text); setAttachments(selectedAttachments); }
+      setError(errorText(reason));
     }
     finally { setSending(false); }
+  }
+
+  function applyThreadControl(threadIds: string[], mode: string | undefined) {
+    if (!threadIds.length) return;
+    setExternallyOwnedThreadIds((current) => {
+      const next = new Set(current);
+      for (const threadId of threadIds) {
+        if (mode === "external-read-only") next.add(threadId);
+        else next.delete(threadId);
+      }
+      return next;
+    });
+    setRelayOwnedThreadIds((current) => {
+      const next = new Set(current);
+      for (const threadId of threadIds) {
+        if (mode === "relay-write") next.add(threadId);
+        else next.delete(threadId);
+      }
+      return next;
+    });
+  }
+
+  async function acquireThreadControl(threadId: string): Promise<boolean> {
+    try {
+      const control = await rpc.rpc("relay/thread/control/acquire", { threadId }, 35_000);
+      applyThreadControl([threadId], control.mode);
+      if (control.mode === "relay-write") return true;
+      setError("此任务仍由 Codex 控制。Relay 会继续同步进展，关闭 Codex 中的任务后再重试。");
+      return false;
+    } catch (reason) {
+      setError(errorText(reason));
+      return false;
+    }
+  }
+
+  async function releaseThreadControl(threadId: string) {
+    try {
+      await rpc.rpc("relay/thread/control/release", { threadId }, 12_000);
+    } catch (reason) {
+      setError(errorText(reason));
+    }
   }
 
   function bindPendingStartMessage(turnId: string) {
@@ -1061,7 +1126,8 @@ export default function App() {
           {!atBottom && <button className="jump-bottom" onClick={() => { setAtBottom(true); transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" }); }}><ArrowDown size={16}/></button>}
 
           {archivedView ? <div className="archived-bar"><Archive size={14}/><span>此任务已归档，仅供查看</span>{selectedThreadId && <button onClick={() => void unarchiveThread(selectedThreadId)}><RotateCcw size={13}/>恢复任务</button>}</div> : <div className="composer-zone">
-            {externallyOwned && <div className="writer-lock-notice"><LockKeyhole size={14}/><span><strong>正在同步 Codex 中的任务</strong><small>当前由 Codex 控制，Relay 暂时只读</small></span><button onClick={() => selectedThreadId && void selectThread(selectedThreadId)}>重新获取控制</button></div>}
+            {externallyOwned && <div className="writer-lock-notice"><LockKeyhole size={14}/><span><strong>正在同步 Codex 中的任务</strong><small>当前由 Codex 控制，Relay 暂时只读</small></span><button onClick={() => selectedThreadId && void acquireThreadControl(selectedThreadId)}>重新获取控制</button></div>}
+            {relayOwned && !running && selectedThreadId && <div className="writer-control-strip"><span>Relay 已取得此任务的控制权</span><button onClick={() => void releaseThreadControl(selectedThreadId)}>释放给 Codex</button></div>}
             {plan.length > 0 && <PlanPanel steps={plan}/>
             }
             {currentQueuedPrompts.length > 0 && <PromptQueuePanel items={currentQueuedPrompts} onRemove={removeQueuedPrompt}/>

@@ -47,6 +47,7 @@ Relay 是一个面向 iOS 16 的非官方 Codex 远程客户端。它通过 Wind
 - iOS 诊断导出包含有界的脱敏时间线轨迹；真实事件夹具覆盖 Codex 历史、rollout 快照、增量补丁与延迟事件混用
 - 独立 Service Host 在 Desktop 退出或更新后继续守护 Bridge；异常退出自动退避重启，持续失去健康响应时自动恢复
 - 任务消息使用稳定投递编号：断线不会取消已经交给 Codex 的任务，重连后会合并重复请求、回放结果并自动确认或安全重试未决消息
+- 浏览任务历史时保持只读，只有发送消息才获取 Codex 写入控制权；离开空闲任务或点击“释放给 Codex”会安全交还控制权
 
 ## 架构
 
@@ -114,6 +115,8 @@ Relay Desktop 与 iPhone 连接同一个 Bridge 和 Codex App Server。通过任
 Relay Desktop 启动远程服务后会把 Bridge 交给独立的 Service Host。关闭 Desktop 不会停止手机连接或正在执行的任务；Bridge 异常退出会自动恢复。启用“开机启动远程服务”后，登录 Windows 时只会在后台启动 Host，不会弹出 Desktop 主窗口。设置页和诊断中心可以查看守护状态、版本与恢复次数。
 
 官方 Codex 仍可继续使用。官方 App 发起的任务通过 rollout 文件变更通知同步，完整进展通常在写盘后几十到几百毫秒出现；由于 rollout 不保存 token delta，只有 Relay Desktop 或 iPhone 发起的同一 app-server 任务才能逐字流式同步。
+
+新版 Codex 对同一任务实行单写入者限制。Relay 打开任务时不会抢占写锁；发送前才尝试获取控制权。如果官方 Codex 正在控制该任务，Relay 会保持只读并保留输入内容。关闭官方任务后可点击“重新获取控制”；Relay 完成任务后可点击“释放给 Codex”，切换离开空闲任务时也会自动请求释放。
 
 ## 3. 使用 GitHub Actions 构建 IPA 与 Windows 客户端
 

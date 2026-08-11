@@ -39,6 +39,7 @@ final class RelaySocket: ObservableObject {
     var onConnected: (() -> Void)?
     var onBridgeStatus: ((JSONValue) -> Void)?
     var onRuntimeUpdated: ((String, JSONValue) -> Void)?
+    var onThreadControlUpdated: ((JSONValue) -> Void)?
     var onEvent: ((String, JSONValue) -> Void)?
     var onSessionSnapshot: ((String, String?, JSONValue) -> Void)?
     var onSessionPatch: ((String, String?, JSONValue) -> Void)?
@@ -451,7 +452,7 @@ final class RelaySocket: ObservableObject {
 
     private nonisolated static func isUrgentInbound(_ message: JSONValue) -> Bool {
         switch message["type"]?.stringValue {
-        case "runtimeUpdated", "rpcResult", "rpcAccepted", "serverRequest", "serverRequestResolved":
+        case "runtimeUpdated", "threadControlUpdated", "rpcResult", "rpcAccepted", "serverRequest", "serverRequestResolved":
             return true
         default:
             return false
@@ -487,6 +488,8 @@ final class RelaySocket: ObservableObject {
             if let threadId = message["threadId"]?.stringValue {
                 onRuntimeUpdated?(threadId, message["runtime"] ?? .object([:]))
             }
+        case "threadControlUpdated":
+            onThreadControlUpdated?(message)
         case "rpcAccepted":
             guard let id = message["id"]?.stringValue else { return }
             pendingAcceptanceTimeouts.removeValue(forKey: id)?.cancel()

@@ -58,7 +58,7 @@ struct ComposerView: View {
                     Spacer(minLength: 4)
                     if let threadId = store.selectedThreadId {
                         Button("重试") {
-                            Task { await store.selectThread(threadId, closeSidebar: false) }
+                            Task { await store.acquireThreadControl(threadId) }
                         }
                         .font(.system(size: 11, weight: .semibold))
                     }
@@ -68,6 +68,23 @@ struct ComposerView: View {
                 .padding(.vertical, 8)
                 .background(Color.orange.opacity(0.09))
                 .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            }
+
+            if store.isSelectedThreadRelayOwned, !store.isRunning, let threadId = store.selectedThreadId {
+                HStack(spacing: 7) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Relay 已取得此任务的控制权")
+                        .font(.system(size: 10, weight: .medium))
+                    Spacer(minLength: 4)
+                    Button("释放给 Codex") {
+                        Task { await store.releaseThreadControl(threadId) }
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 11)
+                .frame(height: 24)
             }
 
             if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {

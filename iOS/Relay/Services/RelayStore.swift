@@ -50,6 +50,7 @@ final class RelayStore: ObservableObject {
     @Published var goalStates: [String: GoalState] = [:]
     @Published var sendingThreadIds = Set<String>()
     @Published var externallyOwnedThreadIds = Set<String>()
+    @Published var relayOwnedThreadIds = Set<String>()
     @Published var isPreparingPrompt = false
     @Published var codexProfiles: [CodexProfile] = []
     @Published var activeCodexProfileId = ""
@@ -193,6 +194,10 @@ final class RelayStore: ObservableObject {
         guard let selectedThreadId else { return false }
         return externallyOwnedThreadIds.contains(selectedThreadId)
     }
+    var isSelectedThreadRelayOwned: Bool {
+        guard let selectedThreadId else { return false }
+        return relayOwnedThreadIds.contains(selectedThreadId)
+    }
 
     func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
         mobileActivityFeedCache.feed(
@@ -325,6 +330,9 @@ final class RelayStore: ObservableObject {
         socket.onBridgeStatus = { [weak self] message in self?.handleBridgeStatus(message) }
         socket.onRuntimeUpdated = { [weak self] threadId, runtime in
             self?.applyRuntimeUpdate(threadId: threadId, runtime: runtime)
+        }
+        socket.onThreadControlUpdated = { [weak self] message in
+            self?.applyThreadControlUpdate(message)
         }
         socket.onEvent = { [weak self] method, params in self?.handleEvent(method: method, params: params) }
         socket.onSessionSnapshot = { [weak self] threadId, subscriptionId, snapshot in
@@ -463,6 +471,7 @@ final class RelayStore: ObservableObject {
 
     @discardableResult
     func newThread(workingDirectory: String? = nil) async -> Bool {
+        let previousThreadId = selectedThreadId
         if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
@@ -487,6 +496,20 @@ final class RelayStore: ObservableObject {
             )
             guard let id = result["thread"]?["id"]?.stringValue else {
                 throw RelaySocket.SocketError.remote("Codex did not return a thread id.")
+            }
+            relayOwnedThreadIds.insert(id)
+            externallyOwnedThreadIds.remove(id)
+            if let previousThreadId,
+               previousThreadId != id,
+               relayOwnedThreadIds.contains(previousThreadId) {
+                Task { [weak self] in
+                    _ = try? await self?.socket.rpc(
+                        method: "relay/thread/control/release",
+                        params: ["threadId": .string(previousThreadId)],
+                        timeoutSeconds: 4,
+                        reconnectOnTimeout: false
+                    )
+                }
             }
             cacheCurrentThread()
             setSelectedThread(id)
@@ -557,6 +580,70 @@ final class RelayStore: ObservableObject {
         }
     }
 
+    func applyThreadControlUpdate(_ message: JSONValue) {
+        var threadIds = (message["threadIds"]?.arrayValue ?? []).compactMap(\.stringValue)
+        if let threadId = message["threadId"]?.stringValue { threadIds.append(threadId) }
+        let mode = message["control"]?["mode"]?.stringValue
+        for threadId in Set(threadIds) { applyThreadControl(threadId: threadId, mode: mode) }
+    }
+
+    func applyThreadControl(threadId: String, mode: String?) {
+        if mode == "relay-write" { relayOwnedThreadIds.insert(threadId) }
+        else { relayOwnedThreadIds.remove(threadId) }
+        if mode == "external-read-only" { externallyOwnedThreadIds.insert(threadId) }
+        else { externallyOwnedThreadIds.remove(threadId) }
+    }
+
+    @discardableResult
+    func acquireThreadControl(_ threadId: String, showErrors: Bool = true) async -> Bool {
+        do {
+            let result = try await socket.rpc(
+                method: "relay/thread/control/acquire",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 35,
+                reconnectOnTimeout: false
+            )
+            let mode = result["mode"]?.stringValue
+            applyThreadControl(threadId: threadId, mode: mode)
+            guard mode == "relay-write" else {
+                if showErrors {
+                    errorMessage = "此任务仍由 Codex 控制。Relay 会继续同步进展，关闭 Codex 中的任务后再重试。"
+                }
+                return false
+            }
+            return true
+        } catch {
+            report(error, show: showErrors)
+            return false
+        }
+    }
+
+    func releaseThreadControl(_ threadId: String) async {
+        do {
+            let result = try await socket.rpc(
+                method: "relay/thread/control/release",
+                params: ["threadId": .string(threadId)],
+                timeoutSeconds: 12,
+                reconnectOnTimeout: false
+            )
+            if result["release"]?.stringValue == "not-owned" {
+                applyThreadControl(threadId: threadId, mode: "unowned")
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    func readThreadControlStatus(_ threadId: String, archived: Bool) async throws -> JSONValue {
+        if archived { return .object(["mode": .string("unowned")]) }
+        return try await socket.rpc(
+            method: "relay/thread/control/status",
+            params: ["threadId": .string(threadId)],
+            timeoutSeconds: 12,
+            reconnectOnTimeout: false
+        )
+    }
+
     func selectThread(_ id: String, closeSidebar: Bool = true, showErrors: Bool = true) async {
         flushPendingTextDeltas()
         flushPendingDetailDeltas()
@@ -565,7 +652,7 @@ final class RelayStore: ObservableObject {
         let switchingThreads = selectedThreadId != id
         if switchingThreads {
             if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
-            // Composer modes belong to the selected thread. The resumed thread can
+            // Composer modes belong to the selected thread. The loaded thread can
             // restore Plan mode through thread/settings/updated after it loads.
             composerMode = .standard
         }
@@ -574,6 +661,7 @@ final class RelayStore: ObservableObject {
         if switchingThreads {
             liveSessionSyncTask?.cancel()
             liveSessionSyncTask = nil
+            var requestedControlRelease = false
             if let subscribedSessionThreadId {
                 let subscriptionId = subscribedSessionId
                 sessionRevisionTracker.remove(threadId: subscribedSessionThreadId)
@@ -584,14 +672,28 @@ final class RelayStore: ObservableObject {
                         method: "relay/thread/session/unsubscribe",
                         params: [
                             "threadId": .string(subscribedSessionThreadId),
-                            "subscriptionId": subscriptionId.map(JSONValue.string) ?? .null
+                            "subscriptionId": subscriptionId.map(JSONValue.string) ?? .null,
+                            "releaseControl": .bool(true)
                         ],
                         timeoutSeconds: 4,
                         reconnectOnTimeout: false
                     )
                 }
+                requestedControlRelease = true
                 self.subscribedSessionThreadId = nil
                 self.subscribedSessionId = nil
+            }
+            if !requestedControlRelease,
+               let previousThreadId = selectedThreadId,
+               relayOwnedThreadIds.contains(previousThreadId) {
+                Task { [weak self] in
+                    _ = try? await self?.socket.rpc(
+                        method: "relay/thread/control/release",
+                        params: ["threadId": .string(previousThreadId)],
+                        timeoutSeconds: 4,
+                        reconnectOnTimeout: false
+                    )
+                }
             }
         }
         if switchingThreads { cacheCurrentThread() }
@@ -616,51 +718,40 @@ final class RelayStore: ObservableObject {
         }
 
         do {
-            let result: JSONValue
-            if showingArchivedThreads {
-                async let summary = socket.rpc(
-                    method: "thread/read",
-                    params: ["threadId": .string(id), "includeTurns": .bool(false)],
-                    timeoutSeconds: 25,
-                    reconnectOnTimeout: false
-                )
-                async let page = socket.rpc(
-                    method: "thread/turns/list",
-                    params: [
-                        "threadId": .string(id),
-                        "limit": .number(8),
-                        "sortDirection": .string("desc"),
-                        "itemsView": .string("full")
-                    ],
-                    timeoutSeconds: 60,
-                    reconnectOnTimeout: false
-                )
-                let (summaryResult, pageResult) = try await (summary, page)
-                result = .object([
-                    "thread": summaryResult["thread"] ?? .object([:]),
-                    "initialTurnsPage": pageResult
-                ])
-            } else {
-                result = try await socket.rpc(
-                    method: "thread/resume",
-                    params: [
-                        "threadId": .string(id),
-                        "excludeTurns": .bool(true),
-                        "initialTurnsPage": .object([
-                            "limit": .number(8),
-                            "sortDirection": .string("desc"),
-                            "itemsView": .string("full")
-                        ])
-                    ],
-                    timeoutSeconds: 25,
-                    reconnectOnTimeout: false
-                )
-            }
+            async let summary = socket.rpc(
+                method: "thread/read",
+                params: ["threadId": .string(id), "includeTurns": .bool(false)],
+                timeoutSeconds: 25,
+                reconnectOnTimeout: false
+            )
+            async let page = socket.rpc(
+                method: "thread/turns/list",
+                params: [
+                    "threadId": .string(id),
+                    "limit": .number(8),
+                    "sortDirection": .string("desc"),
+                    "itemsView": .string("full")
+                ],
+                timeoutSeconds: 60,
+                reconnectOnTimeout: false
+            )
+            async let control = readThreadControlStatus(id, archived: showingArchivedThreads)
+            let (summaryResult, pageResult, controlResult) = try await (summary, page, control)
+            let result = JSONValue.object([
+                "thread": summaryResult["thread"] ?? .object([:]),
+                "initialTurnsPage": pageResult,
+                "relayThreadAccess": controlResult
+            ])
             guard selectedThreadId == id, threadLoadGeneration == loadGeneration else { return }
             if result["relayThreadAccess"]?["mode"]?.stringValue == "external-read-only" {
                 externallyOwnedThreadIds.insert(id)
             } else {
                 externallyOwnedThreadIds.remove(id)
+            }
+            if result["relayThreadAccess"]?["mode"]?.stringValue == "relay-write" {
+                relayOwnedThreadIds.insert(id)
+            } else {
+                relayOwnedThreadIds.remove(id)
             }
             let pageTurns = result["initialTurnsPage"]?["data"]?.arrayValue ?? []
             let turns = pageTurns.isEmpty
@@ -1326,6 +1417,7 @@ final class RelayStore: ObservableObject {
         taskStateCore.reset()
         goalStates = [:]
         externallyOwnedThreadIds = []
+        relayOwnedThreadIds = []
         collaborationModes = []
         composerMode = .standard
         queuedFollowUps = []
@@ -1517,7 +1609,8 @@ final class RelayStore: ObservableObject {
         case "switching":
             isSwitchingCodexProfile = true
             resetForCodexProfileSwitch()
-        case "restarting":
+        case "restarting", "reloading":
+            relayOwnedThreadIds = []
             bridgeRecoveryPending = true
         case "ready" where isSwitchingCodexProfile:
             Task { [weak self] in
@@ -1550,6 +1643,7 @@ final class RelayStore: ObservableObject {
         taskRunStates = [:]
         goalStates = [:]
         externallyOwnedThreadIds = []
+        relayOwnedThreadIds = []
         collaborationModes = []
         composerMode = .standard
         sendingThreadIds = []

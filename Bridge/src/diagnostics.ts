@@ -27,6 +27,8 @@ interface DiagnosticState {
   activeTransferCount: number;
   pendingRpcCount: number;
   pendingApprovalCount: number;
+  ownedThreadCount: number;
+  pendingThreadReleaseCount: number;
   queuedPromptCount: number;
   pendingDeliveryCount: number;
   codexRestartAttempt: number;

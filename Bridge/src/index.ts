@@ -32,6 +32,7 @@ import { boundSessionSnapshot } from "./sessionPatch.js";
 import { SessionStream } from "./sessionStream.js";
 import { SessionSourceOwnership } from "./sessionSourceOwnership.js";
 import { SessionSubscriptionRegistry } from "./sessionSubscriptions.js";
+import { canRestartForWriterRelease, ThreadControlRegistry, type ThreadControlStatus } from "./threadControl.js";
 import { UpdateManager } from "./updateManager.js";
 
 interface PendingServerRequest {
@@ -140,6 +141,12 @@ const dispatchingQueueThreads = new Set<string>();
 const queueRetryTimers = new Map<string, NodeJS.Timeout>();
 const pendingInternalRequests = new Map<string, PendingInternalRequest>();
 let nextInternalRequestId = 1;
+const threadControl = new ThreadControlRegistry();
+const threadControlAcquisitions = new Map<string, Promise<ThreadControlStatus>>();
+const externallyRunningThreadIds = new Set<string>();
+let threadControlReleaseTimer: NodeJS.Timeout | undefined;
+let threadControlReleaseInProgress = false;
+let threadControlReleaseNotBefore = 0;
 let runtimeState = new RuntimeStateTracker();
 let sessionActivity = new SessionActivityTracker();
 const sessionSourceOwnership = new SessionSourceOwnership();
@@ -171,6 +178,8 @@ const httpServer = createServer((request, response) => {
       activeTransferCount: fileTransfer.activeTransferCount,
       pendingRpcCount: pendingClientRequests.size,
       pendingApprovalCount: pendingServerRequests.size,
+      ownedThreadCount: threadControl.ownedIds.length,
+      pendingThreadReleaseCount: threadControl.pendingReleaseIds.length,
       queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
       pendingDeliveryCount: deliveryRegistry.pendingCount,
       codexRestartAttempt,
@@ -348,6 +357,30 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
     }
+    if (["relay/thread/control/status", "relay/thread/control/acquire", "relay/thread/control/release"].includes(message.method)) {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      try {
+        const threadId = requiredThreadControlId(message.params.threadId);
+        let result: JsonObject;
+        if (message.method === "relay/thread/control/acquire") {
+          result = { ...await ensureThreadControl(threadId) };
+        } else if (message.method === "relay/thread/control/release") {
+          result = requestThreadControlRelease(threadId, "explicit-release");
+        } else {
+          result = { ...await currentThreadControlStatus(threadId) };
+        }
+        send(socket, { type: "rpcResult", id: message.id, result });
+        rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+        rpcDiagnostics.lastCompletedMethod = message.method;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Could not update task control.";
+        rpcDiagnostics.lastErrorAt = new Date().toISOString();
+        rpcDiagnostics.lastError = detail;
+        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: detail } });
+      }
+      return;
+    }
     if (message.method === "relay/delivery/status") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -430,6 +463,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         );
         const stopWatching = sessionActivity.subscribe(threadId, (snapshot) => {
           fileTransfer.allowConversationPayload(snapshot);
+          observeExternalThreadControl(threadId, snapshot.known && snapshot.isRunning);
           if (sessionSourceOwnership.isRelayOwned(threadId, snapshot.turnId)) {
             performanceMetrics.recordSuppressedSessionUpdate();
             return;
@@ -445,6 +479,7 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         });
         const snapshot = await sessionActivity.turnSnapshot(threadId);
         fileTransfer.allowConversationPayload(snapshot);
+        observeExternalThreadControl(threadId, snapshot.known && snapshot.isRunning);
         const result = stream.initialize(snapshot);
         send(socket, {
           type: "rpcResult",
@@ -466,7 +501,10 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         ? message.params.subscriptionId
         : undefined;
       const unsubscribed = sessionSubscriptions.unsubscribe(socket, threadId, subscriptionId);
-      send(socket, { type: "rpcResult", id: message.id, result: { unsubscribed } });
+      const control = message.params.releaseControl === true
+        ? requestThreadControlRelease(threadId, "task-left")
+        : undefined;
+      send(socket, { type: "rpcResult", id: message.id, result: { unsubscribed, ...(control ? { control } : {}) } });
       rpcDiagnostics.lastCompletedAt = new Date().toISOString();
       rpcDiagnostics.lastCompletedMethod = message.method;
       return;
@@ -552,6 +590,20 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         error: { message: "Codex is still starting." },
       });
       return;
+    }
+    if (["turn/start", "turn/steer"].includes(message.method)) {
+      const threadId = requiredThreadControlId(message.params.threadId);
+      const access = await ensureThreadControl(threadId);
+      if (access.mode !== "relay-write") {
+        const detail = "此任务当前由另一个 Codex 实例控制。Relay 已保留输入内容，请在 Codex 释放任务后重试。";
+        diagnostics.record("warning", "thread-control", "Rejected a write because another App Server owns the thread.", { threadId, method: message.method });
+        send(socket, {
+          type: "rpcResult",
+          id: message.id,
+          error: { code: -32001, message: detail, data: { relayThreadAccess: access } },
+        });
+        return;
+      }
     }
     const delivery = await deliveryRegistry.register(activeCodexProfile.id, message.method, message.params, {
       socket,
@@ -700,6 +752,9 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
   } else if (["thread/resume", "thread/fork"].includes(pending.method) && "result" in message) {
     sessionActivity.observeThreadResume(message.result);
   }
+  if (["thread/start", "thread/resume", "thread/fork"].includes(pending.method) && "result" in message) {
+    markThreadControlFromResult(pending.method, pending.params, message.result);
+  }
   if (pending.method === "turn/start") {
     const result = isObject(message.result) ? message.result : {};
     const turn = isObject(result.turn) ? result.turn : {};
@@ -747,6 +802,7 @@ async function completeReadOnlyThreadResume(
     return;
   }
   try {
+    observeExternalThreadControl(threadId, true);
     const pageRequest = isObject(pending.params.initialTurnsPage) ? pending.params.initialTurnsPage : {};
     const [summary, page] = await Promise.all([
       codexRequest("thread/read", { threadId, includeTurns: false }, 30_000),
@@ -779,6 +835,149 @@ async function completeReadOnlyThreadResume(
 
 function isActiveWriterConflict(message: string): boolean {
   return /already has an active writer|thread-store conflict/i.test(message);
+}
+
+function requiredThreadControlId(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new Error("Missing threadId.");
+  return value;
+}
+
+async function currentThreadControlStatus(threadId: string): Promise<ThreadControlStatus> {
+  if (threadControl.isOwned(threadId)) return { mode: "relay-write" };
+  if (externallyRunningThreadIds.has(threadId)) return { mode: "external-read-only", reason: "active-writer" };
+  const snapshot = await sessionActivity.turnSnapshot(threadId);
+  return threadControl.status(threadId, snapshot.known && snapshot.isRunning);
+}
+
+async function ensureThreadControl(threadId: string): Promise<ThreadControlStatus> {
+  if (threadControl.hasPendingRelease) {
+    threadControlReleaseNotBefore = Math.max(threadControlReleaseNotBefore, Date.now() + 2_000);
+  }
+  if (threadControl.isOwned(threadId)) return { mode: "relay-write" };
+  const existing = threadControlAcquisitions.get(threadId);
+  if (existing) return existing;
+  if (!codexReady) throw new Error("Codex App Server is not ready.");
+
+  const acquisition = (async (): Promise<ThreadControlStatus> => {
+    try {
+      const result = await codexRequest("thread/resume", { threadId, excludeTurns: true }, 30_000);
+      sessionActivity.observeThreadResume(result);
+      observeFileTransferWorkspaces("thread/resume", result);
+      markThreadControlOwned(threadId);
+      diagnostics.record("info", "thread-control", "Relay acquired task writer ownership.", { threadId });
+      return { mode: "relay-write" };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      if (!isActiveWriterConflict(detail)) throw error;
+      observeExternalThreadControl(threadId, true);
+      diagnostics.record("warning", "thread-control", "Another Codex App Server owns the task writer.", { threadId });
+      return { mode: "external-read-only", reason: "active-writer" };
+    } finally {
+      threadControlAcquisitions.delete(threadId);
+      if (threadControl.hasPendingRelease) scheduleThreadControlRelease(100);
+    }
+  })();
+  threadControlAcquisitions.set(threadId, acquisition);
+  return acquisition;
+}
+
+function markThreadControlFromResult(method: string, params: JsonObject, result: unknown): void {
+  const object = isObject(result) ? result : {};
+  const thread = isObject(object.thread) ? object.thread : {};
+  const threadId = typeof thread.id === "string"
+    ? thread.id
+    : typeof params.threadId === "string" ? params.threadId : undefined;
+  if (!threadId) return;
+  markThreadControlOwned(threadId);
+  diagnostics.record("info", "thread-control", `Relay acquired task writer ownership through ${method}.`, { threadId });
+}
+
+function markThreadControlOwned(threadId: string): void {
+  externallyRunningThreadIds.delete(threadId);
+  if (!threadControl.markOwned(threadId)) return;
+  broadcast({ type: "threadControlUpdated", threadId, control: { mode: "relay-write" } });
+}
+
+function requestThreadControlRelease(threadId: string, reason: string): JsonObject {
+  const requested = threadControl.requestRelease(threadId);
+  if (requested) {
+    diagnostics.record("info", "thread-control", "Task writer release was requested.", { threadId, reason });
+    scheduleThreadControlRelease(350);
+  }
+  return {
+    mode: threadControl.isOwned(threadId) ? "relay-write" : "unowned",
+    release: requested ? "scheduled" : "not-owned",
+  };
+}
+
+function scheduleThreadControlRelease(delayMs: number): void {
+  if (shuttingDown || threadControlReleaseInProgress || threadControlReleaseTimer || !threadControl.hasPendingRelease) return;
+  threadControlReleaseTimer = setTimeout(() => {
+    threadControlReleaseTimer = undefined;
+    void releaseThreadControlWhenIdle();
+  }, delayMs);
+  threadControlReleaseTimer.unref();
+}
+
+async function releaseThreadControlWhenIdle(): Promise<void> {
+  if (shuttingDown || threadControlReleaseInProgress || !threadControl.hasPendingRelease) return;
+  if (Date.now() < threadControlReleaseNotBefore) {
+    scheduleThreadControlRelease(Math.max(100, threadControlReleaseNotBefore - Date.now()));
+    return;
+  }
+  const conditions = {
+    activeTurns: runtimeState.activeCount,
+    pendingClientRequests: pendingClientRequests.size,
+    pendingInternalRequests: pendingInternalRequests.size,
+    pendingServerRequests: pendingServerRequests.size,
+    pendingDeliveries: deliveryRegistry.pendingCountFor(activeCodexProfile.id),
+    dispatchingQueues: dispatchingQueueThreads.size,
+    queuedPrompts: promptQueue.list(activeCodexProfile.id).length,
+    acquiringThreads: threadControlAcquisitions.size,
+    recoveringDeliveries,
+    configurationReloading: codexConfigReloadInProgress,
+  };
+  if (!canRestartForWriterRelease(conditions)) {
+    scheduleThreadControlRelease(1_000);
+    return;
+  }
+
+  threadControlReleaseInProgress = true;
+  const requestedThreadIds = threadControl.pendingReleaseIds;
+  diagnostics.record("info", "thread-control", "Restarting the Relay App Server to release idle task writers.", { requestedThreadIds });
+  codexReady = false;
+  broadcast({ ...bridgeStatus("reloading"), reason: "writer-release", threadIds: requestedThreadIds });
+  try {
+    await replaceCodex(true, "writer-release");
+  } finally {
+    threadControlReleaseInProgress = false;
+  }
+}
+
+function clearThreadControl(reason: string): void {
+  const releasedThreadIds = threadControl.reset();
+  threadControlAcquisitions.clear();
+  if (threadControlReleaseTimer) clearTimeout(threadControlReleaseTimer);
+  threadControlReleaseTimer = undefined;
+  threadControlReleaseNotBefore = 0;
+  if (releasedThreadIds.length > 0) {
+    broadcast({ type: "threadControlUpdated", threadIds: releasedThreadIds, control: { mode: "unowned" }, reason });
+  }
+}
+
+function observeExternalThreadControl(threadId: string, running: boolean): void {
+  if (threadControl.isOwned(threadId)) {
+    externallyRunningThreadIds.delete(threadId);
+    return;
+  }
+  if (!running || externallyRunningThreadIds.has(threadId)) return;
+  externallyRunningThreadIds.add(threadId);
+  broadcast({
+    type: "threadControlUpdated",
+    threadId,
+    control: { mode: "external-read-only", reason: "active-writer" },
+    reason: "external-activity",
+  });
 }
 
 function observeFileTransferWorkspaces(method: string, result: unknown): void {
@@ -827,6 +1026,7 @@ async function pollExternalSessions(): Promise<void> {
   try {
     for (const threadId of monitoredThreadIds) {
       const snapshot = await sessionActivity.turnSnapshot(threadId);
+      observeExternalThreadControl(threadId, snapshot.known && snapshot.isRunning);
       if (!snapshot.known || !snapshot.turnId) continue;
       if (externalCompletionTracker.observe(threadId, snapshot)) {
         try {
@@ -904,6 +1104,7 @@ function handleCodexNotification(message: JsonObject): void {
     }
     void pushTaskCompletion(String(message.method), params);
     if (codexConfigReloadPending) scheduleCodexConfigReload(100);
+    if (threadControl.hasPendingRelease) scheduleThreadControlRelease(100);
   }
   if (message.method === "turn/completed" && isObject(message.params)) {
     desktopSync.activateThread(message.params.threadId, "turn-completed");
@@ -1112,6 +1313,8 @@ function diagnosticsReport(): JsonObject {
     activeTransferCount: fileTransfer.activeTransferCount,
     pendingRpcCount: pendingClientRequests.size,
     pendingApprovalCount: pendingServerRequests.size,
+    ownedThreadCount: threadControl.ownedIds.length,
+    pendingThreadReleaseCount: threadControl.pendingReleaseIds.length,
     queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
     pendingDeliveryCount: deliveryRegistry.pendingCount,
     codexRestartAttempt,
@@ -1166,6 +1369,7 @@ async function handleCodexExit(generation: number, code: number | null, signal: 
   codexStartupTimer = undefined;
   await failPendingRequests("Codex App Server 已退出，Relay 正在自动恢复。", true);
   clearPendingApprovals("codex-exited");
+  clearThreadControl("codex-exited");
   sessionSourceOwnership.clear();
   runtimeState.stopAll("Codex App Server exited.");
   diagnostics.record("error", "codex", "Codex App Server exited.", { code, signal });
@@ -1192,9 +1396,10 @@ function scheduleCodexRestart(generation: number): void {
   codexRestartTimer.unref();
 }
 
-async function replaceCodex(stopCurrent: boolean): Promise<void> {
+async function replaceCodex(stopCurrent: boolean, reason = "worker-replaced"): Promise<void> {
   if (shuttingDown) return;
   const previous = codex;
+  clearThreadControl(reason);
   codexGeneration += 1;
   const generation = codexGeneration;
   codexReady = false;
@@ -1358,6 +1563,8 @@ async function recoverPendingDeliveries(): Promise<void> {
         }
 
         await deliveryRegistry.bindBridgeRequest(delivery.key, `recovery.${nextInternalRequestId}`);
+        const access = await ensureThreadControl(delivery.threadId);
+        if (access.mode !== "relay-write") throw new Error("此任务当前由另一个 Codex 实例控制，Relay 无法恢复待发送消息。");
         const result = await codexRequest(delivery.method, delivery.params);
         await completeDelivery(delivery.key, { result });
         if (delivery.method === "turn/start") {
@@ -1404,6 +1611,8 @@ async function dispatchNextQueuedPrompt(threadId: string, completedTurnId?: stri
   }
   dispatchingQueueThreads.add(threadId);
   try {
+    const access = await ensureThreadControl(threadId);
+    if (access.mode !== "relay-write") throw new Error("Another Codex instance owns this queued task.");
     const params: JsonObject = {
       threadId,
       clientUserMessageId: next.clientUserMessageId,
@@ -1431,6 +1640,7 @@ async function dispatchNextQueuedPrompt(threadId: string, completedTurnId?: stri
     scheduleQueueRetry(threadId);
   } finally {
     dispatchingQueueThreads.delete(threadId);
+    if (threadControl.hasPendingRelease) scheduleThreadControlRelease(100);
   }
 }
 
@@ -1473,8 +1683,10 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   sessionActivity.dispose();
   sessionActivity = new SessionActivityTracker();
   sessionSourceOwnership.clear();
+  clearThreadControl("profile-switch");
   runtimeState = new RuntimeStateTracker();
   monitoredThreadIds = [];
+  externallyRunningThreadIds.clear();
   externalCompletionTracker.reset();
   threadTitles.clear();
 
@@ -1483,7 +1695,9 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   if (codexRestartTimer) clearTimeout(codexRestartTimer);
   codexRestartTimer = undefined;
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  if (threadControlReleaseTimer) clearTimeout(threadControlReleaseTimer);
   codexStartupTimer = undefined;
+  threadControlReleaseTimer = undefined;
   codexRestartAttempt = 0;
   await previous.stop();
   codex = createCodexAppServer(codexGeneration);
@@ -1502,6 +1716,7 @@ function shutdown(): void {
   if (codexConfigReloadTimer) clearTimeout(codexConfigReloadTimer);
   if (codexRestartTimer) clearTimeout(codexRestartTimer);
   if (codexStartupTimer) clearTimeout(codexStartupTimer);
+  if (threadControlReleaseTimer) clearTimeout(threadControlReleaseTimer);
   for (const timer of queueRetryTimers.values()) clearTimeout(timer);
   queueRetryTimers.clear();
   clearPendingApprovals("bridge-shutdown");

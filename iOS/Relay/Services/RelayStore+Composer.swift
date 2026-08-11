@@ -292,6 +292,7 @@ extension RelayStore {
 
     private func retryOutboundDelivery(id: String, threadId: String) async {
         guard let draft = outboundDrafts[id], socket.state == .connected else { return }
+        guard await acquireThreadControl(threadId) else { return }
         let expectedTurnId = draft.expectedTurnId ?? userMessagePlacements[id]?.turnId
         let runtime: JSONValue?
         do {
@@ -540,10 +541,6 @@ extension RelayStore {
             errorMessage = "尚未连接到 Windows，消息仍保留在输入框中。Relay 正在重新连接。"
             return
         }
-        guard !isSelectedThreadExternallyOwned else {
-            errorMessage = "此任务正在 Codex 中运行。Relay 会继续同步进展；关闭那里的任务后点击重试即可恢复发送。"
-            return
-        }
         guard !isPreparingPrompt else { return }
         isPreparingPrompt = true
         defer { isPreparingPrompt = false }
@@ -559,6 +556,7 @@ extension RelayStore {
         }
         if selectedThreadId == nil { await newThread() }
         guard let threadId = selectedThreadId else { return }
+        guard await acquireThreadControl(threadId) else { return }
         if !isRunning, composerMode == .plan, collaborationModePayload() == nil {
             errorMessage = "计划模式仍在准备运行配置，请稍后重试；输入内容已保留。"
             return
@@ -591,6 +589,7 @@ extension RelayStore {
             }
         }
         guard !isPreparingPrompt, socket.state == .connected else { return false }
+        guard await acquireThreadControl(threadId, showErrors: false) else { return false }
         if isRunning {
             if followUpBehavior == .queue {
                 return await enqueueFollowUp(
