@@ -41,4 +41,22 @@ final class IncrementalMarkdownDocumentTests: XCTestCase {
         XCTAssertLessThan(document.processedCharacters - before, 20_000)
         XCTAssertEqual(document.blocks, MarkdownParser.parseUncached(document.source))
     }
+
+    func testUnchangedSourceDoesNotRescanUnstableTail() {
+        let source = String(repeating: "没有空行的长文本", count: 2_000)
+        let document = IncrementalMarkdownDocument(source: source)
+        let before = document.processedCharacters
+
+        for _ in 0..<100 { document.update(source: source) }
+
+        XCTAssertEqual(document.processedCharacters, before)
+        XCTAssertEqual(document.blocks, MarkdownParser.parseUncached(source))
+    }
+
+    func testPlainInlineTextSkipsMarkdownParser() {
+        XCTAssertFalse(InlineMarkdownRenderer.requiresParsing("普通中文进展，没有 Markdown 标记。"))
+        XCTAssertTrue(InlineMarkdownRenderer.requiresParsing("包含 **强调**"))
+        XCTAssertTrue(InlineMarkdownRenderer.requiresParsing("包含 `代码`"))
+        XCTAssertTrue(InlineMarkdownRenderer.requiresParsing("包含 [链接](https://example.com)"))
+    }
 }

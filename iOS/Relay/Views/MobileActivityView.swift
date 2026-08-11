@@ -365,12 +365,24 @@ private func cleanActivityText(_ source: String) -> String {
 
 struct MobileCompletedActivityRow: View {
     let id: String
-    let items: [TranscriptItem]
+    let feed: MobileActivityFeed
     let metadata: TurnMetadata
     let action: (MobileActivityPresentation) -> Void
 
+    init(
+        id: String,
+        revision: Int,
+        items: [TranscriptItem],
+        metadata: TurnMetadata,
+        action: @escaping (MobileActivityPresentation) -> Void
+    ) {
+        self.id = id
+        feed = CompletedActivityFeedCache.feed(id: id, revision: revision, items: items)
+        self.metadata = metadata
+        self.action = action
+    }
+
     var body: some View {
-        let feed = MobileActivityFeed.make(items: items)
         if !feed.entries.isEmpty || metadata.durationMs != nil {
             Button {
                 action(MobileActivityPresentation(
@@ -423,6 +435,28 @@ struct MobileCompletedActivityRow: View {
     private var statusColor: Color {
         metadata.errorMessage == nil ? RelayTheme.accent : .red
     }
+}
+
+private enum CompletedActivityFeedCache {
+    private static let cache: NSCache<NSString, MobileActivityFeedBox> = {
+        let cache = NSCache<NSString, MobileActivityFeedBox>()
+        cache.countLimit = 96
+        cache.totalCostLimit = 8_192
+        return cache
+    }()
+
+    static func feed(id: String, revision: Int, items: [TranscriptItem]) -> MobileActivityFeed {
+        let key = "\(id).\(revision)" as NSString
+        if let cached = cache.object(forKey: key) { return cached.value }
+        let value = MobileActivityFeed.make(items: items)
+        cache.setObject(MobileActivityFeedBox(value), forKey: key, cost: max(1, items.count))
+        return value
+    }
+}
+
+private final class MobileActivityFeedBox: NSObject {
+    let value: MobileActivityFeed
+    init(_ value: MobileActivityFeed) { self.value = value }
 }
 
 struct MobileActivitySheet: View {

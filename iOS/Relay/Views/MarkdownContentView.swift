@@ -149,6 +149,27 @@ struct InlineMarkdownText: View {
     }
 
     private var styledMarkdown: AttributedString? {
+        InlineMarkdownRenderer.render(text: text, size: size)
+    }
+}
+
+enum InlineMarkdownRenderer {
+    private static let syntaxCharacters = CharacterSet(charactersIn: "*_`[]~<\\")
+    private static let cache: NSCache<NSString, AttributedMarkdownBox> = {
+        let cache = NSCache<NSString, AttributedMarkdownBox>()
+        cache.countLimit = 512
+        cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+
+    static func requiresParsing(_ text: String) -> Bool {
+        text.unicodeScalars.contains { syntaxCharacters.contains($0) }
+    }
+
+    static func render(text: String, size: CGFloat) -> AttributedString? {
+        guard requiresParsing(text) else { return nil }
+        let key = "\(size)|\(text)" as NSString
+        if let cached = cache.object(forKey: key) { return cached.value }
         guard var attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .full)
@@ -160,8 +181,14 @@ struct InlineMarkdownText: View {
             attributed[run.range].backgroundColor = RelayTheme.codeFill
             attributed[run.range].foregroundColor = .primary
         }
+        cache.setObject(AttributedMarkdownBox(attributed), forKey: key, cost: text.utf8.count)
         return attributed
     }
+}
+
+private final class AttributedMarkdownBox: NSObject {
+    let value: AttributedString
+    init(_ value: AttributedString) { self.value = value }
 }
 
 private struct CodeBlockView: View {
@@ -415,12 +442,13 @@ final class IncrementalMarkdownDocument {
     private var stableUTF16Length = 0
 
     init(source: String) {
-        update(source: source)
+        loadInitialSource(source)
     }
 
     @discardableResult
     func update(source newSource: String) -> [MarkdownBlock] {
         let normalized = newSource.replacingOccurrences(of: "\r\n", with: "\n")
+        guard normalized != source else { return blocks }
         guard normalized.hasPrefix(source) else {
             reset(source: normalized)
             return blocks
@@ -446,12 +474,19 @@ final class IncrementalMarkdownDocument {
     }
 
     private func reset(source: String) {
-        self.source = ""
-        stablePrefix = ""
-        stableUTF16Length = 0
-        stableBlocks = []
-        blocks = []
-        update(source: source)
+        loadInitialSource(source)
+    }
+
+    private func loadInitialSource(_ source: String) {
+        let normalized = source.replacingOccurrences(of: "\r\n", with: "\n")
+        self.source = normalized
+        stablePrefix = Self.safeStablePrefix(in: normalized)
+        stableUTF16Length = (stablePrefix as NSString).length
+        stableBlocks = MarkdownParser.parse(stablePrefix)
+        let normalizedUTF16 = normalized as NSString
+        let tail = normalizedUTF16.substring(from: min(stableUTF16Length, normalizedUTF16.length))
+        blocks = stableBlocks + MarkdownParser.parse(tail)
+        processedCharacters += normalizedUTF16.length
     }
 
     static func safeStablePrefix(in source: String) -> String {

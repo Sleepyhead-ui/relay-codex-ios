@@ -18,6 +18,7 @@ struct TurnGroupView: View, Equatable {
     var body: some View {
         let timeline = timelineSegments
         let lastAnswerId = group.answerItems.last?.id
+        let activityItems = group.activityItems
 
         VStack(alignment: .leading, spacing: 14) {
             ForEach(timeline) { segment in
@@ -41,10 +42,11 @@ struct TurnGroupView: View, Equatable {
                 }
             }
 
-            if !isLive, !group.activityItems.isEmpty {
+            if !isLive, !activityItems.isEmpty {
                 MobileCompletedActivityRow(
                     id: group.turnId ?? group.id,
-                    items: group.activityItems,
+                    revision: group.revision,
+                    items: activityItems,
                     metadata: group.metadata,
                     action: onOpenActivity
                 )
