@@ -401,7 +401,18 @@ enum TranscriptReconciler {
             } else if placement.afterItemId == nil {
                 insertion = result.firstIndex(where: { $0.turnId == turnId }) ?? min(index, result.endIndex)
             } else {
-                insertion = min(index, result.endIndex)
+                // A streamed snapshot may replace the original anchor id. Keep
+                // the end of the turn, after the final output. Multiple
+                // unresolved anchors are inserted before that output while
+                // processing placements in descending sequence order.
+                insertion = result.firstIndex(where: { candidateIndex in
+                    let candidate = result[candidateIndex]
+                    return candidate.role == .user
+                        && candidate.turnId == turnId
+                        && (placements[candidate.id]?.sequence ?? Int.min) > placement.sequence
+                })
+                    ?? result.firstIndex(where: { $0.turnId == turnId && $0.isFinalAnswer })
+                    ?? min(index, result.endIndex)
             }
             result.insert(prompt, at: insertion)
         }
