@@ -10,453 +10,78 @@ struct MobileActivityPresentation: Identifiable {
 
 struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
-    let compact: Bool
     let showTimeline: () -> Void
-    @State private var manuallyCollapsed = false
 
     var body: some View {
-        let hasThinking = presentation.feed.latestReasoningText?.nonEmpty != nil
-        let hasProgress = !presentation.feed.progressItems.isEmpty
-        let hasTools = !presentation.feed.toolItems.isEmpty
+        HStack(spacing: 9) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(RelayTheme.accent)
+                .frame(width: 18, height: 18)
 
-        VStack(spacing: 0) {
-            HStack(spacing: 9) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(RelayTheme.accent)
-                    .frame(width: 18, height: 18)
+            ShimmeringStatusText(liveSummary, font: .system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("正在处理")
+            LiveElapsedText(startedAt: presentation.metadata.startedAt)
+
+            Button(action: showTimeline) {
+                Image(systemName: "list.bullet")
                     .font(.system(size: 12, weight: .semibold))
-
-                Spacer(minLength: 8)
-
-                if !compact {
-                    Button {
-                        manuallyCollapsed.toggle()
-                    } label: {
-                        Image(systemName: manuallyCollapsed ? "chevron.down" : "chevron.up")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30, height: 30)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(manuallyCollapsed ? "展开当前任务" : "折叠当前任务")
-                }
-
-                Button(action: showTimeline) {
-                    Image(systemName: "list.bullet")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("查看完整任务活动")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 13)
-            .frame(height: 38)
-
-            if !manuallyCollapsed && (hasThinking || (!compact && (hasProgress || hasTools))) {
-                Divider().opacity(0.45)
-            }
-
-            if !manuallyCollapsed, let summary = compactSummary {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(RelayTheme.accent)
-                        .frame(width: 16, height: 16)
-
-                    ShimmeringStatusText(summary, font: .system(size: 11.5))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.horizontal, 13)
-                .frame(height: 34)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            if hasProgress && !compact && !manuallyCollapsed {
-                MobileProgressWindow(feed: presentation.feed, compact: compact)
-                    .padding(.horizontal, 7)
-                    .padding(.top, hasThinking ? 0 : 8)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            if hasTools && !compact && !manuallyCollapsed {
-                MobileToolWindow(feed: presentation.feed, compact: compact, showTimeline: showTimeline)
-                    .padding(.horizontal, 7)
-                    .padding(.top, 8)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            if !manuallyCollapsed && (hasThinking || hasProgress || hasTools) {
-                Color.clear.frame(height: 8)
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("查看完整任务活动")
         }
+        .padding(.horizontal, 13)
+        .frame(height: 42)
         .background(RelayTheme.elevated)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(RelayTheme.hairline, lineWidth: 1)
         }
-        .animation(.easeOut(duration: 0.18), value: hasThinking)
-        .animation(.easeOut(duration: 0.18), value: hasProgress)
-        .animation(.easeOut(duration: 0.18), value: hasTools)
     }
 
-    private var compactSummary: String? {
+    private var liveSummary: String {
         if let reasoning = presentation.feed.latestReasoningText?.nonEmpty {
             return cleanActivityText(reasoning)
         }
-        guard compact else { return nil }
         if let progress = presentation.feed.progressItems.last?.text.nonEmpty {
             return cleanActivityText(progress)
         }
         if let tool = presentation.feed.toolItems.last {
-            return tool.title?.nonEmpty ?? tool.text.nonEmpty
+            return cleanActivityText(tool.title?.nonEmpty ?? tool.text.nonEmpty ?? "正在处理")
         }
-        return nil
+        return "准备中"
     }
 
 }
 
-private struct MobileProgressWindow: View {
-    let feed: MobileActivityFeed
-    let compact: Bool
-    @State private var followsLatest = true
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
-
-    private let coordinateSpace = "relay-mobile-progress-window"
-
-    private var canScroll: Bool {
-        ActivityWindowScrollMetrics.isScrollable(
-            contentHeight: contentHeight,
-            viewportHeight: viewportHeight
-        )
-    }
+private struct LiveElapsedText: View {
+    let startedAt: Date?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            windowHeader(title: "进展", count: feed.progressItems.count)
-
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        // This is a small, bounded window. A regular VStack gives
-                        // UIKit the complete content height immediately; LazyVStack
-                        // can report only visible rows and incorrectly disable scroll
-                        // for a few long progress entries.
-                        VStack(alignment: .leading, spacing: 7) {
-                            if feed.progressItems.isEmpty {
-                                Text("等待任务进展")
-                                    .foregroundStyle(.tertiary)
-                            } else {
-                                ForEach(feed.progressItems) { item in
-                                    InlineMarkdownText(
-                                        cleanActivityText(item.text),
-                                        size: 11.5,
-                                        lineSpacing: 2
-                                    )
-                                        .foregroundStyle(.secondary)
-                                        .id(item.id)
-                                }
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id("mobile-progress-bottom")
-                                .background {
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(
-                                            key: ActivityWindowBottomPreferenceKey.self,
-                                            value: geometry.frame(in: .named(coordinateSpace)).maxY
-                                        )
-                                    }
-                                }
-                        }
-                        .font(.system(size: 11.5))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: ActivityWindowContentHeightPreferenceKey.self,
-                                    value: geometry.size.height
-                                )
-                            }
-                        }
-                    }
-                    .coordinateSpace(name: coordinateSpace)
-                    .background {
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: ActivityWindowViewportHeightPreferenceKey.self,
-                                value: geometry.size.height
-                            )
-                        }
-                    }
-                    .scrollDisabled(!canScroll)
-                    .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
-                        if abs(contentHeight - height) > 0.5 { contentHeight = height }
-                    }
-                    .onPreferenceChange(ActivityWindowViewportHeightPreferenceKey.self) { height in
-                        if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
-                    }
-                    .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
-                        let tolerance: CGFloat = followsLatest ? 24 : 10
-                        guard let atBottom = ActivityWindowScrollMetrics.isAtBottom(
-                            bottomY: bottomY,
-                            viewportHeight: viewportHeight,
-                            tolerance: tolerance
-                        ) else { return }
-                        followsLatest = atBottom
-                    }
-                    .onAppear { scrollToLatest(proxy, animated: false) }
-                    .onChange(of: feed.progressRevision) { _ in
-                        guard followsLatest else { return }
-                        scrollToLatest(proxy, animated: false)
-                    }
-
-                    if canScroll, !followsLatest, !feed.progressItems.isEmpty {
-                        latestButton {
-                            followsLatest = true
-                            scrollToLatest(proxy, animated: true)
-                        }
-                    }
-                }
-            }
-            .frame(height: compact ? 72 : 104)
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(elapsedText(at: context.date))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .background(RelayTheme.softFill)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .accessibilityLabel("处理时间")
     }
 
-    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
-                }
-            } else {
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
-                }
-            }
-        }
+    private func elapsedText(at date: Date) -> String {
+        guard let startedAt else { return "--:--" }
+        let totalSeconds = max(0, Int(date.timeIntervalSince(startedAt)))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return minutes > 0 ? String(format: "%d分 %02d秒", minutes, seconds) : String(format: "%02d秒", seconds)
     }
-}
-
-private struct MobileToolWindow: View {
-    let feed: MobileActivityFeed
-    let compact: Bool
-    let showTimeline: () -> Void
-    @State private var followsLatest = true
-    @State private var contentHeight: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
-
-    private let coordinateSpace = "relay-mobile-tool-window"
-
-    private var canScroll: Bool {
-        ActivityWindowScrollMetrics.isScrollable(
-            contentHeight: contentHeight,
-            viewportHeight: viewportHeight
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            windowHeader(title: "操作", count: feed.toolItems.count)
-
-            ScrollViewReader { proxy in
-                ZStack(alignment: .bottomTrailing) {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            if feed.toolItems.isEmpty {
-                                Text("尚未执行工具或文件操作")
-                                    .font(.system(size: 11.5))
-                                    .foregroundStyle(.tertiary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            } else {
-                                ForEach(feed.toolItems) { item in
-                                    Button(action: showTimeline) {
-                                        HStack(spacing: 7) {
-                                            toolStatus(item)
-                                            Image(systemName: toolIcon(item))
-                                                .font(.system(size: 9.5, weight: .medium))
-                                                .foregroundStyle(.secondary)
-                                                .frame(width: 13)
-                                            Text(toolTitle(item))
-                                                .font(.system(size: 11.5, weight: .medium))
-                                                .foregroundStyle(item.isFailedStatus ? Color.red : Color.primary)
-                                                .lineLimit(1)
-                                            Spacer(minLength: 4)
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .id(item.id)
-                                }
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .id("mobile-tools-bottom")
-                                .background {
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(
-                                            key: ActivityWindowBottomPreferenceKey.self,
-                                            value: geometry.frame(in: .named(coordinateSpace)).maxY
-                                        )
-                                    }
-                                }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: ActivityWindowContentHeightPreferenceKey.self,
-                                    value: geometry.size.height
-                                )
-                            }
-                        }
-                    }
-                    .coordinateSpace(name: coordinateSpace)
-                    .background {
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: ActivityWindowViewportHeightPreferenceKey.self,
-                                value: geometry.size.height
-                            )
-                        }
-                    }
-                    .scrollDisabled(!canScroll)
-                    .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
-                        if abs(contentHeight - height) > 0.5 { contentHeight = height }
-                    }
-                    .onPreferenceChange(ActivityWindowViewportHeightPreferenceKey.self) { height in
-                        if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
-                    }
-                    .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
-                        let tolerance: CGFloat = followsLatest ? 24 : 10
-                        guard let atBottom = ActivityWindowScrollMetrics.isAtBottom(
-                            bottomY: bottomY,
-                            viewportHeight: viewportHeight,
-                            tolerance: tolerance
-                        ) else { return }
-                        followsLatest = atBottom
-                    }
-                    .onAppear { scrollToLatest(proxy, animated: false) }
-                    .onChange(of: feed.toolRevision) { _ in
-                        guard followsLatest else { return }
-                        scrollToLatest(proxy, animated: false)
-                    }
-
-                    if canScroll, !followsLatest, !feed.toolItems.isEmpty {
-                        latestButton {
-                            followsLatest = true
-                            scrollToLatest(proxy, animated: true)
-                        }
-                    }
-                }
-            }
-            .frame(height: compact ? 58 : 86)
-        }
-        .background(RelayTheme.codeFill)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func toolStatus(_ item: TranscriptItem) -> some View {
-        if item.isRunningStatus {
-            ProgressView().controlSize(.mini).frame(width: 12, height: 12)
-        } else {
-            Image(systemName: item.isFailedStatus ? "xmark.circle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(item.isFailedStatus ? Color.red : RelayTheme.accent)
-                .frame(width: 12, height: 12)
-        }
-    }
-
-    private func toolIcon(_ item: TranscriptItem) -> String {
-        switch item.kind {
-        case .command: return "terminal"
-        case .fileChange: return "doc.badge.plus"
-        case .webSearch: return "globe"
-        default: return "wrench.and.screwdriver"
-        }
-    }
-
-    private func toolTitle(_ item: TranscriptItem) -> String {
-        if item.kind == .command, let command = item.text.nonEmpty { return command }
-        return item.title?.nonEmpty ?? item.text.nonEmpty ?? "工具操作"
-    }
-
-    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("mobile-tools-bottom", anchor: .bottom)
-                }
-            } else {
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo("mobile-tools-bottom", anchor: .bottom)
-                }
-            }
-        }
-    }
-}
-
-private struct ActivityWindowContentHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-private struct ActivityWindowViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-private struct ActivityWindowBottomPreferenceKey: PreferenceKey {
-    static var defaultValue = CGFloat.greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
-}
-
-private func windowHeader(title: String, count: Int) -> some View {
-    HStack(spacing: 5) {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-        if count > 0 {
-            Text("\(count)")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.tertiary)
-        }
-        Spacer()
-    }
-    .padding(.horizontal, 10)
-    .frame(height: 22)
-}
-
-private func latestButton(action: @escaping () -> Void) -> some View {
-    Button(action: action) {
-        Image(systemName: "arrow.down")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: 25, height: 25)
-            .background(.ultraThinMaterial)
-            .clipShape(Circle())
-    }
-    .buttonStyle(.plain)
-    .padding(5)
 }
 
 private func cleanActivityText(_ source: String) -> String {

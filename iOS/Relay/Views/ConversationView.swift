@@ -25,8 +25,7 @@ struct ConversationView: View {
             VStack(spacing: 8) {
                 if let presentation = liveActivityPresentation {
                     MobileLiveActivityConsole(
-                        presentation: presentation,
-                        compact: store.composerIsFocused || !isAtBottom
+                        presentation: presentation
                     ) {
                         activityPresentation = presentation
                     }
