@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import PhotosUI
 import CoreTransferable
@@ -223,17 +224,14 @@ struct ComposerView: View {
             matching: .any(of: [.images, .videos]),
             photoLibrary: .shared()
         )
-        .fileImporter(
-            isPresented: $showingFileImporter,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
+        .sheet(isPresented: $showingFileImporter) {
+            RelayDocumentPicker { urls in
+                showingFileImporter = false
                 guard !urls.isEmpty else { return }
                 isImportingAttachments = true
                 Task { await importSelectedFiles(urls) }
-            case .failure(let error): store.errorMessage = error.localizedDescription
+            } onCancel: {
+                showingFileImporter = false
             }
         }
         .onChange(of: selectedPhotos) { photos in
@@ -820,6 +818,43 @@ private struct PickedVideo: Transferable {
             let destination = directory.appendingPathComponent(name)
             try FileManager.default.copyItem(at: received.file, to: destination)
             return PickedVideo(localURL: destination)
+        }
+    }
+}
+
+struct RelayDocumentPicker: UIViewControllerRepresentable {
+    let onPick: ([URL]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = true
+        picker.shouldShowFileExtensions = true
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: ([URL]) -> Void
+        private let onCancel: () -> Void
+
+        init(onPick: @escaping ([URL]) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
         }
     }
 }
