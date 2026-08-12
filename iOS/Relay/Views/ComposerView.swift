@@ -44,49 +44,6 @@ struct ComposerView: View {
                 }
             }
 
-            if store.isSelectedThreadExternallyOwned {
-                HStack(spacing: 9) {
-                    Image(systemName: "lock.laptopcomputer")
-                        .font(.system(size: 13, weight: .semibold))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("正在同步 Codex 中的任务")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("Codex 持有写入控制，Relay 暂时只读")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 4)
-                    if let threadId = store.selectedThreadId {
-                        Button("再次尝试") {
-                            Task { await store.acquireThreadControl(threadId) }
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                    }
-                }
-                .foregroundStyle(Color.orange)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.09))
-                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            }
-
-            if store.isSelectedThreadRelayOwned, !store.isRunning, let threadId = store.selectedThreadId {
-                HStack(spacing: 7) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Relay 已取得此任务的控制权")
-                        .font(.system(size: 10, weight: .medium))
-                    Spacer(minLength: 4)
-                    Button("释放给 Codex") {
-                        Task { await store.releaseThreadControl(threadId) }
-                    }
-                    .font(.system(size: 10, weight: .semibold))
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 11)
-                .frame(height: 24)
-            }
-
             if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {
                 TaskContextPanel(
                     steps: store.activePlan,
