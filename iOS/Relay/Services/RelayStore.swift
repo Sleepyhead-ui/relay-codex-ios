@@ -207,7 +207,7 @@ final class RelayStore: ObservableObject {
         // streaming. Keeping the full transcript for the activity sheet avoids
         // making every token update reprocess a huge rollout.
         let liveItems = activityItems.count > 160 ? Array(activityItems.suffix(160)) : activityItems
-        mobileActivityFeedCache.feed(
+        return mobileActivityFeedCache.feed(
             threadId: threadId,
             turnId: turnId,
             transcriptRevision: transcriptRevision,
