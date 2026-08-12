@@ -230,9 +230,6 @@ struct ConversationView: View {
                         }
                     }
                     .scrollDismissesKeyboard(.interactively)
-                    .onPreferenceChange(ConversationBottomMarkerPreferenceKey.self) { value in
-                        refreshBottomVisibility(bottomMarkerY: value)
-                    }
                     .onPreferenceChange(ConversationViewportHeightPreferenceKey.self) { value in
                         guard abs(scrollViewportHeight - value) > 0.5 else { return }
                         scrollViewportHeight = value
@@ -259,6 +256,11 @@ struct ConversationView: View {
                                 historyRestoreOffsetY = baselineOffset + contentHeight - baselineHeight
                                 historyContentOffsetYBefore = nil
                                 historyContentHeightBefore = nil
+                            },
+                            onBottomChanged: { atBottom in
+                                guard !preservingHistoryScroll,
+                                      keyboardTransitionID == nil else { return }
+                                if isAtBottom != atBottom { isAtBottom = atBottom }
                             }
                         )
                         .frame(width: 1, height: 1)
@@ -344,24 +346,6 @@ struct ConversationView: View {
 
     private func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-    }
-
-    private func refreshBottomVisibility(bottomMarkerY: CGFloat) {
-        // Prepending history temporarily changes the marker frame several times
-        // while SwiftUI lays out the new rows. Those intermediate values must not
-        // turn on auto-follow or hide the latest-message button.
-        guard !preservingHistoryScroll,
-              scrollViewportHeight > 0,
-              bottomMarkerY.isFinite else { return }
-        let tolerance: CGFloat = isAtBottom ? 20 : 10
-        guard let visible = ConversationBottomVisibility.isAtBottom(
-            bottomY: bottomMarkerY,
-            viewportHeight: scrollViewportHeight,
-            tolerance: tolerance
-        ) else { return }
-        guard visible != isAtBottom else { return }
-        if visible { isAtBottom = true }
-        else if keyboardTransitionID == nil { isAtBottom = false }
     }
 
     private func revealOutgoingMessage(_ proxy: ScrollViewProxy) {
@@ -495,9 +479,14 @@ private struct ScrollActivityObserver: UIViewRepresentable {
     let restoreOffsetY: CGFloat?
     let onActiveChanged: (Bool) -> Void
     let onMetricsChanged: (CGFloat, CGFloat) -> Void
+    let onBottomChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onActiveChanged: onActiveChanged, onMetricsChanged: onMetricsChanged)
+        Coordinator(
+            onActiveChanged: onActiveChanged,
+            onMetricsChanged: onMetricsChanged,
+            onBottomChanged: onBottomChanged
+        )
     }
 
     func makeUIView(context: Context) -> UIView {
@@ -512,6 +501,7 @@ private struct ScrollActivityObserver: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.onActiveChanged = onActiveChanged
         context.coordinator.onMetricsChanged = onMetricsChanged
+        context.coordinator.onBottomChanged = onBottomChanged
         DispatchQueue.main.async {
             context.coordinator.attach(to: view)
             if let restoreOffsetY,
@@ -525,13 +515,19 @@ private struct ScrollActivityObserver: UIViewRepresentable {
     final class Coordinator: NSObject {
         var onActiveChanged: (Bool) -> Void
         var onMetricsChanged: (CGFloat, CGFloat) -> Void
+        var onBottomChanged: (Bool) -> Void
         private(set) weak var scrollView: UIScrollView?
         private var isActive = false
         private var resetWorkItem: DispatchWorkItem?
 
-        init(onActiveChanged: @escaping (Bool) -> Void, onMetricsChanged: @escaping (CGFloat, CGFloat) -> Void) {
+        init(
+            onActiveChanged: @escaping (Bool) -> Void,
+            onMetricsChanged: @escaping (CGFloat, CGFloat) -> Void,
+            onBottomChanged: @escaping (Bool) -> Void
+        ) {
             self.onActiveChanged = onActiveChanged
             self.onMetricsChanged = onMetricsChanged
+            self.onBottomChanged = onBottomChanged
         }
 
         func attach(to view: UIView) {
@@ -543,7 +539,7 @@ private struct ScrollActivityObserver: UIViewRepresentable {
                     scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
                     scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentOffset), options: [.new], context: nil)
                     scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentSize), options: [.new], context: nil)
-                    onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
+                    publishMetrics(for: scrollView)
                     return
                 }
                 ancestor = candidate.superview
@@ -588,8 +584,19 @@ private struct ScrollActivityObserver: UIViewRepresentable {
         ) {
             guard let scrollView = object as? UIScrollView else { return }
             if keyPath == #keyPath(UIScrollView.contentOffset) || keyPath == #keyPath(UIScrollView.contentSize) {
-                onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
+                publishMetrics(for: scrollView)
             }
+        }
+
+        private func publishMetrics(for scrollView: UIScrollView) {
+            onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
+            let maxOffsetY = max(
+                -scrollView.adjustedContentInset.top,
+                scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
+            )
+            let distance = maxOffsetY - scrollView.contentOffset.y
+            guard distance.isFinite else { return }
+            onBottomChanged(distance <= 16)
         }
 
         deinit {
