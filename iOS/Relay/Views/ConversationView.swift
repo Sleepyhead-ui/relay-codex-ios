@@ -10,6 +10,7 @@ struct ConversationView: View {
     @State private var activityPresentation: MobileActivityPresentation?
     @State private var keyboardTransitionID: UUID?
     @State private var scrollViewportHeight: CGFloat = 0
+    @State private var preservingHistoryScroll = false
 
     private let bottomAnchor = "relay-conversation-bottom"
     private let scrollCoordinateSpace = "relay-conversation-scroll"
@@ -322,9 +323,17 @@ struct ConversationView: View {
     }
 
     private func refreshBottomVisibility(bottomMarkerY: CGFloat) {
+        // Prepending history temporarily changes the marker frame several times
+        // while SwiftUI lays out the new rows. Those intermediate values must not
+        // turn on auto-follow or hide the latest-message button.
+        guard !preservingHistoryScroll,
+              scrollViewportHeight > 0,
+              bottomMarkerY.isFinite else { return }
+        let tolerance: CGFloat = isAtBottom ? 20 : 10
         let visible = ConversationBottomVisibility.isAtBottom(
             bottomY: bottomMarkerY,
-            viewportHeight: scrollViewportHeight
+            viewportHeight: scrollViewportHeight,
+            tolerance: tolerance
         )
         guard visible != isAtBottom else { return }
         if visible { isAtBottom = true }
@@ -353,15 +362,28 @@ struct ConversationView: View {
 
     private func revealEarlier(window: TranscriptWindow, proxy: ScrollViewProxy) {
         let anchor = window.groups.first?.id
+        let wasAtBottom = isAtBottom
+        preservingHistoryScroll = true
         if window.hasEarlierGroups {
             visibleGroupLimit += 24
             restore(anchor: anchor, proxy: proxy)
+            finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
             return
         }
         Task { @MainActor in
             await store.loadOlderTurns()
             visibleGroupLimit += 12
             restore(anchor: anchor, proxy: proxy)
+            finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
+        }
+    }
+
+    private func finishHistoryScrollPreservation(wasAtBottom: Bool) {
+        // Wait for the prepended rows and their markdown layout to settle before
+        // allowing geometry updates to drive the bottom-button state again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            preservingHistoryScroll = false
+            isAtBottom = wasAtBottom
         }
     }
 

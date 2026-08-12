@@ -154,7 +154,11 @@ private struct MobileProgressWindow: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 7) {
+                        // This is a small, bounded window. A regular VStack gives
+                        // UIKit the complete content height immediately; LazyVStack
+                        // can report only visible rows and incorrectly disable scroll
+                        // for a few long progress entries.
+                        VStack(alignment: .leading, spacing: 7) {
                             if feed.progressItems.isEmpty {
                                 Text("等待任务进展")
                                     .foregroundStyle(.tertiary)
@@ -211,9 +215,11 @@ private struct MobileProgressWindow: View {
                         if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
                     }
                     .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
+                        let tolerance: CGFloat = followsLatest ? 24 : 10
                         followsLatest = ActivityWindowScrollMetrics.isAtBottom(
                             bottomY: bottomY,
-                            viewportHeight: viewportHeight
+                            viewportHeight: viewportHeight,
+                            tolerance: tolerance
                         )
                     }
                     .onAppear { scrollToLatest(proxy, animated: false) }
@@ -277,7 +283,7 @@ private struct MobileToolWindow: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 6) {
                             if feed.toolItems.isEmpty {
                                 Text("尚未执行工具或文件操作")
                                     .font(.system(size: 11.5))
@@ -345,9 +351,11 @@ private struct MobileToolWindow: View {
                         if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
                     }
                     .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
+                        let tolerance: CGFloat = followsLatest ? 24 : 10
                         followsLatest = ActivityWindowScrollMetrics.isAtBottom(
                             bottomY: bottomY,
-                            viewportHeight: viewportHeight
+                            viewportHeight: viewportHeight,
+                            tolerance: tolerance
                         )
                     }
                     .onAppear { scrollToLatest(proxy, animated: false) }

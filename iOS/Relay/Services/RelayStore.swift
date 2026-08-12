@@ -202,11 +202,16 @@ final class RelayStore: ObservableObject {
     }
 
     func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
+        let activityItems = turnId.map { transcriptItems(turnId: $0).filter(\.isActivity) } ?? []
+        // The live card only needs enough recent entries to remain useful while
+        // streaming. Keeping the full transcript for the activity sheet avoids
+        // making every token update reprocess a huge rollout.
+        let liveItems = activityItems.count > 160 ? Array(activityItems.suffix(160)) : activityItems
         mobileActivityFeedCache.feed(
             threadId: threadId,
             turnId: turnId,
             transcriptRevision: transcriptRevision,
-            items: turnId.map { transcriptItems(turnId: $0).filter(\.isActivity) } ?? []
+            items: liveItems
         )
     }
     var planModeAvailable: Bool {

@@ -13,4 +13,11 @@ final class ConversationBottomVisibilityTests: XCTestCase {
     func testMarkerBelowViewportShowsJumpControl() {
         XCTAssertFalse(ConversationBottomVisibility.isAtBottom(bottomY: 840, viewportHeight: 800))
     }
+
+    func testUnmeasuredPreferenceDoesNotHideJumpControl() {
+        XCTAssertTrue(ConversationBottomVisibility.isAtBottom(
+            bottomY: .greatestFiniteMagnitude,
+            viewportHeight: 800
+        ))
+    }
 }

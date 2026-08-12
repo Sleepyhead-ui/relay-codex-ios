@@ -141,7 +141,12 @@ struct DiagnosticsView: View {
             guard let file else { return }
             removeExportedFile()
             exportURLToRemove = file.url
-            diagnosticsExport = file
+            // Present the activity controller on the next run-loop turn. The
+            // export completion can arrive while List is still relaying out,
+            // which makes the share sheet stutter or briefly dismiss itself.
+            DispatchQueue.main.async {
+                diagnosticsExport = file
+            }
         }
     }
 

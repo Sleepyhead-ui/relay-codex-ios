@@ -38,7 +38,11 @@ struct ImagePreviewView: View {
 
                 Spacer()
 
-                Button { showingShare = true } label: {
+                Button {
+                    // Avoid presenting UIActivityViewController during an image
+                    // preview layout pass, especially after a large image decode.
+                    DispatchQueue.main.async { showingShare = true }
+                } label: {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 44, height: 44)

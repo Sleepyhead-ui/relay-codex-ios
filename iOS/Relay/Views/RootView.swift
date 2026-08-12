@@ -92,7 +92,11 @@ struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        // Keep presentation lightweight on iOS 16: the share controller should
+        // not force the source view to recompute its entire transcript.
+        controller.modalPresentationStyle = .pageSheet
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

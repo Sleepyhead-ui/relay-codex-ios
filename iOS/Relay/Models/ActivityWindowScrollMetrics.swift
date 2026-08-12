@@ -7,7 +7,7 @@ enum ActivityWindowScrollMetrics {
     }
 
     static func isAtBottom(bottomY: CGFloat, viewportHeight: CGFloat, tolerance: CGFloat = 16) -> Bool {
-        guard bottomY.isFinite, viewportHeight > 0 else { return true }
+        guard bottomY.isFinite, abs(bottomY) < 1_000_000, viewportHeight > 0 else { return true }
         return bottomY <= viewportHeight + tolerance
     }
 }

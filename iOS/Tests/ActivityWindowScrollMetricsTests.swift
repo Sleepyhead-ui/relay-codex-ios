@@ -17,4 +17,11 @@ final class ActivityWindowScrollMetricsTests: XCTestCase {
     func testLeavingBottomShowsLatestButton() {
         XCTAssertFalse(ActivityWindowScrollMetrics.isAtBottom(bottomY: 140, viewportHeight: 104))
     }
+
+    func testUnmeasuredPreferenceIsIgnoredAsAtBottom() {
+        XCTAssertTrue(ActivityWindowScrollMetrics.isAtBottom(
+            bottomY: .greatestFiniteMagnitude,
+            viewportHeight: 104
+        ))
+    }
 }
