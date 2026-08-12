@@ -1,6 +1,7 @@
 import XCTest
 @testable import Relay
 
+@MainActor
 final class TranscriptReconcilerTests: XCTestCase {
     func testUnknownAssistantDeltaDoesNotBecomeCommentary() throws {
         let update = TranscriptDeltaUpdate(
@@ -496,6 +497,105 @@ final class TranscriptReconcilerTests: XCTestCase {
         )
 
         XCTAssertEqual(result.map(\.id), ["prompt.1", "progress.replaced", "prompt.2", "prompt.3", "answer.1"])
+    }
+
+    func testLiveSteerStaysBeforeAnEmptyAssistantPlaceholderThatLaterStreamsOutput() {
+        let initial = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "start")
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "working", phase: "commentary")
+        let placeholder = item(id: "answer.1", turnId: "turn.1", role: .assistant, text: "")
+        let steer = item(id: "prompt.2", turnId: "turn.1", role: .user, text: "follow this guidance")
+        let placements = [
+            "prompt.2": UserMessagePlacement(
+                threadId: "thread.1",
+                turnId: "turn.1",
+                afterItemId: TranscriptReconciler.userMessagePlacementAnchor(
+                    turnId: "turn.1",
+                    in: [initial, progress, placeholder]
+                ),
+                sequence: 2
+            )
+        ]
+
+        var live = TranscriptReconciler.applyUserMessagePlacements(
+            placements,
+            turnId: "turn.1",
+            threadId: "thread.1",
+            to: [initial, progress, placeholder, steer]
+        )
+        live = TranscriptReconciler.applyDeltaBatch([
+            TranscriptDeltaUpdate(
+                id: "answer.1",
+                turnId: "turn.1",
+                role: .assistant,
+                kind: .message,
+                title: nil,
+                text: "final output",
+                detail: "",
+                phase: "final_answer"
+            )
+        ], to: live)
+
+        XCTAssertEqual(placements["prompt.2"]?.afterItemId, "progress.1")
+        XCTAssertEqual(live.map(\.id), ["prompt.1", "progress.1", "prompt.2", "answer.1"])
+    }
+
+    func testStructuralLiveInsertionsRemainAfterAnAlreadyPlacedSteer() {
+        let initial = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "start")
+        let progress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "working", phase: "commentary")
+        let steer = item(id: "prompt.2", turnId: "turn.1", role: .user, text: "follow this guidance")
+        let command = TranscriptItem(
+            id: "command.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "xcodebuild test"
+        )
+        let placements = [
+            "prompt.2": UserMessagePlacement(
+                threadId: "thread.1",
+                turnId: "turn.1",
+                afterItemId: "progress.1",
+                sequence: 2
+            )
+        ]
+        var live = [initial, progress, steer]
+
+        TranscriptReconciler.upsert(command, into: &live)
+        live = TranscriptReconciler.applyUserMessagePlacements(
+            placements,
+            turnId: "turn.1",
+            threadId: "thread.1",
+            to: live
+        )
+
+        XCTAssertEqual(live.map(\.id), ["prompt.1", "progress.1", "prompt.2", "command.1"])
+    }
+
+    func testStoreReappliesPlacementsAfterStructuralLiveUpsert() {
+        let store = RelayStore()
+        store.selectedThreadId = "thread.1"
+        store.messages = [
+            item(id: "prompt.1", turnId: "turn.1", role: .user, text: "start"),
+            item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "working", phase: "commentary"),
+            item(id: "prompt.2", turnId: "turn.1", role: .user, text: "follow this guidance")
+        ]
+        store.userMessagePlacements["prompt.2"] = UserMessagePlacement(
+            threadId: "thread.1",
+            turnId: "turn.1",
+            afterItemId: "progress.1",
+            sequence: 2
+        )
+
+        store.upsert(TranscriptItem(
+            id: "answer.1",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            text: "final output",
+            phase: "final_answer"
+        ))
+
+        XCTAssertEqual(store.messages.map(\.id), ["prompt.1", "progress.1", "prompt.2", "answer.1"])
     }
 
     func testUpsertDoesNotDuplicateUserMessageFromHistory() {

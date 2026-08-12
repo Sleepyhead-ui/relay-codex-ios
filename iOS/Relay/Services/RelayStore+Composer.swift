@@ -790,7 +790,10 @@ extension RelayStore {
         let placement = UserMessagePlacement(
             threadId: threadId,
             turnId: expectedTurnId,
-            afterItemId: messages.last(where: { $0.turnId == expectedTurnId })?.id,
+            afterItemId: TranscriptReconciler.userMessagePlacementAnchor(
+                turnId: expectedTurnId,
+                in: messages
+            ),
             sequence: nextUserMessageSequence
         )
         let draft = OutboundDraft(
@@ -815,6 +818,7 @@ extension RelayStore {
             imagePaths: readyAttachments.filter(\.isImage).compactMap(\.remotePath),
             createdAt: Date()
         ))
+        applyUserMessagePlacements(turnId: expectedTurnId, threadId: threadId)
         revealOutgoingMessage(clientMessageId)
         defer { sendingThreadIds.remove(threadId) }
         do {

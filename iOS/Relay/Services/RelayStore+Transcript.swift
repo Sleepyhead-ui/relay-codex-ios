@@ -3,7 +3,13 @@ import Foundation
 @MainActor
 extension RelayStore {
     func upsert(_ item: TranscriptItem) {
+        let previousMessageCount = messages.count
         TranscriptReconciler.upsert(item, into: &messages)
+        if messages.count != previousMessageCount,
+           let turnId = item.turnId,
+           let threadId = selectedThreadId {
+            applyUserMessagePlacements(turnId: turnId, threadId: threadId)
+        }
     }
 
     func appendDelta(

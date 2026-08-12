@@ -39,6 +39,17 @@ struct TranscriptDeltaUpdate {
 }
 
 enum TranscriptReconciler {
+    static func userMessagePlacementAnchor(turnId: String, in messages: [TranscriptItem]) -> String? {
+        messages.last(where: { item in
+            guard item.turnId == turnId else { return false }
+            if item.role == .assistant, item.kind == .message {
+                // item/started may create an invisible answer shell whose text arrives after the steer.
+                return !item.text.isEmpty || item.detail?.isEmpty == false
+            }
+            return true
+        })?.id
+    }
+
     static func upsert(_ item: TranscriptItem, into messages: inout [TranscriptItem]) {
         if let index = messages.firstIndex(where: { $0.id == item.id }) {
             messages[index] = merge(existing: messages[index], incoming: item)
