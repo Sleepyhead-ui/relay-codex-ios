@@ -2,6 +2,14 @@ import XCTest
 @testable import Relay
 
 final class MobileActivityFeedTests: XCTestCase {
+    func testElapsedTimeUsesANaturalStartupLabel() {
+        XCTAssertEqual(MobileActivityElapsedFormatter.text(seconds: nil), "--:--")
+        XCTAssertEqual(MobileActivityElapsedFormatter.text(seconds: 0), "刚刚")
+        XCTAssertEqual(MobileActivityElapsedFormatter.text(seconds: 1), "刚刚")
+        XCTAssertEqual(MobileActivityElapsedFormatter.text(seconds: 2), "2秒")
+        XCTAssertEqual(MobileActivityElapsedFormatter.text(seconds: 69), "1分 09秒")
+    }
+
     func testFiltersPassiveWaitTools() {
         let wait = TranscriptItem(
             id: "wait.1",

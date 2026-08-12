@@ -20,6 +20,15 @@ final class TranscriptScrollDiagnosticsTests: XCTestCase {
         XCTAssertFalse(state.consume(threadId: nil))
     }
 
+    func testInitialScrollStateKeepsThreadIdentityStableDuringLayoutRetries() {
+        var state = TranscriptInitialScrollState()
+
+        XCTAssertTrue(state.consume(threadId: "thread.1"))
+        XCTAssertFalse(state.consume(threadId: "thread.1"))
+        XCTAssertTrue(state.consume(threadId: "thread.2"))
+        XCTAssertEqual(state.initializedThreadId, "thread.2")
+    }
+
     func testNativeMetricsUseContentSizeViewportAndInsets() {
         let scrollView = UIScrollView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
         scrollView.contentSize = CGSize(width: 320, height: 2_000)

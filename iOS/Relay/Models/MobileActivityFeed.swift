@@ -358,6 +358,19 @@ struct MobileProgressItem: Identifiable, Equatable {
     let text: String
 }
 
+enum MobileActivityElapsedFormatter {
+    static func text(seconds: Int?) -> String {
+        guard let seconds else { return "--:--" }
+        let totalSeconds = max(0, seconds)
+        if totalSeconds < 2 { return "刚刚" }
+        let minutes = totalSeconds / 60
+        let remainder = totalSeconds % 60
+        return minutes > 0
+            ? String(format: "%d分 %02d秒", minutes, remainder)
+            : "\(remainder)秒"
+    }
+}
+
 enum MobileActivityEntry: Identifiable, Equatable {
     case progress(id: String, text: String)
     case reasoning(id: String, text: String)

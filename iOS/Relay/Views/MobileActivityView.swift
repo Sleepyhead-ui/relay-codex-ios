@@ -10,6 +10,7 @@ struct MobileActivityPresentation: Identifiable {
 
 struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
+    let compact: Bool
     let showTimeline: () -> Void
     @State private var manuallyCollapsed = false
 
@@ -36,14 +37,15 @@ struct MobileLiveActivityConsole: View {
                 Button {
                     manuallyCollapsed.toggle()
                 } label: {
-                    Image(systemName: manuallyCollapsed ? "chevron.down" : "chevron.up")
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(manuallyCollapsed ? "展开当前任务" : "折叠当前任务")
+                .disabled(compact)
+                .accessibilityLabel(isCollapsed ? "展开当前任务" : "折叠当前任务")
 
                 Button(action: showTimeline) {
                     Image(systemName: "list.bullet")
@@ -58,11 +60,11 @@ struct MobileLiveActivityConsole: View {
             .padding(.horizontal, 13)
             .frame(height: 38)
 
-            if !manuallyCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+            if !isCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
                 Divider().opacity(0.45)
             }
 
-            if !manuallyCollapsed, let reasoning = feed.latestReasoningText?.nonEmpty {
+            if !isCollapsed, let reasoning = feed.latestReasoningText?.nonEmpty {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 10, weight: .semibold))
@@ -78,25 +80,25 @@ struct MobileLiveActivityConsole: View {
                 .padding(.vertical, 8)
             }
 
-            if !manuallyCollapsed && hasProgress {
+            if !isCollapsed && hasProgress {
                 MobileProgressWindow(feed: feed)
                     .padding(.horizontal, 7)
                     .padding(.top, hasReasoning ? 0 : 8)
             }
 
-            if !manuallyCollapsed && hasCommands {
+            if !isCollapsed && hasCommands {
                 MobileCommandWindow(feed: feed)
                     .padding(.horizontal, 7)
                     .padding(.top, 7)
             }
 
-            if !manuallyCollapsed && hasFileChanges {
+            if !isCollapsed && hasFileChanges {
                 MobileFileChangeWindow(summary: feed.fileChangeSummary)
                     .padding(.horizontal, 7)
                     .padding(.top, 7)
             }
 
-            if !manuallyCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+            if !isCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
                 Color.clear.frame(height: 8)
             }
         }
@@ -106,7 +108,10 @@ struct MobileLiveActivityConsole: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(RelayTheme.hairline, lineWidth: 1)
         }
+        .transaction { $0.animation = nil }
     }
+
+    private var isCollapsed: Bool { manuallyCollapsed || compact }
 
 }
 
@@ -235,7 +240,7 @@ private struct MobileCommandWindow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
+            Button { toggleExpandedWithoutAnimation() } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "terminal")
                         .font(.system(size: 10, weight: .semibold))
@@ -255,9 +260,15 @@ private struct MobileCommandWindow: View {
                     } else {
                         Spacer(minLength: 4)
                     }
-                    Text("成功 \(feed.successfulCommandCount) · 失败 \(feed.failedCommandCount)")
+                    HStack(spacing: 4) {
+                        Text("成功 \(feed.successfulCommandCount)")
+                            .foregroundStyle(Color.green)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text("失败 \(feed.failedCommandCount)")
+                            .foregroundStyle(feed.failedCommandCount > 0 ? Color.red : Color.secondary.opacity(0.72))
+                    }
                         .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(feed.failedCommandCount > 0 ? Color.red : Color.secondary.opacity(0.72))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
@@ -294,6 +305,7 @@ private struct MobileCommandWindow: View {
         }
         .background(RelayTheme.codeFill)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .transaction { $0.animation = nil }
     }
 
     @ViewBuilder
@@ -307,6 +319,12 @@ private struct MobileCommandWindow: View {
                 .frame(width: 12, height: 12)
         }
     }
+
+    private func toggleExpandedWithoutAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { expanded.toggle() }
+    }
 }
 
 private struct MobileFileChangeWindow: View {
@@ -315,7 +333,7 @@ private struct MobileFileChangeWindow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
+            Button { toggleExpandedWithoutAnimation() } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "doc.badge.plus")
                         .font(.system(size: 10, weight: .semibold))
@@ -370,6 +388,7 @@ private struct MobileFileChangeWindow: View {
         }
         .background(RelayTheme.softFill)
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .transaction { $0.animation = nil }
     }
 
     private func diffCounts(added: Int, removed: Int) -> some View {
@@ -379,6 +398,12 @@ private struct MobileFileChangeWindow: View {
         }
         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func toggleExpandedWithoutAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { expanded.toggle() }
     }
 }
 
@@ -439,22 +464,18 @@ private struct LiveElapsedText: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text(elapsedText(at: context.date))
+            Text(MobileActivityElapsedFormatter.text(
+                seconds: startedAt.map { max(0, Int(context.date.timeIntervalSince($0))) }
+            ))
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
                 .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 44, alignment: .trailing)
         }
         .accessibilityLabel("处理时间")
     }
 
-    private func elapsedText(at date: Date) -> String {
-        guard let startedAt else { return "--:--" }
-        let totalSeconds = max(0, Int(date.timeIntervalSince(startedAt)))
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return minutes > 0 ? String(format: "%d分 %02d秒", minutes, seconds) : String(format: "%02d秒", seconds)
-    }
 }
 
 private func cleanActivityText(_ source: String) -> String {

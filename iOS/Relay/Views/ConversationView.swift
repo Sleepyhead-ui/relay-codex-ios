@@ -11,6 +11,9 @@ struct ConversationView: View {
     @State private var keyboardTransitionID: UUID?
     @State private var preservingHistoryScroll = false
     @State private var initialScrollState = TranscriptInitialScrollState()
+    @State private var initialScrollPending = false
+    @State private var initialScrollThreadId: String?
+    @State private var initialScrollScheduleID: UUID?
     @State private var scrollTracker = ConversationScrollTracker()
 
     private let bottomAnchor = "relay-conversation-bottom"
@@ -25,7 +28,8 @@ struct ConversationView: View {
             VStack(spacing: 8) {
                 if let presentation = liveActivityPresentation {
                     MobileLiveActivityConsole(
-                        presentation: presentation
+                        presentation: presentation,
+                        compact: store.composerIsFocused || keyboardTransitionID != nil
                     ) {
                         activityPresentation = presentation
                     }
@@ -202,6 +206,11 @@ struct ConversationView: View {
                                 onActiveChanged: { active in
                                     guard isUserScrolling != active else { return }
                                     isUserScrolling = active
+                                    if active, initialScrollPending {
+                                        initialScrollPending = false
+                                        initialScrollThreadId = nil
+                                        initialScrollScheduleID = nil
+                                    }
                                 },
                                 onBottomChanged: { atBottom in
                                     guard !preservingHistoryScroll,
@@ -212,6 +221,7 @@ struct ConversationView: View {
                             .frame(width: 1, height: 1)
                         }
                     }
+                    .id("transcript-scroll.\(store.selectedThreadId ?? "none")")
                     .scrollDismissesKeyboard(.interactively)
                     .onTapGesture { dismissKeyboard() }
 
@@ -240,7 +250,15 @@ struct ConversationView: View {
                 .onChange(of: store.selectedThreadId) { _ in
                     initializeTranscriptIfNeeded(proxy)
                 }
+                .onChange(of: store.isLoadingThread) { loading in
+                    guard !loading else { return }
+                    scheduleInitialTranscriptScroll(proxy)
+                }
                 .onChange(of: store.transcriptRevision) { _ in
+                    if initialScrollPending {
+                        scheduleInitialTranscriptScroll(proxy)
+                        return
+                    }
                     guard !preservingHistoryScroll,
                           isAtBottom,
                           !isUserScrolling,
@@ -313,13 +331,52 @@ struct ConversationView: View {
     }
 
     private func initializeTranscriptIfNeeded(_ proxy: ScrollViewProxy) {
-        guard let threadId = store.selectedThreadId,
-              initialScrollState.consume(threadId: threadId) else { return }
-        isAtBottom = true
-        visibleGroupLimit = 24
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            guard initialScrollState.initializedThreadId == threadId else { return }
-            scrollToBottom(proxy, animated: false, reason: .initialThread)
+        guard let threadId = store.selectedThreadId else { return }
+        if initialScrollState.consume(threadId: threadId) {
+            isAtBottom = true
+            visibleGroupLimit = 24
+            initialScrollPending = true
+            initialScrollThreadId = threadId
+        } else {
+            guard initialScrollPending, initialScrollThreadId == threadId else { return }
+        }
+        // A loading placeholder can replace the original reader. Invalidate its
+        // delayed work and let the reader that is currently on screen take over.
+        initialScrollScheduleID = nil
+        scheduleInitialTranscriptScroll(proxy)
+    }
+
+    private func scheduleInitialTranscriptScroll(_ proxy: ScrollViewProxy) {
+        guard initialScrollPending,
+              let threadId = initialScrollThreadId,
+              store.selectedThreadId == threadId,
+              initialScrollScheduleID == nil else { return }
+        let scheduleID = UUID()
+        initialScrollScheduleID = scheduleID
+
+        // A cached thread can render before its final transcript arrives. Retry
+        // after the first two layout passes so the bottom anchor is valid without
+        // affecting a user who starts dragging during the handoff.
+        for delay in [0.0, 0.08, 0.22, 0.45] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard initialScrollPending,
+                      initialScrollThreadId == threadId,
+                      initialScrollScheduleID == scheduleID,
+                      store.selectedThreadId == threadId,
+                      !isUserScrolling else { return }
+                guard !store.messages.isEmpty || !store.currentQueuedFollowUps.isEmpty else {
+                    if delay >= 0.45 {
+                        initialScrollScheduleID = nil
+                    }
+                    return
+                }
+                scrollToBottom(proxy, animated: false, reason: .initialThread)
+                if delay >= 0.45 {
+                    initialScrollPending = false
+                    initialScrollThreadId = nil
+                    initialScrollScheduleID = nil
+                }
+            }
         }
     }
 
