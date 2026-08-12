@@ -293,10 +293,14 @@ extension RelayStore {
 
     private func applySessionStatus(_ result: JSONValue, threadId: String, turnId: String) {
         let snapshotIsStale = result["stale"]?.boolValue == true
-        if result["isRunning"]?.boolValue == true, !snapshotIsStale { bindPendingUserPrompt(to: turnId, threadId: threadId) }
+        let sessionIsRunning = SelectedSessionSyncPolicy.sessionIsRunning(
+            reportedRunning: result["isRunning"]?.boolValue == true,
+            isStale: snapshotIsStale
+        )
+        if sessionIsRunning { bindPendingUserPrompt(to: turnId, threadId: threadId) }
         var metadata = turnMetadata[turnId] ?? TurnMetadata()
         if let startedAt = result["startedAt"]?.doubleValue { metadata.startedAt = Date(timeIntervalSince1970: startedAt) }
-        if result["isRunning"]?.boolValue == true {
+        if sessionIsRunning {
             metadata.status = "inProgress"
             metadata.completedAt = nil
             metadata.durationMs = nil
@@ -326,7 +330,7 @@ extension RelayStore {
                 )
             }
         }
-        if result["isRunning"]?.boolValue != true { cacheCurrentThread() }
+        if !sessionIsRunning { cacheCurrentThread() }
     }
 
     func bindPendingUserPrompt(to turnId: String, threadId: String) {
@@ -354,6 +358,7 @@ extension RelayStore {
         flushPendingDetailDeltas()
         messages = TranscriptReconciler.mergeSessionItems(snapshotItems, turnId: turnId, into: messages)
         applyUserMessagePlacements(turnId: turnId, threadId: selectedThreadId ?? "")
+        normalizeTranscriptIds()
     }
 
     private func adoptReconciledSessionPatch(
@@ -369,6 +374,7 @@ extension RelayStore {
         isApplyingIndexedTranscriptMutation = adopted
         messages = nextMessages
         isApplyingIndexedTranscriptMutation = false
+        normalizeTranscriptIds()
     }
 
     func applyUserMessagePlacements(turnId: String, threadId: String) {
@@ -379,6 +385,11 @@ extension RelayStore {
             to: messages
         )
         if nextMessages != messages { messages = nextMessages }
+    }
+
+    func normalizeTranscriptIds() {
+        let normalized = TranscriptReconciler.coalescingDuplicateIds(messages)
+        if normalized != messages { messages = normalized }
     }
 
     func recordTranscriptTrace(source: String, turnId: String? = nil) {
@@ -409,7 +420,7 @@ extension RelayStore {
     @discardableResult
     func restoreThreadSnapshot(_ threadId: String) -> Bool {
         guard let snapshot = threadSnapshots[threadId] else { return false }
-        messages = snapshot.messages
+        messages = TranscriptReconciler.coalescingDuplicateIds(snapshot.messages)
         turnMetadata = snapshot.turnMetadata
         applyTaskRunEvent(threadId: threadId, event: .hydrate(
             running: snapshot.isRunning,

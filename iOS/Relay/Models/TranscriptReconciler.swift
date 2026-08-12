@@ -110,6 +110,7 @@ enum TranscriptReconciler {
         into messages: [TranscriptItem]
     ) -> [TranscriptItem] {
         let snapshotItems = coalescingDuplicateIds(snapshotItems)
+        let snapshotIds = Set(snapshotItems.map(\.id))
         let normalizedMessages = coalescingDuplicateIds(messages)
         let firstIndex = normalizedMessages.firstIndex(where: { $0.turnId == turnId }) ?? normalizedMessages.endIndex
         let existing = normalizedMessages.filter { $0.turnId == turnId }
@@ -125,22 +126,31 @@ enum TranscriptReconciler {
         var consumedExistingIds = Set<String>()
         var merged: [TranscriptItem] = []
         for item in snapshotItems {
-            let exactIndex = existingIndexById[item.id].flatMap {
-                consumedExistingIds.contains(existing[$0].id) ? nil : $0
+            let exactIndex = existingIndexById[item.id]
+            let reservedSemanticMatch = exactIndex == nil && existing.contains {
+                snapshotIds.contains($0.id)
+                    && (semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }
+            if reservedSemanticMatch { continue }
             let semanticIndex = exactSemanticKey(item).flatMap { key in
                 existingIndexesBySemanticKey[key]?.first(where: {
-                    !consumedExistingIds.contains(existing[$0].id) && semanticallyMatches(existing[$0], item)
+                    !consumedExistingIds.contains(existing[$0].id)
+                        && !snapshotIds.contains(existing[$0].id)
+                        && semanticallyMatches(existing[$0], item)
                 })
             }
             let streamedPrefixIndex = (item.kind == .message || item.kind == .reasoning)
                 ? streamingExistingIndexes.first(where: {
-                    !consumedExistingIds.contains(existing[$0].id) && semanticallyMatches(existing[$0], item)
+                    !consumedExistingIds.contains(existing[$0].id)
+                        && !snapshotIds.contains(existing[$0].id)
+                        && semanticallyMatches(existing[$0], item)
                 })
                 : nil
             let userIndex = item.role == .user
                 ? userExistingIndexes.first(where: {
-                    !consumedExistingIds.contains(existing[$0].id) && equivalentUserMessage(existing[$0], item)
+                    !consumedExistingIds.contains(existing[$0].id)
+                        && !snapshotIds.contains(existing[$0].id)
+                        && equivalentUserMessage(existing[$0], item)
                 })
                 : nil
             if let index = exactIndex ?? semanticIndex ?? streamedPrefixIndex ?? userIndex {
@@ -228,15 +238,20 @@ enum TranscriptReconciler {
 
     static func mergeHistoryItems(_ historyItems: [TranscriptItem], into messages: [TranscriptItem]) -> [TranscriptItem] {
         let historyItems = coalescingDuplicateIds(historyItems.filter { !isInternalEnvironmentContext($0) })
+        let historyIds = Set(historyItems.map(\.id))
         var result = coalescingDuplicateIds(messages.filter { !isInternalEnvironmentContext($0) })
         var indexById = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.id, $0.offset) })
         var consumedIds = Set<String>()
         for item in historyItems {
-            let exactIndex = indexById[item.id].flatMap {
-                consumedIds.contains(result[$0].id) ? nil : $0
+            let exactIndex = indexById[item.id]
+            let reservedSemanticMatch = exactIndex == nil && result.contains {
+                historyIds.contains($0.id)
+                    && (semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }
+            if reservedSemanticMatch { continue }
             if let index = exactIndex ?? result.firstIndex(where: {
                 !consumedIds.contains($0.id)
+                    && !historyIds.contains($0.id)
                     && (semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }) {
                 consumedIds.insert(result[index].id)
@@ -260,7 +275,7 @@ enum TranscriptReconciler {
         return moveInitialHistoryPromptsToTurnStart(ordered, historyItems: historyItems)
     }
 
-    private static func coalescingDuplicateIds(_ items: [TranscriptItem]) -> [TranscriptItem] {
+    static func coalescingDuplicateIds(_ items: [TranscriptItem]) -> [TranscriptItem] {
         guard items.count > 1 else { return items }
         var result: [TranscriptItem] = []
         result.reserveCapacity(items.count)

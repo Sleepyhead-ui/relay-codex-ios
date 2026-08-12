@@ -62,6 +62,17 @@ final class SelectedSessionSyncPolicyTests: XCTestCase {
         ))
     }
 
+    func testStaleSessionCannotReactivateACompletedTurn() {
+        XCTAssertFalse(SelectedSessionSyncPolicy.sessionIsRunning(
+            reportedRunning: true,
+            isStale: true
+        ))
+        XCTAssertTrue(SelectedSessionSyncPolicy.sessionIsRunning(
+            reportedRunning: true,
+            isStale: false
+        ))
+    }
+
     func testKeepsWatchingAnIdleSelectedThreadForExternalTurns() {
         XCTAssertTrue(SelectedSessionSyncPolicy.shouldContinue(
             initialThreadId: "thread.1",

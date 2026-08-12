@@ -8,6 +8,15 @@ extension RelayStore {
             let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
             var combined = result.objectValue ?? [:]
             combined["clientPerformance"] = socket.performanceMetrics.report()
+            let uniqueMessageIds = Set(messages.map(\.id)).count
+            combined["clientState"] = .object([
+                "selectedThreadId": selectedThreadId.map(JSONValue.string) ?? .null,
+                "isRunning": .bool(isRunning),
+                "activeTurnId": activeTurnId.map(JSONValue.string) ?? .null,
+                "messageCount": .number(Double(messages.count)),
+                "uniqueMessageIdCount": .number(Double(uniqueMessageIds)),
+                "duplicateMessageIdCount": .number(Double(messages.count - uniqueMessageIds))
+            ])
             let timelineViolations = TranscriptTimelineAudit.violations(in: messages)
             var checks = combined["checks"]?.arrayValue ?? []
             checks.append(.object([

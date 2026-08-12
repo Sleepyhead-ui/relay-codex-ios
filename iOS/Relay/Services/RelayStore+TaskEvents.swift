@@ -102,7 +102,6 @@ extension RelayStore {
             if let selectedThreadId {
                 notifyTaskCompleted(threadId: selectedThreadId, turnId: turnId, failed: terminalFailed)
             }
-            scheduleCompletionReconciliation(threadId: selectedThreadId)
         case "item/started", "item/completed":
             guard eventTurnId.map({ !taskStateCore.isCompleted($0) }) ?? true else { break }
             markTurnActive(eventTurnId)
@@ -367,21 +366,6 @@ extension RelayStore {
         for event in events { applyEvent(method: event.method, params: event.params) }
         recordTranscriptTrace(source: "reconciliation.complete")
         cacheCurrentThread()
-    }
-
-    func scheduleCompletionReconciliation(threadId: String?) {
-        guard let threadId else { return }
-        completionReconciliationTask?.cancel()
-        completionReconciliationTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled,
-                  let self,
-                  self.selectedThreadId == threadId,
-                  !self.isRunning,
-                  self.activeTurnId == nil else { return }
-            await self.selectThread(threadId, closeSidebar: false, showErrors: false)
-            if !Task.isCancelled { self.completionReconciliationTask = nil }
-        }
     }
 
     func updateCachedSnapshot(threadId: String, isRunning: Bool, activeTurnId: String?) {

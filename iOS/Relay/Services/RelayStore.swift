@@ -111,7 +111,6 @@ final class RelayStore: ObservableObject {
     var nextTranscriptScrollSequence = 0
     var taskStateCore = TaskStateCore()
     var restorationTask: Task<Void, Never>?
-    var completionReconciliationTask: Task<Void, Never>?
     var bridgeRecoveryPending = false
     var liveSessionSyncTask: Task<Void, Never>?
     var liveSessionSyncGeneration = UUID()
@@ -651,8 +650,6 @@ final class RelayStore: ObservableObject {
         threadLoadGeneration = loadGeneration
         let switchingThreads = selectedThreadId != id
         if switchingThreads {
-            completionReconciliationTask?.cancel()
-            completionReconciliationTask = nil
             if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
             // Composer modes belong to the selected thread. The loaded thread can
             // restore Plan mode through thread/settings/updated after it loads.
@@ -843,6 +840,7 @@ final class RelayStore: ObservableObject {
                 messages = TranscriptReconciler.mergeHistoryItems(loadedMessages, into: messages)
                 turnMetadata.merge(loadedMetadata) { _, loaded in loaded }
             }
+            normalizeTranscriptIds()
             recordTranscriptTrace(
                 source: switchingThreads ? "history.replace" : "history.merge",
                 turnId: turns.last?["id"]?.stringValue
@@ -948,6 +946,7 @@ final class RelayStore: ObservableObject {
             }
             let olderIds = Set(olderMessages.map(\.id))
             messages = olderMessages + messages.filter { !olderIds.contains($0.id) }
+            normalizeTranscriptIds()
             recordTranscriptTrace(source: "history.prepend", turnId: turns.last?["id"]?.stringValue)
             if let nextCursor = result["nextCursor"]?.stringValue {
                 olderTurnsCursorByThread[threadId] = nextCursor
@@ -1391,12 +1390,10 @@ final class RelayStore: ObservableObject {
 
     func resetForHostSwitch() {
         restorationTask?.cancel()
-        completionReconciliationTask?.cancel()
         liveSessionSyncTask?.cancel()
         deltaFlushTask?.cancel()
         if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         restorationTask = nil
-        completionReconciliationTask = nil
         liveSessionSyncTask = nil
         deltaFlushTask = nil
         subscribedSessionThreadId = nil
@@ -1628,9 +1625,7 @@ final class RelayStore: ObservableObject {
 
     private func resetForCodexProfileSwitch() {
         restorationTask?.cancel()
-        completionReconciliationTask?.cancel()
         restorationTask = nil
-        completionReconciliationTask = nil
         if editingQueuedFollowUp != nil { cancelQueuedFollowUpEdit() }
         liveSessionSyncTask?.cancel()
         liveSessionSyncTask = nil

@@ -150,6 +150,61 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(second, first)
     }
 
+    func testExactHistoryIdWinsAfterAnEarlierSemanticMatchConsumedIt() {
+        let existing = TranscriptItem(
+            id: "file.canonical",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "Sources/App.swift"
+        )
+        let semanticAlias = TranscriptItem(
+            id: "file.alias",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "Sources/App.swift"
+        )
+        var exact = existing
+        exact.status = "completed"
+
+        let result = TranscriptReconciler.mergeHistoryItems(
+            [semanticAlias, exact],
+            into: [existing]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["file.canonical"])
+        XCTAssertEqual(result.first?.status, "completed")
+    }
+
+    func testExactSnapshotIdWinsAfterAnEarlierSemanticAlias() {
+        let existing = TranscriptItem(
+            id: "file.canonical",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "Sources/App.swift"
+        )
+        let semanticAlias = TranscriptItem(
+            id: "file.alias",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "Sources/App.swift"
+        )
+        var exact = existing
+        exact.status = "completed"
+
+        let result = TranscriptReconciler.mergeSessionItems(
+            [semanticAlias, exact],
+            turnId: "turn.1",
+            into: [existing]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["file.canonical"])
+        XCTAssertEqual(result.first?.status, "completed")
+    }
+
     func testSnapshotRemovesPreviouslyAccumulatedDuplicateIds() {
         let prompt = item(id: "user.1", turnId: "turn.1", role: .user, text: "continue")
         let command = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "git status")

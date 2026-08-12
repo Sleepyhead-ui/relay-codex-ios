@@ -19,6 +19,10 @@ enum SelectedSessionSyncPolicy {
         connected && !isLocallyRunning
     }
 
+    static func sessionIsRunning(reportedRunning: Bool, isStale: Bool) -> Bool {
+        reportedRunning && !isStale
+    }
+
     static func shouldRefreshSubscription(
         hasActiveSubscription: Bool,
         lastUpdateAt: Date?,
