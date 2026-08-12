@@ -127,6 +127,87 @@ final class MobileActivityFeedTests: XCTestCase {
         XCTAssertNotEqual(feed.toolRevision, "tools.empty")
     }
 
+    func testSeparatesCommandsAndCountsTheirStatuses() {
+        let succeeded = TranscriptItem(
+            id: "command.success",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "npm test",
+            status: "completed",
+            exitCode: 0
+        )
+        let failed = TranscriptItem(
+            id: "command.failed",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "npm run build",
+            status: "failed",
+            exitCode: 1
+        )
+        let running = TranscriptItem(
+            id: "command.running",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "xcodebuild test",
+            status: "inProgress"
+        )
+        let search = TranscriptItem(
+            id: "search.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .webSearch,
+            text: "Relay"
+        )
+
+        let feed = MobileActivityFeed.make(items: [succeeded, failed, running, search])
+
+        XCTAssertEqual(feed.commandItems.map(\.id), ["command.success", "command.failed", "command.running"])
+        XCTAssertEqual(feed.currentCommand?.id, "command.running")
+        XCTAssertEqual(feed.successfulCommandCount, 1)
+        XCTAssertEqual(feed.failedCommandCount, 1)
+    }
+
+    func testSummarizesFileChangesAndMapsHeaderPaths() {
+        let fileChange = TranscriptItem(
+            id: "file.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "Sources/App.swift\nSources/Store.swift",
+            detail: "--- a/Sources/App.swift\n+++ b/Sources/App.swift\n@@ -1 +1 @@\n-old\n+new\n--- a/Sources/Store.swift\n+++ b/Sources/Store.swift\n@@ -0,0 +1,2 @@\n+one\n+two"
+        )
+
+        let summary = MobileActivityFeed.make(items: [fileChange]).fileChangeSummary
+
+        XCTAssertEqual(summary.added, 3)
+        XCTAssertEqual(summary.removed, 1)
+        XCTAssertTrue(summary.hasLineCounts)
+        XCTAssertEqual(summary.items, [
+            MobileFileChangeItem(path: "Sources/App.swift", added: 1, removed: 1),
+            MobileFileChangeItem(path: "Sources/Store.swift", added: 2, removed: 0)
+        ])
+    }
+
+    func testDoesNotInventFileLineCountsWhenDiffIsMissing() {
+        let fileChange = TranscriptItem(
+            id: "file.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .fileChange,
+            text: "App.swift"
+        )
+
+        let summary = MobileActivityFeed.make(items: [fileChange]).fileChangeSummary
+
+        XCTAssertFalse(summary.hasLineCounts)
+        XCTAssertEqual(summary.items, [
+            MobileFileChangeItem(path: "App.swift", added: nil, removed: nil)
+        ])
+    }
+
     func testToolRevisionIgnoresInvisibleStreamingDetail() {
         let first = TranscriptItem(
             id: "command.1",

@@ -31,3 +31,82 @@ struct DiffLine: Identifiable, Equatable {
         }
     }
 }
+
+struct DiffFileStatistics: Identifiable, Equatable {
+    var id: String { path }
+    let path: String
+    var added: Int
+    var removed: Int
+}
+
+struct DiffStatistics: Equatable {
+    let added: Int
+    let removed: Int
+    let files: [DiffFileStatistics]
+
+    static func parse(_ source: String) -> DiffStatistics {
+        var added = 0
+        var removed = 0
+        var oldPath: String?
+        var currentPath: String?
+        var fileOrder: [String] = []
+        var fileCounts: [String: (added: Int, removed: Int)] = [:]
+
+        for line in source.components(separatedBy: .newlines) {
+            if line.hasPrefix("--- ") {
+                oldPath = normalizedPath(String(line.dropFirst(4)))
+                continue
+            }
+            if line.hasPrefix("+++ ") {
+                let newPath = normalizedPath(String(line.dropFirst(4)))
+                currentPath = newPath ?? oldPath
+                if let currentPath, fileCounts[currentPath] == nil {
+                    fileOrder.append(currentPath)
+                    fileCounts[currentPath] = (0, 0)
+                }
+                continue
+            }
+            if line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("@@") {
+                continue
+            }
+
+            if line.hasPrefix("+") {
+                added += 1
+                if let currentPath {
+                    var count = fileCounts[currentPath] ?? (0, 0)
+                    count.added += 1
+                    fileCounts[currentPath] = count
+                }
+            } else if line.hasPrefix("-") {
+                removed += 1
+                if let currentPath {
+                    var count = fileCounts[currentPath] ?? (0, 0)
+                    count.removed += 1
+                    fileCounts[currentPath] = count
+                }
+            }
+        }
+
+        return DiffStatistics(
+            added: added,
+            removed: removed,
+            files: fileOrder.compactMap { path in
+                guard let count = fileCounts[path] else { return nil }
+                return DiffFileStatistics(path: path, added: count.added, removed: count.removed)
+            }
+        )
+    }
+
+    private static func normalizedPath(_ source: String) -> String? {
+        let path = source
+            .split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !path.isEmpty, path != "/dev/null" else { return nil }
+        if path.hasPrefix("a/") || path.hasPrefix("b/") {
+            return String(path.dropFirst(2))
+        }
+        return path
+    }
+}

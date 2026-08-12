@@ -3,6 +3,8 @@ import Foundation
 struct MobileActivityFeed: Equatable {
     let entries: [MobileActivityEntry]
     let hiddenPassiveEventCount: Int
+    let commandItems: [TranscriptItem]
+    let fileChangeSummary: MobileFileChangeSummary
 
     static func make(items: [TranscriptItem]) -> MobileActivityFeed {
         var normalized: [TranscriptItem] = []
@@ -88,7 +90,18 @@ struct MobileActivityFeed: Equatable {
         }
         flushTools()
 
-        return MobileActivityFeed(entries: entries, hiddenPassiveEventCount: hiddenPassiveEventCount)
+        let toolItems = entries.flatMap { entry -> [TranscriptItem] in
+            if case .tools(_, let items) = entry { return items }
+            return []
+        }
+        return MobileActivityFeed(
+            entries: entries,
+            hiddenPassiveEventCount: hiddenPassiveEventCount,
+            commandItems: toolItems.filter { $0.kind == .command },
+            fileChangeSummary: MobileFileChangeSummary.make(
+                items: toolItems.filter { $0.kind == .fileChange }
+            )
+        )
     }
 
     var latestText: String? {
@@ -120,6 +133,18 @@ struct MobileActivityFeed: Equatable {
             if case .tools(_, let items) = entry { return items }
             return []
         }
+    }
+
+    var currentCommand: TranscriptItem? {
+        commandItems.last(where: \.isRunningStatus) ?? commandItems.last
+    }
+
+    var successfulCommandCount: Int {
+        commandItems.filter(\.isSuccessfulStatus).count
+    }
+
+    var failedCommandCount: Int {
+        commandItems.filter(\.isFailedStatus).count
     }
 
     var progressRevision: String {
@@ -169,6 +194,91 @@ struct MobileActivityFeed: Equatable {
             .suffix(4_096).split(whereSeparator: \.isNewline).reversed().lazy
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .first(where: { !$0.isEmpty })
+    }
+}
+
+struct MobileFileChangeItem: Identifiable, Equatable {
+    let path: String
+    let added: Int?
+    let removed: Int?
+
+    var id: String { path }
+}
+
+struct MobileFileChangeSummary: Equatable {
+    let items: [MobileFileChangeItem]
+    let added: Int
+    let removed: Int
+    let hasLineCounts: Bool
+
+    static let empty = MobileFileChangeSummary(items: [], added: 0, removed: 0, hasLineCounts: false)
+
+    static func make(items: [TranscriptItem]) -> MobileFileChangeSummary {
+        guard !items.isEmpty else { return .empty }
+        var totalAdded = 0
+        var totalRemoved = 0
+        var hasLineCounts = false
+        var order: [String] = []
+        var counts: [String: (added: Int?, removed: Int?)] = [:]
+
+        func register(path: String, added: Int?, removed: Int?) {
+            guard !path.isEmpty else { return }
+            if counts[path] == nil {
+                order.append(path)
+                counts[path] = (added, removed)
+            } else if let added, let removed,
+                      counts[path]?.added == nil || counts[path]?.removed == nil {
+                counts[path] = (added, removed)
+            } else if let added, let removed,
+                      let oldAdded = counts[path]?.added,
+                      let oldRemoved = counts[path]?.removed {
+                counts[path] = (oldAdded + added, oldRemoved + removed)
+            }
+        }
+
+        for item in items {
+            let paths = item.text.split(whereSeparator: \.isNewline)
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let statistics = DiffStatistics.parse(item.detail ?? "")
+            let hasItemLineCounts = statistics.added > 0
+                || statistics.removed > 0
+                || item.detail?.contains("+++ ") == true
+                || item.detail?.contains("--- ") == true
+            hasLineCounts = hasLineCounts || hasItemLineCounts
+            totalAdded += statistics.added
+            totalRemoved += statistics.removed
+
+            if !statistics.files.isEmpty {
+                for file in statistics.files {
+                    let displayPath = paths.first(where: { pathsMatch($0, file.path) }) ?? file.path
+                    register(path: displayPath, added: file.added, removed: file.removed)
+                }
+                for path in paths where !order.contains(path) {
+                    register(path: path, added: nil, removed: nil)
+                }
+            } else if paths.count == 1, hasItemLineCounts {
+                register(path: paths[0], added: statistics.added, removed: statistics.removed)
+            } else {
+                for path in paths { register(path: path, added: nil, removed: nil) }
+            }
+        }
+
+        return MobileFileChangeSummary(
+            items: order.compactMap { path in
+                guard let count = counts[path] else { return nil }
+                return MobileFileChangeItem(path: path, added: count.added, removed: count.removed)
+            },
+            added: totalAdded,
+            removed: totalRemoved,
+            hasLineCounts: hasLineCounts
+        )
+    }
+
+    private static func pathsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        let left = lhs.replacingOccurrences(of: "\\", with: "/")
+        let right = rhs.replacingOccurrences(of: "\\", with: "/")
+        return left == right || left.hasSuffix("/\(right)") || right.hasSuffix("/\(left)")
     }
 }
 
@@ -261,6 +371,16 @@ enum MobileActivityEntry: Identifiable, Equatable {
 }
 
 extension TranscriptItem {
+    var isSuccessfulStatus: Bool {
+        guard !isRunningStatus, !isFailedStatus else { return false }
+        if exitCode == 0 { return true }
+        let normalized = status?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased() ?? ""
+        return normalized.contains("complete") || normalized.contains("success")
+    }
+
     var isPassiveWaitEvent: Bool {
         guard role == .tool else { return false }
         let values = [title, text]

@@ -11,39 +11,95 @@ struct MobileActivityPresentation: Identifiable {
 struct MobileLiveActivityConsole: View {
     let presentation: MobileActivityPresentation
     let showTimeline: () -> Void
+    @State private var manuallyCollapsed = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            ProgressView()
-                .controlSize(.small)
-                .tint(RelayTheme.accent)
-                .frame(width: 18, height: 18)
+        let feed = presentation.feed
+        let hasReasoning = feed.latestReasoningText?.nonEmpty != nil
+        let hasProgress = !feed.progressItems.isEmpty
+        let hasCommands = !feed.commandItems.isEmpty
+        let hasFileChanges = !feed.fileChangeSummary.items.isEmpty
 
-            Text(liveSummary)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            HStack(spacing: 9) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(RelayTheme.accent)
+                    .frame(width: 18, height: 18)
 
-            LiveElapsedText(startedAt: presentation.metadata.startedAt)
-
-            Button(action: showTimeline) {
-                Image(systemName: "list.bullet")
+                Text("正在处理")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
-                    .contentShape(Rectangle())
+
+                Spacer(minLength: 8)
+                LiveElapsedText(startedAt: presentation.metadata.startedAt)
+
+                Button {
+                    manuallyCollapsed.toggle()
+                } label: {
+                    Image(systemName: manuallyCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(manuallyCollapsed ? "展开当前任务" : "折叠当前任务")
+
+                Button(action: showTimeline) {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看完整任务活动")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("查看完整任务活动")
+            .padding(.horizontal, 13)
+            .frame(height: 38)
+
+            if !manuallyCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+                Divider().opacity(0.45)
+            }
+
+            if !manuallyCollapsed, let reasoning = feed.latestReasoningText?.nonEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(RelayTheme.accent)
+                        .frame(width: 16, height: 16)
+                    Text(cleanActivityText(reasoning))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 8)
+            }
+
+            if !manuallyCollapsed && hasProgress {
+                MobileProgressWindow(feed: feed)
+                    .padding(.horizontal, 7)
+                    .padding(.top, hasReasoning ? 0 : 8)
+            }
+
+            if !manuallyCollapsed && hasCommands {
+                MobileCommandWindow(feed: feed)
+                    .padding(.horizontal, 7)
+                    .padding(.top, 7)
+            }
+
+            if !manuallyCollapsed && hasFileChanges {
+                MobileFileChangeWindow(summary: feed.fileChangeSummary)
+                    .padding(.horizontal, 7)
+                    .padding(.top, 7)
+            }
+
+            if !manuallyCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+                Color.clear.frame(height: 8)
+            }
         }
-        .padding(.horizontal, 13)
-        .frame(height: 42)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: showTimeline)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("查看当前任务活动")
         .background(RelayTheme.elevated)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
@@ -52,19 +108,330 @@ struct MobileLiveActivityConsole: View {
         }
     }
 
-    private var liveSummary: String {
-        if let reasoning = presentation.feed.latestReasoningText?.nonEmpty {
-            return cleanActivityText(reasoning)
-        }
-        if let progress = presentation.feed.progressItems.last?.text.nonEmpty {
-            return cleanActivityText(progress)
-        }
-        if let tool = presentation.feed.toolItems.last {
-            return cleanActivityText(tool.title?.nonEmpty ?? tool.text.nonEmpty ?? "正在处理")
-        }
-        return "准备中"
+}
+
+private struct MobileProgressWindow: View {
+    let feed: MobileActivityFeed
+    @State private var followsLatest = true
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    private let coordinateSpace = "relay-mobile-progress-window"
+
+    private var canScroll: Bool {
+        ActivityWindowScrollMetrics.isScrollable(
+            contentHeight: contentHeight,
+            viewportHeight: viewportHeight
+        )
     }
 
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            windowHeader(title: "进展", count: feed.progressItems.count)
+
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(feed.progressItems) { item in
+                                InlineMarkdownText(
+                                    cleanActivityText(item.text),
+                                    size: 11.5,
+                                    lineSpacing: 2
+                                )
+                                .foregroundStyle(.secondary)
+                                .id(item.id)
+                            }
+
+                            Color.clear
+                                .frame(height: 1)
+                                .id("mobile-progress-bottom")
+                                .background {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: ActivityWindowBottomPreferenceKey.self,
+                                            value: geometry.frame(in: .named(coordinateSpace)).maxY
+                                        )
+                                    }
+                                }
+                        }
+                        .font(.system(size: 11.5))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ActivityWindowContentHeightPreferenceKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        }
+                    }
+                    .coordinateSpace(name: coordinateSpace)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: ActivityWindowViewportHeightPreferenceKey.self,
+                                value: geometry.size.height
+                            )
+                        }
+                    }
+                    .scrollDisabled(!canScroll)
+                    .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
+                        if abs(contentHeight - height) > 0.5 { contentHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowViewportHeightPreferenceKey.self) { height in
+                        if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
+                        let tolerance: CGFloat = followsLatest ? 24 : 10
+                        guard let atBottom = ActivityWindowScrollMetrics.isAtBottom(
+                            bottomY: bottomY,
+                            viewportHeight: viewportHeight,
+                            tolerance: tolerance
+                        ) else { return }
+                        followsLatest = atBottom
+                    }
+                    .onAppear { scrollToLatest(proxy, animated: false) }
+                    .onChange(of: feed.progressRevision) { _ in
+                        guard followsLatest else { return }
+                        scrollToLatest(proxy, animated: false)
+                    }
+
+                    if canScroll, !followsLatest {
+                        latestButton {
+                            followsLatest = true
+                            scrollToLatest(proxy, animated: true)
+                        }
+                    }
+                }
+            }
+            .frame(height: 104)
+        }
+        .background(RelayTheme.softFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
+                }
+            } else {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo("mobile-progress-bottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+}
+
+private struct MobileCommandWindow: View {
+    let feed: MobileActivityFeed
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    Text("正在执行指令")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: true, vertical: false)
+                    if let command = feed.currentCommand {
+                        Text(commandTitle(command))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Spacer(minLength: 4)
+                    }
+                    Text("成功 \(feed.successfulCommandCount) · 失败 \(feed.failedCommandCount)")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(feed.failedCommandCount > 0 ? Color.red : Color.secondary.opacity(0.72))
+                        .fixedSize(horizontal: true, vertical: false)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "折叠执行指令" : "展开执行指令")
+
+            if expanded {
+                Divider().opacity(0.35)
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(feed.commandItems) { command in
+                            HStack(spacing: 7) {
+                                commandStatus(command)
+                                Text(commandTitle(command))
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(command.isFailedStatus ? Color.red : Color.primary)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                }
+                .frame(height: min(96, CGFloat(feed.commandItems.count) * 31 + 10))
+            }
+        }
+        .background(RelayTheme.codeFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func commandStatus(_ item: TranscriptItem) -> some View {
+        if item.isRunningStatus {
+            ProgressView().controlSize(.mini).frame(width: 12, height: 12)
+        } else {
+            Image(systemName: item.isFailedStatus ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(item.isFailedStatus ? Color.red : RelayTheme.accent)
+                .frame(width: 12, height: 12)
+        }
+    }
+}
+
+private struct MobileFileChangeWindow: View {
+    let summary: MobileFileChangeSummary
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "doc.badge.plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    Text("文件修改 \(summary.items.count)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 6)
+                    if summary.hasLineCounts {
+                        diffCounts(added: summary.added, removed: summary.removed)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "折叠文件修改" : "展开文件修改")
+
+            if expanded {
+                Divider().opacity(0.35)
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(summary.items) { item in
+                            HStack(spacing: 7) {
+                                Image(systemName: "doc.text")
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 12)
+                                Text(item.path.lastPathComponentForDisplay)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if let added = item.added, let removed = item.removed {
+                                    diffCounts(added: added, removed: removed)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                }
+                .frame(height: min(104, CGFloat(summary.items.count) * 27 + 10))
+            }
+        }
+        .background(RelayTheme.softFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func diffCounts(added: Int, removed: Int) -> some View {
+        HStack(spacing: 5) {
+            Text("+\(added)").foregroundStyle(Color.green)
+            Text("-\(removed)").foregroundStyle(Color.red)
+        }
+        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+private struct ActivityWindowContentHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ActivityWindowViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ActivityWindowBottomPreferenceKey: PreferenceKey {
+    static var defaultValue = CGFloat.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
+}
+
+private func windowHeader(title: String, count: Int) -> some View {
+    HStack(spacing: 5) {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+        if count > 0 {
+            Text("\(count)")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+        Spacer()
+    }
+    .padding(.horizontal, 10)
+    .frame(height: 22)
+}
+
+private func latestButton(action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+        Image(systemName: "arrow.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 25, height: 25)
+            .background(.ultraThinMaterial)
+            .clipShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(5)
+}
+
+private func commandTitle(_ item: TranscriptItem) -> String {
+    let source = item.text.nonEmpty ?? item.title?.nonEmpty ?? "指令"
+    return source
+        .split(whereSeparator: \.isNewline)
+        .first
+        .map(String.init) ?? source
 }
 
 private struct LiveElapsedText: View {
