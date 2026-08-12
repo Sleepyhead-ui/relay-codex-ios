@@ -135,6 +135,17 @@ private struct MobileProgressWindow: View {
     let feed: MobileActivityFeed
     let compact: Bool
     @State private var followsLatest = true
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    private let coordinateSpace = "relay-mobile-progress-window"
+
+    private var canScroll: Bool {
+        ActivityWindowScrollMetrics.isScrollable(
+            contentHeight: contentHeight,
+            viewportHeight: viewportHeight
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -162,24 +173,56 @@ private struct MobileProgressWindow: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id("mobile-progress-bottom")
-                                .onAppear { followsLatest = true }
+                                .background {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: ActivityWindowBottomPreferenceKey.self,
+                                            value: geometry.frame(in: .named(coordinateSpace)).maxY
+                                        )
+                                    }
+                                }
                         }
                         .font(.system(size: 11.5))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ActivityWindowContentHeightPreferenceKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        }
                     }
-                    .scrollDisabled(feed.progressItems.count <= 4)
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 5)
-                            .onChanged { _ in followsLatest = false }
-                    )
+                    .coordinateSpace(name: coordinateSpace)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: ActivityWindowViewportHeightPreferenceKey.self,
+                                value: geometry.size.height
+                            )
+                        }
+                    }
+                    .scrollDisabled(!canScroll)
+                    .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
+                        if abs(contentHeight - height) > 0.5 { contentHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowViewportHeightPreferenceKey.self) { height in
+                        if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
+                        followsLatest = ActivityWindowScrollMetrics.isAtBottom(
+                            bottomY: bottomY,
+                            viewportHeight: viewportHeight
+                        )
+                    }
                     .onAppear { scrollToLatest(proxy, animated: false) }
                     .onChange(of: feed.progressRevision) { _ in
                         guard followsLatest else { return }
                         scrollToLatest(proxy, animated: false)
                     }
 
-                    if !followsLatest, !feed.progressItems.isEmpty {
+                    if canScroll, !followsLatest, !feed.progressItems.isEmpty {
                         latestButton {
                             followsLatest = true
                             scrollToLatest(proxy, animated: true)
@@ -215,6 +258,17 @@ private struct MobileToolWindow: View {
     let compact: Bool
     let showTimeline: () -> Void
     @State private var followsLatest = true
+    @State private var contentHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
+
+    private let coordinateSpace = "relay-mobile-tool-window"
+
+    private var canScroll: Bool {
+        ActivityWindowScrollMetrics.isScrollable(
+            contentHeight: contentHeight,
+            viewportHeight: viewportHeight
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -254,23 +308,55 @@ private struct MobileToolWindow: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id("mobile-tools-bottom")
-                                .onAppear { followsLatest = true }
+                                .background {
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(
+                                            key: ActivityWindowBottomPreferenceKey.self,
+                                            value: geometry.frame(in: .named(coordinateSpace)).maxY
+                                        )
+                                    }
+                                }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: ActivityWindowContentHeightPreferenceKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        }
                     }
-                    .scrollDisabled(feed.toolItems.count <= 4)
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 5)
-                            .onChanged { _ in followsLatest = false }
-                    )
+                    .coordinateSpace(name: coordinateSpace)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: ActivityWindowViewportHeightPreferenceKey.self,
+                                value: geometry.size.height
+                            )
+                        }
+                    }
+                    .scrollDisabled(!canScroll)
+                    .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
+                        if abs(contentHeight - height) > 0.5 { contentHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowViewportHeightPreferenceKey.self) { height in
+                        if abs(viewportHeight - height) > 0.5 { viewportHeight = height }
+                    }
+                    .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
+                        followsLatest = ActivityWindowScrollMetrics.isAtBottom(
+                            bottomY: bottomY,
+                            viewportHeight: viewportHeight
+                        )
+                    }
                     .onAppear { scrollToLatest(proxy, animated: false) }
                     .onChange(of: feed.toolRevision) { _ in
                         guard followsLatest else { return }
                         scrollToLatest(proxy, animated: false)
                     }
 
-                    if !followsLatest, !feed.toolItems.isEmpty {
+                    if canScroll, !followsLatest, !feed.toolItems.isEmpty {
                         latestButton {
                             followsLatest = true
                             scrollToLatest(proxy, animated: true)
@@ -325,6 +411,21 @@ private struct MobileToolWindow: View {
             }
         }
     }
+}
+
+private struct ActivityWindowContentHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ActivityWindowViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ActivityWindowBottomPreferenceKey: PreferenceKey {
+    static var defaultValue = CGFloat.greatestFiniteMagnitude
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
 }
 
 private func windowHeader(title: String, count: Int) -> some View {
