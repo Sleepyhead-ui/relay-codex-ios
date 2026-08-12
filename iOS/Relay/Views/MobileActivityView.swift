@@ -40,6 +40,10 @@ struct MobileLiveActivityConsole: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 42)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: showTimeline)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("查看当前任务活动")
         .background(RelayTheme.elevated)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
