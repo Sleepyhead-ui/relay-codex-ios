@@ -112,7 +112,6 @@ struct ConversationView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    controlStatus
                 }
             }
 
@@ -126,15 +125,6 @@ struct ConversationView: View {
             }
 
             Button {
-                store.showingSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 17, weight: .medium))
-            }
-            .relayIconButton()
-            .accessibilityLabel("设置和工作区权限")
-
-            Button {
                 store.showingNewTask = true
             } label: {
                 Image(systemName: "square.and.pencil")
@@ -146,41 +136,6 @@ struct ConversationView: View {
         .padding(.horizontal, 8)
         .frame(height: 58)
         .background(RelayTheme.canvas)
-    }
-
-    @ViewBuilder
-    private var controlStatus: some View {
-        if store.isSelectedThreadExternallyOwned {
-            Label("Codex 运行中", systemImage: "lock.laptopcomputer")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Color.orange)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            if let threadId = store.selectedThreadId {
-                Button {
-                    Task { await store.acquireThreadControl(threadId) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.orange)
-                .accessibilityLabel("再次尝试取得控制权")
-            }
-        } else if store.isSelectedThreadRelayOwned, !store.isRunning, let threadId = store.selectedThreadId {
-            Label("Relay 控制", systemImage: "checkmark.circle")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Button {
-                Task { await store.releaseThreadControl(threadId) }
-            } label: {
-                Image(systemName: "arrow.down.left.and.arrow.up.right")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("释放控制权给 Codex")
-        }
     }
 
     @ViewBuilder

@@ -127,26 +127,21 @@ struct SidebarView: View {
                 store.sidebarOpen = false
             } label: {
                 HStack(spacing: 11) {
-                    Image(systemName: "desktopcomputer")
+                    Image(systemName: "gearshape")
                         .font(.system(size: 15))
                         .frame(width: 22)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(store.host.name)
-                            .font(.system(size: 14, weight: .medium))
-                        Text(store.host.endpoint)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Text("设置")
+                        .font(.system(size: 14, weight: .medium))
                     Spacer()
-                    Circle()
-                        .fill(store.socket.state == .connected ? RelayTheme.accent : (store.socket.state.isConnecting ? Color.orange : Color.secondary))
-                        .frame(width: 7, height: 7)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 13)
-                .frame(height: 58)
+                .frame(height: 48)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("设置")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RelayTheme.sidebar.ignoresSafeArea())

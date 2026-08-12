@@ -121,7 +121,7 @@ struct ComposerView: View {
                     .disabled(isImportingAttachments || store.isSelectedThreadExternallyOwned)
                     .accessibilityLabel("添加内容或选择任务模式")
 
-                    TextField(composerPlaceholder, text: $draft.text, axis: .vertical)
+                    TextField("", text: $draft.text, prompt: composerPrompt, axis: .vertical)
                         .font(.system(size: 16))
                         .lineLimit(1...8)
                         .textFieldStyle(.plain)
@@ -168,6 +168,18 @@ struct ComposerView: View {
 
                 HStack(spacing: 3) {
                     if store.isRunning { followUpMenu }
+                    if store.isSelectedThreadExternallyOwned, let threadId = store.selectedThreadId {
+                        Button {
+                            Task { await store.acquireThreadControl(threadId) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.orange)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("再次尝试取得控制权")
+                    }
                     Spacer(minLength: 4)
                     runConfigurationMenu
                     contextMenu
@@ -488,6 +500,16 @@ struct ComposerView: View {
 
             Divider()
 
+            if store.isSelectedThreadRelayOwned, !store.isRunning, let threadId = store.selectedThreadId {
+                Button {
+                    Task { await store.releaseThreadControl(threadId) }
+                } label: {
+                    Label("释放任务控制权", systemImage: "arrow.down.left.and.arrow.up.right")
+                }
+
+                Divider()
+            }
+
             Button { store.showingSettings = true } label: {
                 Label("更多设置", systemImage: "gearshape")
             }
@@ -577,7 +599,7 @@ struct ComposerView: View {
     }
 
     private var composerPlaceholder: String {
-        if store.isSelectedThreadExternallyOwned { return "此任务正在 Codex 中运行，可在此查看进展" }
+        if store.isSelectedThreadExternallyOwned { return "Codex 正在运行，可在此查看进展" }
         if store.editingQueuedFollowUp != nil { return "编辑排队消息" }
         if store.isRunning { return "引导当前任务" }
         switch store.composerMode {
@@ -585,6 +607,15 @@ struct ComposerView: View {
         case .plan: return "让 Codex 先制定计划"
         case .goal: return "描述要持续完成的目标"
         }
+    }
+
+    private var composerPrompt: Text {
+        Text(composerPlaceholder)
+            .font(.system(
+                size: store.isSelectedThreadExternallyOwned ? 13 : 16,
+                weight: store.isSelectedThreadExternallyOwned ? .medium : .regular
+            ))
+            .foregroundColor(store.isSelectedThreadExternallyOwned ? .orange : .secondary)
     }
 
     private var canSend: Bool {
