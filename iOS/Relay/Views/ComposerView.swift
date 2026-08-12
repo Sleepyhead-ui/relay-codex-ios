@@ -68,13 +68,13 @@ struct ComposerView: View {
                     Menu {
                         Button {
                             focused = false
-                            showingPhotoPicker = true
+                            presentPhotoPicker()
                         } label: {
                             Label("照片或视频", systemImage: "photo.on.rectangle")
                         }
                         Button {
                             focused = false
-                            showingFileImporter = true
+                            presentFileImporter()
                         } label: {
                             Label("选择文件", systemImage: "folder")
                         }
@@ -248,6 +248,18 @@ struct ComposerView: View {
             if id != nil { focused = true }
         }
         .onDisappear { store.composerIsFocused = false }
+    }
+
+    private func presentPhotoPicker() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            showingPhotoPicker = true
+        }
+    }
+
+    private func presentFileImporter() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            showingFileImporter = true
+        }
     }
 
     private func importSelectedPhotos(_ photos: [PhotosPickerItem]) async {
@@ -622,6 +634,7 @@ struct ComposerView: View {
         let isUploading = store.attachments.contains { $0.state == .uploading }
         return store.socket.state == .connected
             && !store.isSelectedThreadExternallyOwned
+            && !isImportingAttachments
             && !isUploading
             && hasDraft
     }

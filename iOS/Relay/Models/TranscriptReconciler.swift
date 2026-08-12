@@ -427,6 +427,18 @@ enum TranscriptReconciler {
             }
             result.insert(prompt, at: insertion)
         }
+        let placedIndexes = result.indices.filter { index in
+            guard result[index].role == .user, let placement = placements[result[index].id] else { return false }
+            return placement.threadId == threadId && placement.turnId == turnId
+        }
+        let promptsInSendOrder = placedIndexes
+            .map { result[$0] }
+            .sorted {
+                (placements[$0.id]?.sequence ?? Int.max) < (placements[$1.id]?.sequence ?? Int.max)
+            }
+        for (index, prompt) in zip(placedIndexes, promptsInSendOrder) {
+            result[index] = prompt
+        }
         return result
     }
 

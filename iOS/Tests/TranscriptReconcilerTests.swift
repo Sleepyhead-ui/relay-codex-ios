@@ -477,6 +477,31 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(result.map(\.id), ["prompt.1", "progress.1", "prompt.2", "prompt.3"])
     }
 
+    func testPlacementsKeepSendOrderWhenFollowUpsHaveDifferentAnchors() {
+        let initial = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "start")
+        let olderProgress = item(id: "progress.1", turnId: "turn.1", role: .assistant, text: "first", phase: "commentary")
+        let newerProgress = item(id: "progress.2", turnId: "turn.1", role: .assistant, text: "second", phase: "commentary")
+        let firstFollowUp = item(id: "prompt.2", turnId: "turn.1", role: .user, text: "sent at 00:47")
+        let secondFollowUp = item(id: "prompt.3", turnId: "turn.1", role: .user, text: "sent at 00:50")
+        let placements = [
+            "prompt.1": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: nil, sequence: 1),
+            "prompt.2": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.2", sequence: 2),
+            "prompt.3": UserMessagePlacement(threadId: "thread.1", turnId: "turn.1", afterItemId: "progress.1", sequence: 3),
+        ]
+
+        let result = TranscriptReconciler.applyUserMessagePlacements(
+            placements,
+            turnId: "turn.1",
+            threadId: "thread.1",
+            to: [initial, olderProgress, firstFollowUp, newerProgress, secondFollowUp]
+        )
+
+        XCTAssertEqual(
+            result.filter { $0.role == .user }.map(\.id),
+            ["prompt.1", "prompt.2", "prompt.3"]
+        )
+    }
+
     func testStaleFollowUpAnchorsStayBeforeFinalOutput() {
         let initial = item(id: "prompt.1", turnId: "turn.1", role: .user, text: "开始")
         let progress = item(id: "progress.replaced", turnId: "turn.1", role: .assistant, text: "检查中", phase: "commentary")
