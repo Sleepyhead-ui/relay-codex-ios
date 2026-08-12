@@ -131,6 +131,60 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertEqual(result.map(\.id), ["user.1", "command.1", "answer.1"])
     }
 
+    func testRepeatedHistoryLoadWithDuplicateItemIdsIsIdempotent() {
+        let prompt = item(id: "user.1", turnId: "turn.1", role: .user, text: "run tests")
+        let command = TranscriptItem(
+            id: "command.1",
+            turnId: "turn.1",
+            role: .tool,
+            kind: .command,
+            text: "npm test",
+            detail: "passed"
+        )
+        let duplicatedPage = [prompt, command, command, command]
+
+        let first = TranscriptReconciler.mergeHistoryItems(duplicatedPage, into: [])
+        let second = TranscriptReconciler.mergeHistoryItems(duplicatedPage, into: first)
+
+        XCTAssertEqual(first.map(\.id), ["user.1", "command.1"])
+        XCTAssertEqual(second, first)
+    }
+
+    func testSnapshotRemovesPreviouslyAccumulatedDuplicateIds() {
+        let prompt = item(id: "user.1", turnId: "turn.1", role: .user, text: "continue")
+        let command = TranscriptItem(id: "command.1", turnId: "turn.1", role: .tool, kind: .command, text: "git status")
+
+        let result = TranscriptReconciler.mergeSessionItems(
+            [prompt, command, command],
+            turnId: "turn.1",
+            into: [prompt, command, command, command]
+        )
+
+        XCTAssertEqual(result.map(\.id), ["user.1", "command.1"])
+    }
+
+    func testLargeSnapshotWithStableIdsRemainsIdempotent() {
+        let snapshot = (0..<1_500).map { index in
+            TranscriptItem(
+                id: "command.\(index)",
+                turnId: "turn.large",
+                role: .tool,
+                kind: .command,
+                text: "command \(index)",
+                detail: "output \(index)"
+            )
+        }
+
+        measure {
+            let result = TranscriptReconciler.mergeSessionItems(
+                snapshot,
+                turnId: "turn.large",
+                into: snapshot
+            )
+            XCTAssertEqual(result.count, 1_500)
+        }
+    }
+
     func testLateOlderHistoryTurnIsPlacedBeforeTheCurrentTurn() {
         let olderPrompt = item(id: "user.old", turnId: "turn.old", role: .user, text: "older prompt")
         let olderAnswer = item(id: "answer.old", turnId: "turn.old", role: .assistant, text: "older answer")

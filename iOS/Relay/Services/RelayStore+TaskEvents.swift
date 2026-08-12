@@ -314,7 +314,6 @@ extension RelayStore {
                         completedAt: Date()
                     )
                 )
-                scheduleCompletionReconciliation(threadId: selectedThreadId)
             }
         }
     }
@@ -372,10 +371,16 @@ extension RelayStore {
 
     func scheduleCompletionReconciliation(threadId: String?) {
         guard let threadId else { return }
-        Task { [weak self] in
+        completionReconciliationTask?.cancel()
+        completionReconciliationTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, self.selectedThreadId == threadId, !self.isRunning, self.activeTurnId == nil else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  self.selectedThreadId == threadId,
+                  !self.isRunning,
+                  self.activeTurnId == nil else { return }
             await self.selectThread(threadId, closeSidebar: false, showErrors: false)
+            if !Task.isCancelled { self.completionReconciliationTask = nil }
         }
     }
 

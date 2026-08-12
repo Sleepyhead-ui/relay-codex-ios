@@ -26,10 +26,8 @@ struct MobileLiveActivityConsole: View {
                     .tint(RelayTheme.accent)
                     .frame(width: 18, height: 18)
 
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text("正在处理 \(elapsedText(at: context.date))")
-                }
-                .font(.system(size: 12, weight: .semibold))
+                Text("正在处理")
+                    .font(.system(size: 12, weight: .semibold))
 
                 Spacer(minLength: 8)
 
@@ -123,12 +121,6 @@ struct MobileLiveActivityConsole: View {
         return nil
     }
 
-    private func elapsedText(at date: Date) -> String {
-        let startedAt = presentation.metadata.startedAt ?? date
-        let seconds = max(0, Int(date.timeIntervalSince(startedAt)))
-        if seconds < 60 { return "\(seconds) 秒" }
-        return "\(seconds / 60) 分 \(seconds % 60) 秒"
-    }
 }
 
 private struct MobileProgressWindow: View {

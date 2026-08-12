@@ -90,8 +90,7 @@ struct ComposerView: View {
             if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {
                 TaskContextPanel(
                     steps: store.activePlan,
-                    goal: visibleGoal,
-                    isRunning: store.isRunning
+                    goal: visibleGoal
                 )
             }
 
@@ -657,7 +656,6 @@ struct ComposerView: View {
 private struct TaskContextPanel: View {
     let steps: [ExecutionPlanStep]
     let goal: GoalState?
-    let isRunning: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -669,7 +667,7 @@ private struct TaskContextPanel: View {
                     .padding(.horizontal, 11)
             }
             if let goal {
-                ActiveGoalPanel(goal: goal, isRunning: isRunning)
+                ActiveGoalPanel(goal: goal)
             }
         }
         .background(RelayTheme.elevated)
@@ -683,63 +681,60 @@ private struct TaskContextPanel: View {
 
 private struct ActiveGoalPanel: View {
     let goal: GoalState
-    let isRunning: Bool
     @EnvironmentObject private var store: RelayStore
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(spacing: 7) {
-                Image(systemName: "scope")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(statusColor)
-                Text(goal.status.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .fixedSize(horizontal: true, vertical: false)
-                Text(goal.objective)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text("·")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                Text(elapsedText(at: context.date))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: 7) {
+            Image(systemName: "scope")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(statusColor)
+            Text(goal.status.label)
+                .font(.system(size: 12, weight: .semibold))
+                .fixedSize(horizontal: true, vertical: false)
+            Text(goal.objective)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text("·")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            Text(elapsedText)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
 
-                Menu {
-                    if goal.status == .active {
-                        Button {
-                            Task { await store.updateCurrentGoalStatus(.paused) }
-                        } label: {
-                            Label("暂停目标", systemImage: "pause")
-                        }
-                    } else {
-                        Button {
-                            Task { await store.updateCurrentGoalStatus(.active) }
-                        } label: {
-                            Label("继续目标", systemImage: "play")
-                        }
-                    }
+            Menu {
+                if goal.status == .active {
                     Button {
-                        store.prepareCurrentGoalForEditing()
+                        Task { await store.updateCurrentGoalStatus(.paused) }
                     } label: {
-                        Label("编辑目标", systemImage: "pencil")
+                        Label("暂停目标", systemImage: "pause")
                     }
-                    Button(role: .destructive) {
-                        Task { await store.clearCurrentGoal() }
+                } else {
+                    Button {
+                        Task { await store.updateCurrentGoalStatus(.active) }
                     } label: {
-                        Label("清除目标", systemImage: "trash")
+                        Label("继续目标", systemImage: "play")
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
                 }
-                .accessibilityLabel("目标操作")
+                Button {
+                    store.prepareCurrentGoalForEditing()
+                } label: {
+                    Label("编辑目标", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    Task { await store.clearCurrentGoal() }
+                } label: {
+                    Label("清除目标", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
             }
+            .accessibilityLabel("目标操作")
         }
         .padding(.horizontal, 11)
         .frame(height: 40)
@@ -755,11 +750,8 @@ private struct ActiveGoalPanel: View {
         }
     }
 
-    private func elapsedText(at date: Date) -> String {
-        let live = goal.status == .active && isRunning
-            ? max(0, Int(date.timeIntervalSince(goal.updatedAt)))
-            : 0
-        let seconds = max(0, goal.timeUsedSeconds + live)
+    private var elapsedText: String {
+        let seconds = max(0, goal.timeUsedSeconds)
         let hours = seconds / 3600
         let minutes = (seconds % 3600) / 60
         let remainder = seconds % 60

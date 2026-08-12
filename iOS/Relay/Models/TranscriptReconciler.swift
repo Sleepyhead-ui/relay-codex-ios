@@ -109,15 +109,41 @@ enum TranscriptReconciler {
         turnId: String,
         into messages: [TranscriptItem]
     ) -> [TranscriptItem] {
-        let firstIndex = messages.firstIndex(where: { $0.turnId == turnId }) ?? messages.endIndex
-        let existing = messages.filter { $0.turnId == turnId }
+        let snapshotItems = coalescingDuplicateIds(snapshotItems)
+        let normalizedMessages = coalescingDuplicateIds(messages)
+        let firstIndex = normalizedMessages.firstIndex(where: { $0.turnId == turnId }) ?? normalizedMessages.endIndex
+        let existing = normalizedMessages.filter { $0.turnId == turnId }
+        let existingIndexById = Dictionary(uniqueKeysWithValues: existing.enumerated().map { ($0.element.id, $0.offset) })
+        var existingIndexesBySemanticKey: [ExactSemanticKey: [Int]] = [:]
+        var streamingExistingIndexes: [Int] = []
+        var userExistingIndexes: [Int] = []
+        for (index, item) in existing.enumerated() {
+            if let key = exactSemanticKey(item) { existingIndexesBySemanticKey[key, default: []].append(index) }
+            if item.kind == .message || item.kind == .reasoning { streamingExistingIndexes.append(index) }
+            if item.role == .user { userExistingIndexes.append(index) }
+        }
         var consumedExistingIds = Set<String>()
         var merged: [TranscriptItem] = []
         for item in snapshotItems {
-            if let index = existing.firstIndex(where: {
-                !consumedExistingIds.contains($0.id)
-                    && ($0.id == item.id || semanticallyMatches($0, item) || equivalentUserMessage($0, item))
-            }) {
+            let exactIndex = existingIndexById[item.id].flatMap {
+                consumedExistingIds.contains(existing[$0].id) ? nil : $0
+            }
+            let semanticIndex = exactSemanticKey(item).flatMap { key in
+                existingIndexesBySemanticKey[key]?.first(where: {
+                    !consumedExistingIds.contains(existing[$0].id) && semanticallyMatches(existing[$0], item)
+                })
+            }
+            let streamedPrefixIndex = (item.kind == .message || item.kind == .reasoning)
+                ? streamingExistingIndexes.first(where: {
+                    !consumedExistingIds.contains(existing[$0].id) && semanticallyMatches(existing[$0], item)
+                })
+                : nil
+            let userIndex = item.role == .user
+                ? userExistingIndexes.first(where: {
+                    !consumedExistingIds.contains(existing[$0].id) && equivalentUserMessage(existing[$0], item)
+                })
+                : nil
+            if let index = exactIndex ?? semanticIndex ?? streamedPrefixIndex ?? userIndex {
                 consumedExistingIds.insert(existing[index].id)
                 var combined = merge(existing: existing[index], incoming: item)
                 combined.id = existing[index].id
@@ -138,8 +164,8 @@ enum TranscriptReconciler {
         }
         merged = deduplicated(merged)
 
-        guard merged != existing else { return messages }
-        var result = messages.filter { $0.turnId != turnId }
+        guard merged != existing || normalizedMessages != messages else { return messages }
+        var result = normalizedMessages.filter { $0.turnId != turnId }
         result.insert(contentsOf: merged, at: min(firstIndex, result.endIndex))
         return result
     }
@@ -183,12 +209,17 @@ enum TranscriptReconciler {
 
     private static func deduplicated(_ items: [TranscriptItem]) -> [TranscriptItem] {
         var result: [TranscriptItem] = []
+        var exactSemanticIndexes: [ExactSemanticKey: Int] = [:]
         for item in items {
-            if let index = result.firstIndex(where: { semanticallyMatches($0, item) }) {
+            let key = exactSemanticKey(item)
+            let match = key.flatMap { exactSemanticIndexes[$0] }
+                ?? (key == nil ? result.firstIndex(where: { semanticallyMatches($0, item) }) : nil)
+            if let index = match {
                 var combined = merge(existing: result[index], incoming: item)
                 combined.id = result[index].id
                 result[index] = combined
             } else {
+                if let key { exactSemanticIndexes[key] = result.count }
                 result.append(item)
             }
         }
@@ -196,12 +227,17 @@ enum TranscriptReconciler {
     }
 
     static func mergeHistoryItems(_ historyItems: [TranscriptItem], into messages: [TranscriptItem]) -> [TranscriptItem] {
-        var result = messages.filter { !isInternalEnvironmentContext($0) }
+        let historyItems = coalescingDuplicateIds(historyItems.filter { !isInternalEnvironmentContext($0) })
+        var result = coalescingDuplicateIds(messages.filter { !isInternalEnvironmentContext($0) })
+        var indexById = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.id, $0.offset) })
         var consumedIds = Set<String>()
         for item in historyItems {
-            if let index = result.firstIndex(where: {
+            let exactIndex = indexById[item.id].flatMap {
+                consumedIds.contains(result[$0].id) ? nil : $0
+            }
+            if let index = exactIndex ?? result.firstIndex(where: {
                 !consumedIds.contains($0.id)
-                    && ($0.id == item.id || semanticallyMatches($0, item) || equivalentUserMessage($0, item))
+                    && (semanticallyMatches($0, item) || equivalentUserMessage($0, item))
             }) {
                 consumedIds.insert(result[index].id)
                 var combined = merge(existing: result[index], incoming: item)
@@ -210,15 +246,67 @@ enum TranscriptReconciler {
             } else if let turnId = item.turnId,
                       let lastTurnIndex = result.lastIndex(where: { $0.turnId == turnId }) {
                 result.insert(item, at: lastTurnIndex + 1)
+                indexById = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.id, $0.offset) })
             } else if item.turnId != nil,
                       let firstUnboundIndex = result.firstIndex(where: { $0.turnId == nil }) {
                 result.insert(item, at: firstUnboundIndex)
+                indexById = Dictionary(uniqueKeysWithValues: result.enumerated().map { ($0.element.id, $0.offset) })
             } else {
+                indexById[item.id] = result.count
                 result.append(item)
             }
         }
         let ordered = reorderKnownHistoryTurns(result, historyItems: historyItems)
         return moveInitialHistoryPromptsToTurnStart(ordered, historyItems: historyItems)
+    }
+
+    private static func coalescingDuplicateIds(_ items: [TranscriptItem]) -> [TranscriptItem] {
+        guard items.count > 1 else { return items }
+        var result: [TranscriptItem] = []
+        result.reserveCapacity(items.count)
+        var indexById: [String: Int] = [:]
+        indexById.reserveCapacity(items.count)
+        for item in items {
+            if let index = indexById[item.id] {
+                var combined = merge(existing: result[index], incoming: item)
+                combined.id = result[index].id
+                result[index] = combined
+            } else {
+                indexById[item.id] = result.count
+                result.append(item)
+            }
+        }
+        return result
+    }
+
+    private struct ExactSemanticKey: Hashable {
+        let turnId: String?
+        let role: Int
+        let kind: Int
+        let text: String
+    }
+
+    private static func exactSemanticKey(_ item: TranscriptItem) -> ExactSemanticKey? {
+        let kind: Int
+        switch item.kind {
+        case .command: kind = 1
+        case .fileChange: kind = 2
+        case .webSearch: kind = 3
+        case .plan: kind = 4
+        case .contextCompaction: kind = 5
+        case .image: kind = 6
+        case .message, .reasoning, .subagent, .other: return nil
+        }
+        let role: Int
+        switch item.role {
+        case .user: role = 1
+        case .assistant: role = 2
+        case .tool: role = 3
+        case .system: role = 4
+        }
+        let text = normalizedText(item.text)
+        guard !text.isEmpty else { return nil }
+        return ExactSemanticKey(turnId: item.turnId, role: role, kind: kind, text: text)
     }
 
     private static func moveInitialHistoryPromptsToTurnStart(
