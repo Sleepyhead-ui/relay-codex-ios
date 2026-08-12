@@ -1758,6 +1758,7 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   }
   sessionActivity.dispose();
   sessionActivity = new SessionActivityTracker();
+  fileTransfer.resetConversationAccess();
   sessionSourceOwnership.clear();
   clearThreadControl("profile-switch");
   runtimeState = new RuntimeStateTracker();

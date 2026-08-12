@@ -33,6 +33,8 @@ interface GitHubRelease {
 }
 
 export class UpdateManager {
+  private iosDownloadInFlight: Promise<Record<string, unknown>> | undefined;
+
   constructor(private readonly filesRoot: string) {}
 
   async check(currentVersion: string): Promise<Record<string, unknown>> {
@@ -51,6 +53,17 @@ export class UpdateManager {
   }
 
   async downloadIOS(onProgress: (progress: UpdateDownloadProgress) => void = () => {}): Promise<Record<string, unknown>> {
+    if (this.iosDownloadInFlight) return this.iosDownloadInFlight;
+    const operation = this.downloadIOSOnce(onProgress);
+    this.iosDownloadInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.iosDownloadInFlight === operation) this.iosDownloadInFlight = undefined;
+    }
+  }
+
+  private async downloadIOSOnce(onProgress: (progress: UpdateDownloadProgress) => void): Promise<Record<string, unknown>> {
     const release = await fetchLatestRelease();
     const asset = selectIPAAsset(release.assets);
     if (!asset) throw new Error("The latest release does not include Relay.ipa.");

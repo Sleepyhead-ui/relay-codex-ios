@@ -287,3 +287,26 @@ test("shares one watcher across subscribers and closes it after the last unsubsc
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("serializes concurrent snapshots for one rollout reader", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-concurrent-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const entries = [
+    { timestamp: "2026-07-20T05:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn.concurrent" } },
+    ...Array.from({ length: 2_000 }, (_, index) => ({
+      timestamp: "2026-07-20T05:00:01.000Z",
+      type: "response_item",
+      payload: { type: "message", id: `message.${index}`, role: "assistant", content: [{ type: "output_text", text: `line ${index}` }] },
+    })),
+  ];
+  await writeFile(sessionPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+  const sessions = new SessionActivityTracker();
+  sessions.observeThreadList({ data: [{ id: "thread.concurrent", path: sessionPath }] });
+  const snapshots = await Promise.all(Array.from({ length: 12 }, () => sessions.turnSnapshot("thread.concurrent")));
+  for (const snapshot of snapshots) {
+    assert.equal(snapshot.known, true);
+    assert.equal(snapshot.items.length, 2_000);
+    assert.equal(snapshot.items.at(-1).id, "message.1999");
+  }
+});

@@ -7,6 +7,7 @@ import type { JsonObject } from "./protocol.js";
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif"]);
+const MAX_REFERENCED_FILES = 4_096;
 export const FILE_CHUNK_BYTES = 512 * 1024;
 
 interface UploadSession {
@@ -63,8 +64,22 @@ export class FileTransferManager {
   /** Authorizes only exact file paths that Codex exposed in conversation data. */
   allowConversationPayload(payload: unknown): void {
     for (const candidate of referencedFilePaths(payload)) {
-      this.referencedFiles.add(pathKey(resolveRequestedPath(candidate, this.defaultCwd)));
+      const key = pathKey(resolveRequestedPath(candidate, this.defaultCwd));
+      this.referencedFiles.delete(key);
+      this.referencedFiles.add(key);
+      while (this.referencedFiles.size > MAX_REFERENCED_FILES) {
+        const oldest = this.referencedFiles.values().next().value;
+        if (typeof oldest !== "string") break;
+        this.referencedFiles.delete(oldest);
+      }
     }
+  }
+
+  resetConversationAccess(): void {
+    this.referencedFiles.clear();
+    this.allowedRoots.clear();
+    this.allowedRoots.add(this.filesRoot);
+    if (this.defaultCwd) this.allowedRoots.add(this.defaultCwd);
   }
 
   async handle(method: string, params: JsonObject): Promise<JsonObject> {

@@ -10,6 +10,7 @@ interface SessionState {
   signature?: string;
   cachedSnapshot?: SessionTurnSnapshot;
   reader?: RolloutTailReader;
+  readInFlight?: Promise<SessionTurnSnapshot>;
 }
 
 interface SessionWatch {
@@ -88,6 +89,20 @@ export class SessionActivityTracker {
     }
     const session = this.sessions.get(threadId);
     if (!session) return { known: false, isRunning: false, updatedAt: Date.now() / 1000 };
+
+    const previous = session.readInFlight;
+    const operation = (previous ?? Promise.resolve(undefined))
+      .catch(() => undefined)
+      .then(() => this.readTurnSnapshot(session));
+    session.readInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (session.readInFlight === operation) delete session.readInFlight;
+    }
+  }
+
+  private async readTurnSnapshot(session: SessionState): Promise<SessionTurnSnapshot> {
 
     let fileStat;
     try {

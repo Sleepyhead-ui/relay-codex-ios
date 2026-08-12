@@ -103,6 +103,38 @@ test("conversation authorization is exact and does not expose sibling files", as
   await assert.rejects(() => manager.handle("relay/file/download/start", { path: sibling }), /not referenced/);
 });
 
+test("clears conversation references and bounds retained authorization", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "relay-transfer-outside-"));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  const manager = new FileTransferManager(root, path.join(root, ".relay-files"));
+  const first = path.join(outside, "first.txt");
+  await writeFile(first, "first");
+  manager.allowConversationPayload({ items: [{ type: "fileChange", changes: [{ path: first }] }] });
+  const firstDownload = await manager.handle("relay/file/download/start", { path: first });
+  await manager.handle("relay/file/download/chunk", { downloadId: firstDownload.downloadId, index: 0 });
+  manager.resetConversationAccess();
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: first }), /not referenced/);
+
+  const workspace = await mkdtemp(path.join(tmpdir(), "relay-transfer-workspace-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const workspaceFile = path.join(workspace, "workspace.txt");
+  await writeFile(workspaceFile, "workspace");
+  manager.allowWorkspace(workspace);
+  manager.resetConversationAccess();
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: workspaceFile }), /outside/);
+
+  const files = await Promise.all(Array.from({ length: 4_100 }, async (_, index) => {
+    const file = path.join(outside, `referenced-${index}.txt`);
+    await writeFile(file, "x");
+    manager.allowConversationPayload({ items: [{ type: "fileChange", changes: [{ path: file }] }] });
+    return file;
+  }));
+  await assert.rejects(() => manager.handle("relay/file/download/start", { path: files[0] }), /not referenced/);
+  const newest = await manager.handle("relay/file/download/start", { path: files.at(-1) });
+  await manager.handle("relay/file/download/chunk", { downloadId: newest.downloadId, index: 0 });
+});
+
 test("previews supported images outside the workspace without exposing other files", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "relay-transfer-"));
   const outside = await mkdtemp(path.join(tmpdir(), "relay-preview-"));
