@@ -39,7 +39,6 @@ final class RelayStore: ObservableObject {
     @Published var isCompacting = false
     @Published var attachments: [PendingAttachment] = []
     @Published var workspaceAccess: WorkspaceAccessMode = .workspaceWrite
-    @Published var sharedFile: SharedFile?
     @Published var imagePreview: ImagePreviewPresentation?
     @Published var downloadingPath: String?
     @Published var imagePreviewURLs: [String: URL] = [:]
@@ -72,6 +71,7 @@ final class RelayStore: ObservableObject {
     @Published var updateDownloadProgress: Double?
 
     let socket = RelaySocket()
+    let presentation = RelayPresentationStore()
     let hostDefaultsKey = "relay.host.configuration"
     private let modelDefaultsKey = "relay.model"
     private let effortDefaultsKey = "relay.reasoningEffort"
@@ -202,16 +202,17 @@ final class RelayStore: ObservableObject {
     }
 
     func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
-        let activityItems = turnId.map { transcriptItems(turnId: $0).filter(\.isActivity) } ?? []
+        let activityItems = turnId.map {
+            transcriptIndex.activityItems(forTurnId: $0, messages: messages, limit: 160)
+        } ?? []
         // The live card only needs enough recent entries to remain useful while
         // streaming. Keeping the full transcript for the activity sheet avoids
         // making every token update reprocess a huge rollout.
-        let liveItems = activityItems.count > 160 ? Array(activityItems.suffix(160)) : activityItems
         return mobileActivityFeedCache.feed(
             threadId: threadId,
             turnId: turnId,
             transcriptRevision: transcriptRevision,
-            items: liveItems
+            items: activityItems
         )
     }
     var planModeAvailable: Bool {

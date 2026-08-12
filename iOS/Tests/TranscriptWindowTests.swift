@@ -96,6 +96,23 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertTrue(index.items(forTurnId: "missing", messages: messages).isEmpty)
     }
 
+    func testReturnsOnlyTheNewestActivityItemsForARequestedTurn() {
+        let messages = (0..<500).map { index in
+            TranscriptItem(
+                id: "item.\(index)",
+                turnId: "turn.live",
+                role: index.isMultiple(of: 2) ? .tool : .assistant,
+                kind: index.isMultiple(of: 2) ? .command : .message,
+                text: "item \(index)"
+            )
+        }
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+
+        let activity = index.activityItems(forTurnId: "turn.live", messages: messages, limit: 3)
+        XCTAssertEqual(activity.map(\.id), ["item.494", "item.496", "item.498"])
+    }
+
     func testAdoptsOneHundredSessionPatchesWithoutRebuildingGroups() {
         var messages = (0..<1_000).map { index in
             TranscriptItem(id: "message.\(index)", turnId: "turn.\(index)", role: .assistant, kind: .message, text: "\(index)")

@@ -58,7 +58,7 @@ extension RelayStore {
         defer { downloadingPath = nil }
         do {
             let url = try await socket.downloadFile(at: path) { _ in }
-            sharedFile = SharedFile(url: url)
+            presentation.sharedFile = SharedFile(url: url)
         } catch {
             report(error)
         }

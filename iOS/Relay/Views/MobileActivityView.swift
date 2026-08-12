@@ -216,11 +216,12 @@ private struct MobileProgressWindow: View {
                     }
                     .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
                         let tolerance: CGFloat = followsLatest ? 24 : 10
-                        followsLatest = ActivityWindowScrollMetrics.isAtBottom(
+                        guard let atBottom = ActivityWindowScrollMetrics.isAtBottom(
                             bottomY: bottomY,
                             viewportHeight: viewportHeight,
                             tolerance: tolerance
-                        )
+                        ) else { return }
+                        followsLatest = atBottom
                     }
                     .onAppear { scrollToLatest(proxy, animated: false) }
                     .onChange(of: feed.progressRevision) { _ in
@@ -352,11 +353,12 @@ private struct MobileToolWindow: View {
                     }
                     .onPreferenceChange(ActivityWindowBottomPreferenceKey.self) { bottomY in
                         let tolerance: CGFloat = followsLatest ? 24 : 10
-                        followsLatest = ActivityWindowScrollMetrics.isAtBottom(
+                        guard let atBottom = ActivityWindowScrollMetrics.isAtBottom(
                             bottomY: bottomY,
                             viewportHeight: viewportHeight,
                             tolerance: tolerance
-                        )
+                        ) else { return }
+                        followsLatest = atBottom
                     }
                     .onAppear { scrollToLatest(proxy, animated: false) }
                     .onChange(of: feed.toolRevision) { _ in

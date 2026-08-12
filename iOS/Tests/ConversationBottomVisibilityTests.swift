@@ -3,19 +3,19 @@ import XCTest
 
 final class ConversationBottomVisibilityTests: XCTestCase {
     func testBottomMarkerInsideViewportIsAtBottom() {
-        XCTAssertTrue(ConversationBottomVisibility.isAtBottom(bottomY: 790, viewportHeight: 800))
+        XCTAssertEqual(ConversationBottomVisibility.isAtBottom(bottomY: 790, viewportHeight: 800), true)
     }
 
     func testSmallLayoutRoundingGapStillCountsAsBottom() {
-        XCTAssertTrue(ConversationBottomVisibility.isAtBottom(bottomY: 811, viewportHeight: 800))
+        XCTAssertEqual(ConversationBottomVisibility.isAtBottom(bottomY: 811, viewportHeight: 800), true)
     }
 
     func testMarkerBelowViewportShowsJumpControl() {
-        XCTAssertFalse(ConversationBottomVisibility.isAtBottom(bottomY: 840, viewportHeight: 800))
+        XCTAssertEqual(ConversationBottomVisibility.isAtBottom(bottomY: 840, viewportHeight: 800), false)
     }
 
     func testUnmeasuredPreferenceDoesNotHideJumpControl() {
-        XCTAssertTrue(ConversationBottomVisibility.isAtBottom(
+        XCTAssertNil(ConversationBottomVisibility.isAtBottom(
             bottomY: .greatestFiniteMagnitude,
             viewportHeight: 800
         ))

@@ -11,6 +11,11 @@ struct ConversationView: View {
     @State private var keyboardTransitionID: UUID?
     @State private var scrollViewportHeight: CGFloat = 0
     @State private var preservingHistoryScroll = false
+    @State private var historyContentOffsetY: CGFloat?
+    @State private var historyContentHeight: CGFloat?
+    @State private var historyRestoreOffsetY: CGFloat?
+    @State private var historyContentOffsetYBefore: CGFloat?
+    @State private var historyContentHeightBefore: CGFloat?
 
     private let bottomAnchor = "relay-conversation-bottom"
     private let scrollCoordinateSpace = "relay-conversation-scroll"
@@ -236,10 +241,26 @@ struct ConversationView: View {
                     // second DragGesture, which can compete with UIKit's pan
                     // recognizer during inertial scrolling.
                     .background {
-                        ScrollActivityObserver { active in
-                            guard isUserScrolling != active else { return }
-                            isUserScrolling = active
-                        }
+                        ScrollActivityObserver(
+                            restoreOffsetY: historyRestoreOffsetY,
+                            onActiveChanged: { active in
+                                guard isUserScrolling != active else { return }
+                                isUserScrolling = active
+                            },
+                            onMetricsChanged: { offsetY, contentHeight in
+                                let baselineOffset = historyContentOffsetYBefore
+                                let baselineHeight = historyContentHeightBefore
+                                historyContentOffsetY = offsetY
+                                historyContentHeight = contentHeight
+                                guard preservingHistoryScroll,
+                                      let baselineOffset,
+                                      let baselineHeight,
+                                      contentHeight > baselineHeight + 1 else { return }
+                                historyRestoreOffsetY = baselineOffset + contentHeight - baselineHeight
+                                historyContentOffsetYBefore = nil
+                                historyContentHeightBefore = nil
+                            }
+                        )
                         .frame(width: 1, height: 1)
                     }
                     .onTapGesture { dismissKeyboard() }
@@ -280,7 +301,10 @@ struct ConversationView: View {
                     }
                 }
                 .onChange(of: store.transcriptRevision) { _ in
-                    guard isAtBottom, !isUserScrolling, !autoScrollScheduled else { return }
+                    guard !preservingHistoryScroll,
+                          isAtBottom,
+                          !isUserScrolling,
+                          !autoScrollScheduled else { return }
                     autoScrollScheduled = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         autoScrollScheduled = false
@@ -330,11 +354,11 @@ struct ConversationView: View {
               scrollViewportHeight > 0,
               bottomMarkerY.isFinite else { return }
         let tolerance: CGFloat = isAtBottom ? 20 : 10
-        let visible = ConversationBottomVisibility.isAtBottom(
+        guard let visible = ConversationBottomVisibility.isAtBottom(
             bottomY: bottomMarkerY,
             viewportHeight: scrollViewportHeight,
             tolerance: tolerance
-        )
+        ) else { return }
         guard visible != isAtBottom else { return }
         if visible { isAtBottom = true }
         else if keyboardTransitionID == nil { isAtBottom = false }
@@ -363,17 +387,19 @@ struct ConversationView: View {
     private func revealEarlier(window: TranscriptWindow, proxy: ScrollViewProxy) {
         let anchor = window.groups.first?.id
         let wasAtBottom = isAtBottom
+        historyContentOffsetYBefore = historyContentOffsetY
+        historyContentHeightBefore = historyContentHeight
         preservingHistoryScroll = true
         if window.hasEarlierGroups {
             visibleGroupLimit += 24
-            restore(anchor: anchor, proxy: proxy)
+            if historyContentOffsetYBefore == nil { restore(anchor: anchor, proxy: proxy) }
             finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
             return
         }
         Task { @MainActor in
             await store.loadOlderTurns()
             visibleGroupLimit += 12
-            restore(anchor: anchor, proxy: proxy)
+            if historyContentOffsetYBefore == nil { restore(anchor: anchor, proxy: proxy) }
             finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
         }
     }
@@ -384,6 +410,9 @@ struct ConversationView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
             preservingHistoryScroll = false
             isAtBottom = wasAtBottom
+            historyRestoreOffsetY = nil
+            historyContentOffsetYBefore = nil
+            historyContentHeightBefore = nil
         }
     }
 
@@ -463,10 +492,12 @@ private struct ConversationViewportHeightPreferenceKey: PreferenceKey {
 }
 
 private struct ScrollActivityObserver: UIViewRepresentable {
-    let onChanged: (Bool) -> Void
+    let restoreOffsetY: CGFloat?
+    let onActiveChanged: (Bool) -> Void
+    let onMetricsChanged: (CGFloat, CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onChanged: onChanged)
+        Coordinator(onActiveChanged: onActiveChanged, onMetricsChanged: onMetricsChanged)
     }
 
     func makeUIView(context: Context) -> UIView {
@@ -479,20 +510,28 @@ private struct ScrollActivityObserver: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UIView, context: Context) {
-        context.coordinator.onChanged = onChanged
+        context.coordinator.onActiveChanged = onActiveChanged
+        context.coordinator.onMetricsChanged = onMetricsChanged
         DispatchQueue.main.async {
             context.coordinator.attach(to: view)
+            if let restoreOffsetY,
+               let scrollView = context.coordinator.scrollView,
+               abs(scrollView.contentOffset.y - restoreOffsetY) > 0.5 {
+                scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: restoreOffsetY), animated: false)
+            }
         }
     }
 
     final class Coordinator: NSObject {
-        var onChanged: (Bool) -> Void
-        private weak var scrollView: UIScrollView?
+        var onActiveChanged: (Bool) -> Void
+        var onMetricsChanged: (CGFloat, CGFloat) -> Void
+        private(set) weak var scrollView: UIScrollView?
         private var isActive = false
         private var resetWorkItem: DispatchWorkItem?
 
-        init(onChanged: @escaping (Bool) -> Void) {
-            self.onChanged = onChanged
+        init(onActiveChanged: @escaping (Bool) -> Void, onMetricsChanged: @escaping (CGFloat, CGFloat) -> Void) {
+            self.onActiveChanged = onActiveChanged
+            self.onMetricsChanged = onMetricsChanged
         }
 
         func attach(to view: UIView) {
@@ -502,6 +541,9 @@ private struct ScrollActivityObserver: UIViewRepresentable {
                 if let scrollView = candidate as? UIScrollView {
                     self.scrollView = scrollView
                     scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
+                    scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentOffset), options: [.new], context: nil)
+                    scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentSize), options: [.new], context: nil)
+                    onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
                     return
                 }
                 ancestor = candidate.superview
@@ -515,7 +557,7 @@ private struct ScrollActivityObserver: UIViewRepresentable {
                 resetWorkItem = nil
                 guard !isActive else { return }
                 isActive = true
-                onChanged(true)
+                onActiveChanged(true)
             case .ended, .cancelled, .failed:
                 resetWorkItem?.cancel()
                 let workItem = DispatchWorkItem { [weak self] in self?.finishWhenIdle() }
@@ -535,11 +577,27 @@ private struct ScrollActivityObserver: UIViewRepresentable {
                 return
             }
             isActive = false
-            onChanged(false)
+            onActiveChanged(false)
+        }
+
+        override func observeValue(
+            forKeyPath keyPath: String?,
+            of object: Any?,
+            change: [NSKeyValueChangeKey: Any]?,
+            context: UnsafeMutableRawPointer?
+        ) {
+            guard let scrollView = object as? UIScrollView else { return }
+            if keyPath == #keyPath(UIScrollView.contentOffset) || keyPath == #keyPath(UIScrollView.contentSize) {
+                onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
+            }
         }
 
         deinit {
             resetWorkItem?.cancel()
+            if let scrollView {
+                scrollView.removeObserver(self, forKeyPath: #keyPath(UIScrollView.contentOffset))
+                scrollView.removeObserver(self, forKeyPath: #keyPath(UIScrollView.contentSize))
+            }
             scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(handlePan(_:)))
         }
     }

@@ -84,7 +84,7 @@ extension RelayStore {
                 throw RelaySocket.SocketError.remote("Bridge did not return the downloaded IPA path.")
             }
             let localURL = try await socket.downloadFile(at: path) { _ in }
-            sharedFile = SharedFile(url: localURL)
+            presentation.sharedFile = SharedFile(url: localURL)
         } catch {
             report(error)
         }

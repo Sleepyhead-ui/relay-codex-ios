@@ -11,15 +11,15 @@ final class ActivityWindowScrollMetricsTests: XCTestCase {
     }
 
     func testSmallBottomMovementKeepsLatestButtonHidden() {
-        XCTAssertTrue(ActivityWindowScrollMetrics.isAtBottom(bottomY: 116, viewportHeight: 104))
+        XCTAssertEqual(ActivityWindowScrollMetrics.isAtBottom(bottomY: 116, viewportHeight: 104), true)
     }
 
     func testLeavingBottomShowsLatestButton() {
-        XCTAssertFalse(ActivityWindowScrollMetrics.isAtBottom(bottomY: 140, viewportHeight: 104))
+        XCTAssertEqual(ActivityWindowScrollMetrics.isAtBottom(bottomY: 140, viewportHeight: 104), false)
     }
 
     func testUnmeasuredPreferenceIsIgnoredAsAtBottom() {
-        XCTAssertTrue(ActivityWindowScrollMetrics.isAtBottom(
+        XCTAssertNil(ActivityWindowScrollMetrics.isAtBottom(
             bottomY: .greatestFiniteMagnitude,
             viewportHeight: 104
         ))

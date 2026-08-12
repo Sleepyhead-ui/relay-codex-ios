@@ -11,6 +11,24 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: Verify release versions
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify tag and app versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          ios="$(sed -n 's/^    MARKETING_VERSION: //p' iOS/project.yml)"
+          bridge="$(node -p "require('./Bridge/package.json').version")"
+          desktop="$(node -p "require('./Desktop/package.json').version")"
+          for actual in "$ios" "$bridge" "$desktop"; do
+            test "$actual" = "$expected" || { echo "Version mismatch: tag=$expected value=$actual"; exit 1; }
+          done
+
   bridge:
     name: Test Windows bridge
     runs-on: ubuntu-latest

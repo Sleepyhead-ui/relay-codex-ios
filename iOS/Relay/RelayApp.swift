@@ -9,6 +9,7 @@ struct RelayApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(store)
+                .environmentObject(store.presentation)
                 .tint(RelayTheme.accent)
                 .onOpenURL { store.consumePairingURL($0) }
                 .task {

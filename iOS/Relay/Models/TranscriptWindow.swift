@@ -124,6 +124,22 @@ struct TranscriptIndex {
         return Array(messages[descriptor.range])
     }
 
+    func activityItems(
+        forTurnId turnId: String,
+        messages: [TranscriptItem],
+        limit: Int
+    ) -> [TranscriptItem] {
+        guard limit > 0,
+              let descriptor = ranges.last(where: { $0.turnId == turnId }) else { return [] }
+        var result: [TranscriptItem] = []
+        result.reserveCapacity(min(limit, descriptor.range.count))
+        for item in messages[descriptor.range].reversed() where item.isActivity {
+            result.append(item)
+            if result.count == limit { break }
+        }
+        return Array(result.reversed())
+    }
+
     private mutating func appendRange(for item: TranscriptItem, at index: Int) {
         let key = Self.groupKey(item)
         if let lastIndex = ranges.indices.last, ranges[lastIndex].id == key {

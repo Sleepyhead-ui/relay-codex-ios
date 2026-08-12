@@ -3,6 +3,7 @@ import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var store: RelayStore
+    @EnvironmentObject private var presentation: RelayPresentationStore
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -43,7 +44,7 @@ struct RootView: View {
             get: { store.pendingApproval },
             set: { _ in }
         )) { approval in ApprovalSheet(approval: approval) }
-        .sheet(item: $store.sharedFile) { file in
+        .sheet(item: $presentation.sharedFile) { file in
             ShareSheet(items: [file.url])
         }
         .fullScreenCover(item: $store.imagePreview) { preview in
