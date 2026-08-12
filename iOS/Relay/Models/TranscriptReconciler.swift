@@ -405,7 +405,7 @@ enum TranscriptReconciler {
                 // the end of the turn, after the final output. Multiple
                 // unresolved anchors are inserted before that output while
                 // processing placements in descending sequence order.
-                insertion = result.firstIndex(where: { candidateIndex in
+                insertion = result.indices.first(where: { candidateIndex in
                     let candidate = result[candidateIndex]
                     return candidate.role == .user
                         && candidate.turnId == turnId
