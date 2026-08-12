@@ -58,6 +58,44 @@ struct DiagnosticsView: View {
                         )
                     }
 
+                    Section {
+                        if let metrics = report.transcriptScrollMetrics {
+                            metricRow(
+                                title: "主对话滚动视图",
+                                value: metrics.scrollClass,
+                                detail: "offset \(formatPoint(metrics.offsetY)) · content \(formatPoint(metrics.contentHeight)) · viewport \(formatPoint(metrics.viewportHeight))"
+                            )
+                            metricRow(
+                                title: "距底部",
+                                value: formatPoint(metrics.distanceFromBottom),
+                                detail: "inset \(formatPoint(metrics.insetTop))/\(formatPoint(metrics.insetBottom)) · 到底 \(metrics.isAtBottom ? "是" : "否") · 拖动 \(metrics.isDragging ? "是" : "否")"
+                            )
+                        } else {
+                            Text("尚未绑定主对话滚动视图")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(report.transcriptScrollCommands.prefix(8)) { command in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text(scrollReason(command.reason))
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Spacer(minLength: 10)
+                                    Text(command.recordedAt.formatted(date: .omitted, time: .standard))
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Text("动画 \(command.animated ? "是" : "否") · 触发前到底 \(command.isAtBottom ? "是" : "否") · 用户滚动 \(command.isUserScrolling ? "是" : "否")")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } header: {
+                        Text("对话滚动诊断")
+                    } footer: {
+                        Text("显示最近一次原生 UIScrollView 指标和最近 8 次主动滚动到底部的原因。")
+                    }
+
                     if !report.bridgePerformance.recentTurnLatencies.isEmpty {
                         Section {
                             ForEach(report.bridgePerformance.recentTurnLatencies.prefix(8)) { latency in
@@ -210,5 +248,21 @@ struct DiagnosticsView: View {
 
     private func formatRatio(_ value: Double) -> String {
         String(format: "%.1f%%", value * 100)
+    }
+
+    private func formatPoint(_ value: CGFloat) -> String {
+        String(format: "%.1f", value)
+    }
+
+    private func scrollReason(_ reason: TranscriptScrollCommandReason) -> String {
+        switch reason {
+        case .initialThread: return "首次打开对话"
+        case .liveUpdate: return "实时内容更新"
+        case .outgoingMessage: return "发送消息"
+        case .outgoingMessageLayout: return "发送消息排版完成"
+        case .queuedFollowUp: return "引导队列变化"
+        case .bottomButton: return "点击回到底部"
+        case .keyboardTransition: return "键盘高度变化"
+        }
     }
 }

@@ -24,8 +24,10 @@ jobs:
           expected="${GITHUB_REF_NAME#v}"
           ios="$(sed -n 's/^    MARKETING_VERSION: //p' iOS/project.yml)"
           bridge="$(node -p "require('./Bridge/package.json').version")"
+          bridge_lock="$(node -p "require('./Bridge/package-lock.json').version")"
           desktop="$(node -p "require('./Desktop/package.json').version")"
-          for actual in "$ios" "$bridge" "$desktop"; do
+          desktop_lock="$(node -p "require('./Desktop/package-lock.json').version")"
+          for actual in "$ios" "$bridge" "$bridge_lock" "$desktop" "$desktop_lock"; do
             test "$actual" = "$expected" || { echo "Version mismatch: tag=$expected value=$actual"; exit 1; }
           done
 

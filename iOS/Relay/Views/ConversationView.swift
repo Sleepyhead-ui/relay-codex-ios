@@ -9,16 +9,11 @@ struct ConversationView: View {
     @State private var visibleGroupLimit = 24
     @State private var activityPresentation: MobileActivityPresentation?
     @State private var keyboardTransitionID: UUID?
-    @State private var scrollViewportHeight: CGFloat = 0
     @State private var preservingHistoryScroll = false
-    @State private var historyContentOffsetY: CGFloat?
-    @State private var historyContentHeight: CGFloat?
-    @State private var historyRestoreOffsetY: CGFloat?
-    @State private var historyContentOffsetYBefore: CGFloat?
-    @State private var historyContentHeightBefore: CGFloat?
+    @State private var initialScrollState = TranscriptInitialScrollState()
+    @State private var scrollTracker = ConversationScrollTracker()
 
     private let bottomAnchor = "relay-conversation-bottom"
-    private let scrollCoordinateSpace = "relay-conversation-scroll"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -205,73 +200,36 @@ struct ConversationView: View {
                             Color.clear
                                 .frame(height: 1)
                                 .id(bottomAnchor)
-                                .background {
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(
-                                            key: ConversationBottomMarkerPreferenceKey.self,
-                                            value: geometry.frame(in: .named(scrollCoordinateSpace)).minY
-                                        )
-                                    }
-                                }
                         }
                         .frame(maxWidth: RelayTheme.contentWidth)
                         .padding(.horizontal, RelayTheme.horizontalPadding)
                         .padding(.top, 24)
                         .padding(.bottom, 20)
                         .frame(maxWidth: .infinity)
-                    }
-                    .coordinateSpace(name: scrollCoordinateSpace)
-                    .background {
-                        GeometryReader { geometry in
-                            Color.clear.preference(
-                                key: ConversationViewportHeightPreferenceKey.self,
-                                value: geometry.size.height
+                        .background {
+                            ScrollActivityObserver(
+                                tracker: scrollTracker,
+                                onActiveChanged: { active in
+                                    guard isUserScrolling != active else { return }
+                                    isUserScrolling = active
+                                },
+                                onBottomChanged: { atBottom in
+                                    guard !preservingHistoryScroll,
+                                          keyboardTransitionID == nil else { return }
+                                    if isAtBottom != atBottom { isAtBottom = atBottom }
+                                }
                             )
+                            .frame(width: 1, height: 1)
                         }
                     }
                     .scrollDismissesKeyboard(.interactively)
-                    .onPreferenceChange(ConversationViewportHeightPreferenceKey.self) { value in
-                        guard abs(scrollViewportHeight - value) > 0.5 else { return }
-                        scrollViewportHeight = value
-                    }
-                    // Observe the native scroll view rather than attaching a
-                    // second DragGesture, which can compete with UIKit's pan
-                    // recognizer during inertial scrolling.
-                    .background {
-                        ScrollActivityObserver(
-                            restoreOffsetY: historyRestoreOffsetY,
-                            onActiveChanged: { active in
-                                guard isUserScrolling != active else { return }
-                                isUserScrolling = active
-                            },
-                            onMetricsChanged: { offsetY, contentHeight in
-                                let baselineOffset = historyContentOffsetYBefore
-                                let baselineHeight = historyContentHeightBefore
-                                historyContentOffsetY = offsetY
-                                historyContentHeight = contentHeight
-                                guard preservingHistoryScroll,
-                                      let baselineOffset,
-                                      let baselineHeight,
-                                      contentHeight > baselineHeight + 1 else { return }
-                                historyRestoreOffsetY = baselineOffset + contentHeight - baselineHeight
-                                historyContentOffsetYBefore = nil
-                                historyContentHeightBefore = nil
-                            },
-                            onBottomChanged: { atBottom in
-                                guard !preservingHistoryScroll,
-                                      keyboardTransitionID == nil else { return }
-                                if isAtBottom != atBottom { isAtBottom = atBottom }
-                            }
-                        )
-                        .frame(width: 1, height: 1)
-                    }
                     .onTapGesture { dismissKeyboard() }
 
                     if !isAtBottom {
                         Button {
                             isAtBottom = true
                             DispatchQueue.main.async {
-                                scrollToBottom(proxy, animated: true)
+                                scrollToBottom(proxy, animated: true, reason: .bottomButton)
                             }
                         } label: {
                             Image(systemName: "arrow.down")
@@ -288,19 +246,9 @@ struct ConversationView: View {
                         .transition(.scale(scale: 0.85).combined(with: .opacity))
                     }
                 }
-                .onAppear { scrollToBottom(proxy, animated: false) }
+                .onAppear { initializeTranscriptIfNeeded(proxy) }
                 .onChange(of: store.selectedThreadId) { _ in
-                    isAtBottom = true
-                    visibleGroupLimit = 24
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                        scrollToBottom(proxy, animated: false)
-                    }
-                }
-                .onChange(of: store.isLoadingThread) { loading in
-                    guard !loading else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                        scrollToBottom(proxy, animated: false)
-                    }
+                    initializeTranscriptIfNeeded(proxy)
                 }
                 .onChange(of: store.transcriptRevision) { _ in
                     guard !preservingHistoryScroll,
@@ -311,7 +259,7 @@ struct ConversationView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         autoScrollScheduled = false
                         guard isAtBottom, !isUserScrolling else { return }
-                        scrollToBottom(proxy, animated: !store.isRunning)
+                        scrollToBottom(proxy, animated: !store.isRunning, reason: .liveUpdate)
                     }
                 }
                 .onChange(of: store.transcriptScrollRequest) { request in
@@ -321,7 +269,7 @@ struct ConversationView: View {
                 .onChange(of: store.currentQueuedFollowUps.map(\.id)) { _ in
                     guard isAtBottom, !isUserScrolling else { return }
                     DispatchQueue.main.async {
-                        scrollToBottom(proxy, animated: true)
+                        scrollToBottom(proxy, animated: true, reason: .queuedFollowUp)
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notification in
@@ -334,7 +282,18 @@ struct ConversationView: View {
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+    private func scrollToBottom(
+        _ proxy: ScrollViewProxy,
+        animated: Bool,
+        reason: TranscriptScrollCommandReason
+    ) {
+        TranscriptScrollDiagnostics.shared.recordCommand(
+            reason: reason,
+            animated: animated,
+            threadId: store.selectedThreadId,
+            isAtBottom: isAtBottom,
+            isUserScrolling: isUserScrolling
+        )
         if animated {
             withAnimation(.easeOut(duration: 0.22)) {
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
@@ -355,11 +314,22 @@ struct ConversationView: View {
         // The running console and keyboard can both change the bottom inset in
         // the same update. Pin once after insertion and once after layout settles.
         DispatchQueue.main.async {
-            scrollToBottom(proxy, animated: false)
+            scrollToBottom(proxy, animated: false, reason: .outgoingMessage)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             guard isAtBottom, !isUserScrolling else { return }
-            scrollToBottom(proxy, animated: false)
+            scrollToBottom(proxy, animated: false, reason: .outgoingMessageLayout)
+        }
+    }
+
+    private func initializeTranscriptIfNeeded(_ proxy: ScrollViewProxy) {
+        guard let threadId = store.selectedThreadId,
+              initialScrollState.consume(threadId: threadId) else { return }
+        isAtBottom = true
+        visibleGroupLimit = 24
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            guard initialScrollState.initializedThreadId == threadId else { return }
+            scrollToBottom(proxy, animated: false, reason: .initialThread)
         }
     }
 
@@ -371,32 +341,26 @@ struct ConversationView: View {
     private func revealEarlier(window: TranscriptWindow, proxy: ScrollViewProxy) {
         let anchor = window.groups.first?.id
         let wasAtBottom = isAtBottom
-        historyContentOffsetYBefore = historyContentOffsetY
-        historyContentHeightBefore = historyContentHeight
+        let hasNativeMetrics = scrollTracker.beginHistoryPreservation()
         preservingHistoryScroll = true
         if window.hasEarlierGroups {
             visibleGroupLimit += 24
-            if historyContentOffsetYBefore == nil { restore(anchor: anchor, proxy: proxy) }
+            if !hasNativeMetrics { restore(anchor: anchor, proxy: proxy) }
             finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
             return
         }
         Task { @MainActor in
             await store.loadOlderTurns()
             visibleGroupLimit += 12
-            if historyContentOffsetYBefore == nil { restore(anchor: anchor, proxy: proxy) }
+            if !hasNativeMetrics { restore(anchor: anchor, proxy: proxy) }
             finishHistoryScrollPreservation(wasAtBottom: wasAtBottom)
         }
     }
 
     private func finishHistoryScrollPreservation(wasAtBottom: Bool) {
-        // Wait for the prepended rows and their markdown layout to settle before
-        // allowing geometry updates to drive the bottom-button state again.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+        scrollTracker.finishHistoryPreservationWhenSettled {
             preservingHistoryScroll = false
             isAtBottom = wasAtBottom
-            historyRestoreOffsetY = nil
-            historyContentOffsetYBefore = nil
-            historyContentHeightBefore = nil
         }
     }
 
@@ -413,6 +377,13 @@ struct ConversationView: View {
 
         DispatchQueue.main.async {
             guard keyboardTransitionID == transitionID else { return }
+            TranscriptScrollDiagnostics.shared.recordCommand(
+                reason: .keyboardTransition,
+                animated: true,
+                threadId: store.selectedThreadId,
+                isAtBottom: isAtBottom,
+                isUserScrolling: isUserScrolling
+            )
             withAnimation(animation) {
                 proxy.scrollTo(bottomAnchor, anchor: .bottom)
             }
@@ -465,26 +436,15 @@ struct ConversationView: View {
     }
 }
 
-private struct ConversationBottomMarkerPreferenceKey: PreferenceKey {
-    static var defaultValue = CGFloat.greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
-private struct ConversationViewportHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 private struct ScrollActivityObserver: UIViewRepresentable {
-    let restoreOffsetY: CGFloat?
+    let tracker: ConversationScrollTracker
     let onActiveChanged: (Bool) -> Void
-    let onMetricsChanged: (CGFloat, CGFloat) -> Void
     let onBottomChanged: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            tracker: tracker,
             onActiveChanged: onActiveChanged,
-            onMetricsChanged: onMetricsChanged,
             onBottomChanged: onBottomChanged
         )
     }
@@ -500,33 +460,28 @@ private struct ScrollActivityObserver: UIViewRepresentable {
 
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.onActiveChanged = onActiveChanged
-        context.coordinator.onMetricsChanged = onMetricsChanged
         context.coordinator.onBottomChanged = onBottomChanged
         DispatchQueue.main.async {
             context.coordinator.attach(to: view)
-            if let restoreOffsetY,
-               let scrollView = context.coordinator.scrollView,
-               abs(scrollView.contentOffset.y - restoreOffsetY) > 0.5 {
-                scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: restoreOffsetY), animated: false)
-            }
         }
     }
 
     final class Coordinator: NSObject {
+        let tracker: ConversationScrollTracker
         var onActiveChanged: (Bool) -> Void
-        var onMetricsChanged: (CGFloat, CGFloat) -> Void
         var onBottomChanged: (Bool) -> Void
         private(set) weak var scrollView: UIScrollView?
         private var isActive = false
         private var resetWorkItem: DispatchWorkItem?
+        private var lastAtBottom: Bool?
 
         init(
+            tracker: ConversationScrollTracker,
             onActiveChanged: @escaping (Bool) -> Void,
-            onMetricsChanged: @escaping (CGFloat, CGFloat) -> Void,
             onBottomChanged: @escaping (Bool) -> Void
         ) {
+            self.tracker = tracker
             self.onActiveChanged = onActiveChanged
-            self.onMetricsChanged = onMetricsChanged
             self.onBottomChanged = onBottomChanged
         }
 
@@ -536,6 +491,7 @@ private struct ScrollActivityObserver: UIViewRepresentable {
             while let candidate = ancestor {
                 if let scrollView = candidate as? UIScrollView {
                     self.scrollView = scrollView
+                    tracker.attach(to: scrollView)
                     scrollView.panGestureRecognizer.addTarget(self, action: #selector(handlePan(_:)))
                     scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentOffset), options: [.new], context: nil)
                     scrollView.addObserver(self, forKeyPath: #keyPath(UIScrollView.contentSize), options: [.new], context: nil)
@@ -589,14 +545,18 @@ private struct ScrollActivityObserver: UIViewRepresentable {
         }
 
         private func publishMetrics(for scrollView: UIScrollView) {
-            onMetricsChanged(scrollView.contentOffset.y, scrollView.contentSize.height)
+            tracker.update(from: scrollView)
             let maxOffsetY = max(
                 -scrollView.adjustedContentInset.top,
                 scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom
             )
             let distance = maxOffsetY - scrollView.contentOffset.y
             guard distance.isFinite else { return }
-            onBottomChanged(distance <= 16)
+            let atBottom = distance <= 16
+            guard lastAtBottom != atBottom else { return }
+            lastAtBottom = atBottom
+            tracker.update(from: scrollView, forceDiagnostics: true)
+            onBottomChanged(atBottom)
         }
 
         deinit {
@@ -605,6 +565,7 @@ private struct ScrollActivityObserver: UIViewRepresentable {
                 scrollView.removeObserver(self, forKeyPath: #keyPath(UIScrollView.contentOffset))
                 scrollView.removeObserver(self, forKeyPath: #keyPath(UIScrollView.contentSize))
             }
+            tracker.detach(from: scrollView)
             scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(handlePan(_:)))
         }
     }

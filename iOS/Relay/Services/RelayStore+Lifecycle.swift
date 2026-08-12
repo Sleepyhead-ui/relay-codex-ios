@@ -20,6 +20,7 @@ extension RelayStore {
             ]))
             combined["checks"] = .array(checks)
             combined["transcriptTrace"] = transcriptTrace.report(currentMessages: messages)
+            combined["transcriptScroll"] = TranscriptScrollDiagnostics.shared.report()
             diagnosticsReport = DiagnosticsReport(json: .object(combined))
         } catch {
             report(error)

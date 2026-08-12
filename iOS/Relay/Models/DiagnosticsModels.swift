@@ -150,6 +150,8 @@ struct DiagnosticsReport {
     let events: [DiagnosticEvent]
     let clientPerformance: ClientDiagnosticPerformance
     let bridgePerformance: BridgeDiagnosticPerformance
+    let transcriptScrollMetrics: TranscriptScrollMetricsSnapshot?
+    let transcriptScrollCommands: [TranscriptScrollCommand]
     let raw: JSONValue
 
     init(json: JSONValue) {
@@ -159,6 +161,46 @@ struct DiagnosticsReport {
         events = (json["events"]?.arrayValue ?? []).compactMap(DiagnosticEvent.init(json:))
         clientPerformance = ClientDiagnosticPerformance(json: json["clientPerformance"])
         bridgePerformance = BridgeDiagnosticPerformance(json: json["performance"])
+        transcriptScrollMetrics = TranscriptScrollMetricsSnapshot(json: json["transcriptScroll"]?["metrics"])
+        transcriptScrollCommands = (json["transcriptScroll"]?["commands"]?.arrayValue ?? [])
+            .compactMap(TranscriptScrollCommand.init(json:))
         raw = json
+    }
+}
+
+private extension TranscriptScrollMetricsSnapshot {
+    init?(json: JSONValue?) {
+        guard let json,
+              let scrollClass = json["scrollClass"]?.stringValue else { return nil }
+        self.init(
+            recordedAt: ISO8601DateFormatter().date(from: json["recordedAt"]?.stringValue ?? "") ?? Date(),
+            scrollClass: scrollClass,
+            offsetY: CGFloat(json["offsetY"]?.doubleValue ?? 0),
+            contentHeight: CGFloat(json["contentHeight"]?.doubleValue ?? 0),
+            viewportHeight: CGFloat(json["viewportHeight"]?.doubleValue ?? 0),
+            insetTop: CGFloat(json["insetTop"]?.doubleValue ?? 0),
+            insetBottom: CGFloat(json["insetBottom"]?.doubleValue ?? 0),
+            distanceFromBottom: CGFloat(json["distanceFromBottom"]?.doubleValue ?? 0),
+            isDragging: json["isDragging"]?.boolValue ?? false,
+            isDecelerating: json["isDecelerating"]?.boolValue ?? false,
+            isAtBottom: json["isAtBottom"]?.boolValue ?? false
+        )
+    }
+}
+
+private extension TranscriptScrollCommand {
+    init?(json: JSONValue) {
+        guard let id = json["id"]?.intValue,
+              let reasonValue = json["reason"]?.stringValue,
+              let reason = TranscriptScrollCommandReason(rawValue: reasonValue) else { return nil }
+        self.init(
+            id: id,
+            recordedAt: ISO8601DateFormatter().date(from: json["recordedAt"]?.stringValue ?? "") ?? Date(),
+            reason: reason,
+            animated: json["animated"]?.boolValue ?? false,
+            threadId: json["threadId"]?.stringValue,
+            isAtBottom: json["isAtBottom"]?.boolValue ?? false,
+            isUserScrolling: json["isUserScrolling"]?.boolValue ?? false
+        )
     }
 }
