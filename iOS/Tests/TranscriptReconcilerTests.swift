@@ -418,6 +418,64 @@ final class TranscriptReconcilerTests: XCTestCase {
         XCTAssertFalse(result[0].text.contains("<thinking>"))
     }
 
+    func testAgentMessageHidesTrailingCodexClientDirectives() throws {
+        let source = """
+        修复已推送，提交 6bd87f8。
+
+        ::git-stage{cwd="C:\\Users\\31430\\Documents\\Project"} ::git-commit{cwd="C:\\Users\\31430\\Documents\\Project"} ::git-push{cwd="C:\\Users\\31430\\Documents\\Project" branch="main"}
+        """
+        let parsed = try XCTUnwrap(TranscriptItem.from(json: .object([
+            "id": .string("message.directives"),
+            "type": .string("agentMessage"),
+            "text": .string(source),
+        ]), turnId: "turn.1"))
+
+        XCTAssertEqual(parsed.text, "修复已推送，提交 6bd87f8。")
+        XCTAssertFalse(parsed.text.contains("::git-"))
+    }
+
+    func testAgentMessageKeepsDirectiveExamplesInCodeAndInlineText() {
+        let codeExample = """
+        示例：
+        ```text
+        ::git-push{cwd="C:\\Project" branch="main"}
+        ```
+        """
+        XCTAssertEqual(AgentMessageContent.parse(codeExample).visibleText, codeExample)
+        XCTAssertEqual(
+            AgentMessageContent.parse("内联示例 ::git-push{cwd=\"C:\\\\Project\" branch=\"main\"}").visibleText,
+            "内联示例 ::git-push{cwd=\"C:\\\\Project\" branch=\"main\"}"
+        )
+    }
+
+    func testSplitCodexClientDirectiveAcrossDeltaFlushesNeverLeaks() throws {
+        let answer = TranscriptDeltaUpdate(
+            id: "message.live",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            title: nil,
+            text: "完成。\n::git-pu",
+            detail: "",
+            phase: "final_answer"
+        )
+        let directiveRemainder = TranscriptDeltaUpdate(
+            id: "message.live",
+            turnId: "turn.1",
+            role: .assistant,
+            kind: .message,
+            title: nil,
+            text: "sh{cwd=\"C:\\\\Project\" branch=\"main\"}",
+            detail: "",
+            phase: "final_answer"
+        )
+
+        let partial = TranscriptReconciler.applyDeltaBatch([answer], to: [])
+        XCTAssertEqual(try XCTUnwrap(partial.first).text, "完成。")
+        let completed = TranscriptReconciler.applyDeltaBatch([directiveRemainder], to: partial)
+        XCTAssertEqual(try XCTUnwrap(completed.first).text, "完成。")
+    }
+
     func testSnapshotMergesLongerCommentaryPrefixAndUsesSnapshotOrder() {
         let liveProgress = item(id: "live.progress", turnId: "turn.1", role: .assistant, text: "正在检查对话", phase: "commentary")
         var streamedProgress = liveProgress

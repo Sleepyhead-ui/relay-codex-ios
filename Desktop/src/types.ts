@@ -77,6 +77,7 @@ export interface TranscriptItem {
   exitCode?: number;
   imagePaths?: string[];
   goal?: string;
+  rawAgentText?: string;
 }
 
 export interface TurnMetadata {

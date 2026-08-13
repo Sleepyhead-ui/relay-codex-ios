@@ -496,7 +496,11 @@ struct AgentMessageContent: Equatable {
         let openPattern = #"<thinking\b[^>]*>"#
         guard let fullExpression = try? NSRegularExpression(pattern: fullPattern, options: [.caseInsensitive]),
               let openExpression = try? NSRegularExpression(pattern: openPattern, options: [.caseInsensitive]) else {
-            return AgentMessageContent(visibleText: source, thinkingText: nil, containsThinking: false)
+            return AgentMessageContent(
+                visibleText: CodexClientDirectiveFilter.cleanAssistantText(source),
+                thinkingText: nil,
+                containsThinking: false
+            )
         }
 
         let fullRange = NSRange(source.startIndex..., in: source)
@@ -509,9 +513,9 @@ struct AgentMessageContent: Equatable {
             }
             let mutable = NSMutableString(string: source)
             for match in matches.reversed() { mutable.replaceCharacters(in: match.range, with: "") }
-            let visible = String(mutable)
+            let visible = CodexClientDirectiveFilter.cleanAssistantText(String(mutable)
                 .replacingOccurrences(of: #"</?thinking\b[^>]*>"#, with: "", options: [.regularExpression, .caseInsensitive])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
             return AgentMessageContent(
                 visibleText: visible,
                 thinkingText: thoughts.joined(separator: "\n").nonEmpty,
@@ -521,16 +525,137 @@ struct AgentMessageContent: Equatable {
 
         if let open = openExpression.firstMatch(in: source, range: fullRange),
            let openRange = Range(open.range, in: source) {
-            let visible = String(source[..<openRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let visible = CodexClientDirectiveFilter.cleanAssistantText(
+                String(source[..<openRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
             let thinking = String(source[openRange.upperBound...])
                 .replacingOccurrences(of: #"</thinking\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return AgentMessageContent(visibleText: visible, thinkingText: thinking.nonEmpty, containsThinking: true)
         }
 
-        let visible = source
-            .replacingOccurrences(of: #"</thinking\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+        let visible = CodexClientDirectiveFilter.cleanAssistantText(
+            source.replacingOccurrences(of: #"</thinking\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+        )
         return AgentMessageContent(visibleText: visible, thinkingText: nil, containsThinking: false)
+    }
+}
+
+enum CodexClientDirectiveFilter {
+    private static let directiveNames = [
+        "git-stage",
+        "git-commit",
+        "git-push",
+        "git-create-branch",
+        "git-create-pr",
+        "created-thread",
+        "code-comment",
+        "archive",
+    ]
+
+    static func cleanAssistantText(_ source: String) -> String {
+        var contentEnd = source.endIndex
+        while contentEnd > source.startIndex, source[source.index(before: contentEnd)].isWhitespace {
+            contentEnd = source.index(before: contentEnd)
+        }
+        let lastLineStart = source[..<contentEnd].lastIndex(of: "\n")
+            .map { source.index(after: $0) }
+            ?? source.startIndex
+        guard isDirectiveSequence(String(source[lastLineStart..<contentEnd]), allowIncompleteTail: true) else {
+            return source
+        }
+
+        var lines = source.components(separatedBy: "\n")
+        guard !lines.isEmpty else { return source }
+
+        var firstRemovedIndex = lines.count
+        var foundDirective = false
+        var index = lines.count - 1
+        while index >= 0 {
+            let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty {
+                if foundDirective { firstRemovedIndex = index }
+            } else if isDirectiveSequence(line, allowIncompleteTail: !foundDirective) {
+                foundDirective = true
+                firstRemovedIndex = index
+            } else {
+                break
+            }
+            index -= 1
+        }
+
+        guard foundDirective, !isInsideCodeFence(lines: lines, before: firstRemovedIndex) else { return source }
+        lines.removeSubrange(firstRemovedIndex...)
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isDirectiveSequence(_ line: String, allowIncompleteTail: Bool) -> Bool {
+        var index = line.startIndex
+        var parsedDirective = false
+
+        while true {
+            skipWhitespace(in: line, index: &index)
+            guard index < line.endIndex else { return parsedDirective }
+
+            let remainder = String(line[index...])
+            let marker = directiveNames
+                .map { "::\($0){" }
+                .first(where: { remainder.hasPrefix($0) })
+            if marker == nil {
+                return allowIncompleteTail
+                    && directiveNames.map { "::\($0){" }.contains(where: { $0.hasPrefix(remainder) })
+                    && (!parsedDirective || remainder.hasPrefix("::"))
+            }
+
+            index = line.index(index, offsetBy: marker!.count)
+            var depth = 1
+            var quote: Character?
+            var escaped = false
+            while index < line.endIndex {
+                let character = line[index]
+                index = line.index(after: index)
+                if escaped {
+                    escaped = false
+                    continue
+                }
+                if character == "\\", quote != nil {
+                    escaped = true
+                    continue
+                }
+                if let activeQuote = quote {
+                    if character == activeQuote { quote = nil }
+                    continue
+                }
+                if character == "\"" || character == "'" {
+                    quote = character
+                } else if character == "{" {
+                    depth += 1
+                } else if character == "}" {
+                    depth -= 1
+                    if depth == 0 { break }
+                }
+            }
+            guard depth == 0 else { return allowIncompleteTail }
+            parsedDirective = true
+        }
+    }
+
+    private static func skipWhitespace(in value: String, index: inout String.Index) {
+        while index < value.endIndex, value[index].isWhitespace { index = value.index(after: index) }
+    }
+
+    private static func isInsideCodeFence(lines: [String], before endIndex: Int) -> Bool {
+        var activeFence: String?
+        for line in lines.prefix(endIndex) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let marker = ["```", "~~~"].first(where: { trimmed.hasPrefix($0) }) else { continue }
+            if activeFence == marker {
+                activeFence = nil
+            } else if activeFence == nil {
+                activeFence = marker
+            }
+        }
+        return activeFence != nil
     }
 }
 
@@ -680,7 +805,7 @@ struct TranscriptItem: Identifiable, Equatable {
                 text: content.visibleText,
                 detail: content.thinkingText,
                 phase: json["phase"]?.stringValue ?? (content.containsThinking ? "commentary" : nil),
-                rawAgentText: content.containsThinking ? rawText : nil
+                rawAgentText: content.containsThinking || content.visibleText != rawText ? rawText : nil
             )
         case "reasoning":
             let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""

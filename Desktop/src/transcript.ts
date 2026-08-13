@@ -85,7 +85,14 @@ export function parseItem(value: any, turnId?: string): TranscriptItem | null {
       const visible = extractGoalContext(cleaned);
       return { id, turnId, kind: "user", text: visible.text, imagePaths: content.imagePaths, goal: visible.objective };
     }
-    case "agentMessage": return { id, turnId, kind: "assistant", text: value.text || "", phase: value.phase };
+    case "agentMessage": {
+      const rawAgentText = value.text || "";
+      const text = cleanAssistantText(rawAgentText);
+      return {
+        id, turnId, kind: "assistant", text, phase: value.phase,
+        rawAgentText: text === rawAgentText ? undefined : rawAgentText,
+      };
+    }
     case "reasoning": return { id, turnId, kind: "reasoning", title: "思考", text: arrayText(value.summary), detail: arrayText(value.content) };
     case "commandExecution": return {
       id, turnId, kind: "command", title: "运行命令", text: value.command || "命令",
@@ -136,6 +143,7 @@ export function mergeItem(existing: TranscriptItem | undefined, incoming: Transc
     title: incoming.title || existing.title,
     status: incoming.status || existing.status,
     imagePaths: incoming.imagePaths?.length ? incoming.imagePaths : existing.imagePaths,
+    rawAgentText: incoming.rawAgentText || existing.rawAgentText,
   };
 }
 
@@ -194,15 +202,18 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
     };
     const index = nextIndexes.get(value.id);
     if (index === undefined) {
+      const candidateRawText = value.kind === "assistant" ? value.text : undefined;
+      const cleanedText = candidateRawText === undefined ? value.text : cleanAssistantText(candidateRawText);
       const incoming: TranscriptItem = {
         id: value.id,
         turnId: value.turnId,
         kind: value.kind,
-        text: value.text,
+        text: cleanedText,
         detail: value.detail || undefined,
         phase: value.kind === "assistant" ? "commentary" : undefined,
         title: value.kind === "reasoning" ? "思考" : value.kind === "command" ? "运行命令" : undefined,
         status: value.kind === "command" ? "inProgress" : undefined,
+        rawAgentText: candidateRawText !== undefined && cleanedText !== candidateRawText ? candidateRawText : undefined,
       };
       const insertion = insertionAfterTurn(next, value.turnId);
       next.splice(insertion, 0, incoming);
@@ -210,11 +221,16 @@ export function applyDeltaBatch(items: TranscriptItem[], deltas: TranscriptDelta
       continue;
     }
     const item = next[index]!;
+    const candidateRawText = value.kind === "assistant"
+      ? (item.rawAgentText ?? item.text) + value.text
+      : undefined;
+    const cleanedText = candidateRawText === undefined ? item.text + value.text : cleanAssistantText(candidateRawText);
     next[index] = {
       ...item,
       turnId: item.turnId || value.turnId,
-      text: item.text + value.text,
+      text: cleanedText,
       detail: value.detail ? (item.detail || "") + value.detail : item.detail,
+      rawAgentText: candidateRawText !== undefined && cleanedText !== candidateRawText ? candidateRawText : undefined,
     };
   }
   transcriptItemIndexes.set(next, nextIndexes);
@@ -493,6 +509,87 @@ function isInternalEnvironmentContext(value: string) {
 function cleanDesktopUserText(value: string) {
   const marker = /^\s*#{0,6}\s*My request(?: for Codex)?:\s*$/im.exec(value);
   return marker ? value.slice((marker.index || 0) + marker[0].length).trim() : value;
+}
+const clientDirectiveNames = [
+  "git-stage",
+  "git-commit",
+  "git-push",
+  "git-create-branch",
+  "git-create-pr",
+  "created-thread",
+  "code-comment",
+  "archive",
+];
+const clientDirectiveMarkers = clientDirectiveNames.map((name) => `::${name}{`);
+
+function cleanAssistantText(value: string) {
+  let contentEnd = value.length;
+  while (contentEnd > 0 && /\s/.test(value[contentEnd - 1]!)) contentEnd -= 1;
+  const lastLineStart = value.lastIndexOf("\n", contentEnd - 1) + 1;
+  if (!isClientDirectiveSequence(value.slice(lastLineStart, contentEnd), true)) return value;
+
+  const lines = value.split("\n");
+  let firstRemovedIndex = lines.length;
+  let foundDirective = false;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!.trim();
+    if (!line) {
+      if (foundDirective) firstRemovedIndex = index;
+    } else if (isClientDirectiveSequence(line, !foundDirective)) {
+      foundDirective = true;
+      firstRemovedIndex = index;
+    } else {
+      break;
+    }
+  }
+  if (!foundDirective || isInsideCodeFence(lines, firstRemovedIndex)) return value;
+  return lines.slice(0, firstRemovedIndex).join("\n").trimEnd();
+}
+
+function isClientDirectiveSequence(line: string, allowIncompleteTail: boolean) {
+  let index = 0;
+  let parsedDirective = false;
+  while (true) {
+    while (/\s/.test(line[index] || "")) index += 1;
+    if (index >= line.length) return parsedDirective;
+    const remainder = line.slice(index);
+    const marker = clientDirectiveMarkers.find((candidate) => remainder.startsWith(candidate));
+    if (!marker) {
+      return allowIncompleteTail
+        && clientDirectiveMarkers.some((candidate) => candidate.startsWith(remainder))
+        && (!parsedDirective || remainder.startsWith("::"));
+    }
+    index += marker.length;
+    let depth = 1;
+    let quote = "";
+    let escaped = false;
+    while (index < line.length) {
+      const character = line[index++]!;
+      if (escaped) { escaped = false; continue; }
+      if (character === "\\" && quote) { escaped = true; continue; }
+      if (quote) {
+        if (character === quote) quote = "";
+        continue;
+      }
+      if (character === "\"" || character === "'") quote = character;
+      else if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) break;
+    }
+    if (depth !== 0) return allowIncompleteTail;
+    parsedDirective = true;
+  }
+}
+
+function isInsideCodeFence(lines: string[], endIndex: number) {
+  let activeFence = "";
+  for (const line of lines.slice(0, endIndex)) {
+    const trimmed = line.trimStart();
+    const marker = ["```", "~~~"].find((candidate) => trimmed.startsWith(candidate));
+    if (!marker) continue;
+    if (activeFence === marker) activeFence = "";
+    else if (!activeFence) activeFence = marker;
+  }
+  return Boolean(activeFence);
 }
 function arrayText(values: any[]) { return (values || []).map((item) => typeof item === "string" ? item : item.text || "").filter(Boolean).join("\n\n"); }
 function friendlyTool(name = "工具", namespace = "") {

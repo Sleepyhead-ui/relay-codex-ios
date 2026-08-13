@@ -151,6 +151,34 @@ describe("desktop transcript", () => {
     expect(item).toBeNull();
   });
 
+  it("hides trailing Codex client directives from assistant messages", () => {
+    const item = parseItem({
+      id: "answer.directives",
+      type: "agentMessage",
+      text: "修复已推送，提交 6bd87f8。\n\n::git-stage{cwd=\"C:\\\\Project\"} ::git-commit{cwd=\"C:\\\\Project\"} ::git-push{cwd=\"C:\\\\Project\" branch=\"main\"}",
+      phase: "final_answer",
+    }, "turn.1");
+    expect(item?.text).toBe("修复已推送，提交 6bd87f8。");
+  });
+
+  it("keeps Codex directive examples in code blocks and inline prose", () => {
+    const code = "示例：\n```text\n::git-push{cwd=\"C:\\\\Project\" branch=\"main\"}\n```";
+    expect(parseItem({ id: "answer.code", type: "agentMessage", text: code })?.text).toBe(code);
+    const inline = "内联示例 ::git-push{cwd=\"C:\\\\Project\" branch=\"main\"}";
+    expect(parseItem({ id: "answer.inline", type: "agentMessage", text: inline })?.text).toBe(inline);
+  });
+
+  it("does not reveal a Codex client directive split across delta batches", () => {
+    let messages = applyDeltaBatch([], [{
+      id: "answer.live", turnId: "turn.1", kind: "assistant", text: "完成。\n::git-pu", detail: "",
+    }]);
+    expect(messages[0]?.text).toBe("完成。");
+    messages = applyDeltaBatch(messages, [{
+      id: "answer.live", turnId: "turn.1", kind: "assistant", text: "sh{cwd=\"C:\\\\Project\" branch=\"main\"}", detail: "",
+    }]);
+    expect(messages[0]?.text).toBe("完成。");
+  });
+
   it("deduplicates matching progress from app-server and rollout snapshots", () => {
     const existing = [{ id: "live.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查同步状态" }];
     const snapshot = [{ id: "rollout.1", turnId: "turn.1", kind: "assistant" as const, phase: "commentary", text: "正在检查同步状态" }];
