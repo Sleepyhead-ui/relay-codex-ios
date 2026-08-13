@@ -1,9 +1,10 @@
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import QRCode from "qrcode";
 import {
   Activity, AlertCircle, Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, CircleStop, Copy,
-  FileCode2, Folder, FolderOpen, LockKeyhole, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Target,
+  Eye, EyeOff, FileCode2, Folder, FolderOpen, LockKeyhole, Menu, MessageSquare, MoreHorizontal, Paperclip, Pencil, Pin, PinOff, Plus, QrCode, RefreshCw, Search, Target,
   Power, RotateCcw, Server, Settings, ShieldCheck, Sparkles, SquarePen, Terminal, Wifi, WifiOff, X,
 } from "lucide-react";
 import { BridgeRpc } from "./bridge";
@@ -16,6 +17,7 @@ import { createTaskStateCore, decodeTaskRunEvents, isTaskRunning, reduceTaskStat
 import { DesktopPerformanceMetrics } from "./performanceMetrics";
 import { SessionRevisionTracker } from "./sessionRevision";
 import { IncrementalMarkdownChunks } from "./markdownChunks";
+import { pairingURL as makePairingURL } from "./pairing";
 import { previewTechnicalText } from "./technicalText";
 import type {
   ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
@@ -30,6 +32,7 @@ export default function App() {
   const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [service, setService] = useState<ServiceStatus>({ state: "stopped", message: "远程服务未启动" });
   const [config, setConfig] = useState<ConnectionConfig>({ endpoint: "ws://127.0.0.1:8765", token: "" });
+  const [computerName, setComputerName] = useState("Windows PC");
   const [version, setVersion] = useState("0.1.0");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -173,6 +176,7 @@ export default function App() {
     const offRpc = rpc.onMessage((message) => messageHandlerRef.current(message));
     void window.relayDesktop.bootstrap().then((bootstrap) => {
       setConfig(bootstrap.connection);
+      setComputerName(bootstrap.computerName || "Windows PC");
       setVersion(bootstrap.version);
       setService(bootstrap.service);
       setPreferences(bootstrap.preferences || {
@@ -1247,7 +1251,7 @@ export default function App() {
         </main>
       </div>
 
-      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={profileSwitchBlocked} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onTestPush={testRemotePush} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
+      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} computerName={computerName} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={profileSwitchBlocked} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onTestPush={testRemotePush} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
       {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}
@@ -1486,8 +1490,8 @@ function queuedPromptLabel(item: QueuedPrompt) {
   return item.input.filter((input) => input.type !== "text").map((input) => input.name || input.path?.split(/[\\/]/).at(-1)).filter(Boolean).join("、") || "附件";
 }
 
-function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, update, onPreferences, onTestPush, onCheckUpdate, onApplyUpdate, onDiagnostics, onClose, onSave }: {
-  config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; workspace: string; setWorkspace: (value: string) => void;
+function SettingsPanel({ config, setConfig, computerName, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, update, onPreferences, onTestPush, onCheckUpdate, onApplyUpdate, onDiagnostics, onClose, onSave }: {
+  config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; computerName: string; workspace: string; setWorkspace: (value: string) => void;
   access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; activeProfileId: string;
   switching: boolean; switchDisabled: boolean; onSwitch: (id: string) => Promise<void>; onStartService: () => Promise<void>;
   service: ServiceStatus; preferences: DesktopPreferences; onPreferences: (patch: Partial<DesktopPreferences>) => Promise<void>;
@@ -1498,12 +1502,43 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
   const [selectedProfileId, setSelectedProfileId] = useState(activeProfileId);
   const [barkUrl, setBarkUrl] = useState(preferences.barkUrl);
   const [pushTestState, setPushTestState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [showToken, setShowToken] = useState(false);
+  const [copiedField, setCopiedField] = useState<"endpoint" | "token">();
+  const [pairingQRCode, setPairingQRCode] = useState<string>();
   useEffect(() => { setSelectedProfileId(activeProfileId); }, [activeProfileId]);
   useEffect(() => { setBarkUrl(preferences.barkUrl); }, [preferences.barkUrl]);
+  const pairingURL = useMemo(() => {
+    return makePairingURL(config, computerName);
+  }, [computerName, config.endpoint, config.token]);
+  useEffect(() => {
+    let active = true;
+    if (!pairingURL) { setPairingQRCode(undefined); return; }
+    void QRCode.toDataURL(pairingURL, { width: 220, margin: 2, color: { dark: "#111210", light: "#ffffff" } })
+      .then((value) => { if (active) setPairingQRCode(value); });
+    return () => { active = false; };
+  }, [pairingURL]);
   const selected = profiles.find((profile) => profile.id === selectedProfileId);
+  function copyPairingValue(field: "endpoint" | "token", value: string) {
+    void window.relayDesktop.copyText(value).then((copied) => {
+      if (!copied) return;
+      setCopiedField(field);
+      window.setTimeout(() => setCopiedField((current) => current === field ? undefined : current), 1_500);
+    });
+  }
   return <div className="drawer-backdrop" onMouseDown={onClose}>
     <aside className="settings-drawer" onMouseDown={(event) => event.stopPropagation()}>
-      <div className="drawer-heading"><div><strong>Relay 设置</strong><span>实例、工作区与权限</span></div><button className="icon-button" onClick={onClose}><X size={17}/></button></div>
+      <div className="drawer-heading settings-heading"><div><strong>设置</strong><span>{service.message}</span></div><button className="icon-button" title="关闭" onClick={onClose}><X size={17}/></button></div>
+      <section className="settings-section pairing-section">
+        <div className="settings-section-heading"><div><h3>手机配对</h3><p>在新设备的 Relay 连接页扫描二维码，或复制信息手动连接。</p></div><QrCode size={17}/></div>
+        {pairingURL ? <div className="pairing-layout">
+          <div className="pairing-qr">{pairingQRCode ? <img src={pairingQRCode} alt="Relay 手机配对二维码"/> : <span className="spinner"/>}</div>
+          <div className="pairing-values">
+            <div className="pairing-value"><span>连接地址</span><code title={config.endpoint}>{config.endpoint}</code><button title="复制连接地址" onClick={() => copyPairingValue("endpoint", config.endpoint)}>{copiedField === "endpoint" ? <Check size={14}/> : <Copy size={14}/>}</button></div>
+            <div className="pairing-value"><span>配对令牌</span><code title={showToken ? config.token : undefined}>{showToken ? config.token : "••••••••••••••••••••"}</code><button title={showToken ? "隐藏配对令牌" : "显示配对令牌"} onClick={() => setShowToken((value) => !value)}>{showToken ? <EyeOff size={14}/> : <Eye size={14}/>}</button><button title="复制配对令牌" onClick={() => copyPairingValue("token", config.token)}>{copiedField === "token" ? <Check size={14}/> : <Copy size={14}/>}</button></div>
+            <p className="pairing-note"><LockKeyhole size={12}/>仅向已加入同一 Tailscale 网络的设备提供。</p>
+          </div>
+        </div> : <div className="pairing-unavailable"><span>远程服务启动后会生成配对二维码。</span><button disabled={service.state === "starting"} onClick={() => void onStartService()}>{service.state === "starting" ? "正在启动" : "启动远程服务"}</button></div>}
+      </section>
       <div className="settings-section">
         <h3>Codex 实例</h3>
         {service.state === "running" ? <>
@@ -1516,11 +1551,14 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
           {selected && !selected.running && selected.id !== activeProfileId && <p>该桌面实例当前未运行，仍可使用它保存的配置和会话。</p>}
         </> : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void onStartService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
       </div>
-      <div className="settings-section"><h3>默认工作区</h3><label className="field"><span>目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>访问权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
+      <div className="settings-section"><h3>新任务默认值</h3><label className="field"><span>工作目录</span><input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="C:\\项目目录"/></label><label className="field"><span>文件权限</span><select value={access} onChange={(event) => setAccess(event.target.value as WorkspaceAccess)}><option value="readOnly">只读</option><option value="workspaceWrite">工作区写入</option><option value="fullAccess">完全访问</option></select></label><p>{access === "fullAccess" ? "允许访问本机文件和网络；仅在你信任当前任务时使用。" : access === "workspaceWrite" ? "仅允许修改所选工作区内的文件。" : "可以查看文件，但不能修改。"}</p></div>
       <div className="settings-section">
-        <h3>运行与通知</h3>
+        <h3>后台运行</h3>
         {service.supervisor?.running && <div className="profile-status"><ShieldCheck size={13}/><span>后台守护已启用 · 关闭 Desktop 后继续运行{service.supervisor.version ? ` · v${service.supervisor.version}` : ""}</span></div>}
         <label className="toggle-row"><span><strong>开机启动远程服务</strong><small>登录 Windows 后隐藏启动后台服务，不弹出 Desktop 窗口</small></span><input type="checkbox" checked={preferences.autoStart} onChange={(event) => void onPreferences({ autoStart: event.target.checked })}/></label>
+      </div>
+      <div className="settings-section">
+        <h3>通知</h3>
         <label className="toggle-row"><span><strong>Windows 系统通知</strong><small>窗口不在前台时显示任务与审批通知</small></span><input type="checkbox" checked={preferences.notifications} onChange={(event) => void onPreferences({ notifications: event.target.checked })}/></label>
         <label className="toggle-row"><span><strong>手机远程推送</strong><small>通过 Bark 在 Relay 被 iOS 挂起时继续提醒</small></span><input type="checkbox" checked={preferences.remoteNotifications} onChange={(event) => void onPreferences({ remoteNotifications: event.target.checked })}/></label>
         {preferences.remoteNotifications && <>
@@ -1531,11 +1569,10 @@ function SettingsPanel({ config, setConfig, workspace, setWorkspace, access, set
             void onTestPush(barkUrl).then(() => setPushTestState("sent")).catch(() => setPushTestState("failed"));
           }}>{pushTestState === "sending" ? "正在发送" : pushTestState === "sent" ? "测试通知已发送" : pushTestState === "failed" ? "发送失败，请重试" : "发送测试通知"}</button>
         </>}
-        <button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>打开诊断中心</span><ChevronRight size={13}/></button>
       </div>
-      <div className="settings-section"><h3>应用更新</h3><div className="update-row"><div><strong>{update.message || "检查 Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" || update.state === "deferred" ? <button disabled={update.state === "deferred"} onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "安全重启安装" : update.state === "deferred" ? "等待任务结束" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading" || update.state === "installing"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : update.state === "installing" ? "安装中" : "检查"}</button>}</div></div>
-      <details className="advanced-settings"><summary>高级连接</summary><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>Token</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label></details>
-      <div className="drawer-actions"><button onClick={onClose}>关闭</button><button className="accent" onClick={() => void onSave()}>保存高级连接</button></div>
+      <div className="settings-section"><h3>维护</h3><div className="update-row"><div><strong>{update.message || "Relay Desktop 更新"}</strong><span>{update.version ? `版本 ${update.version}` : "通过 GitHub Release 获取"}</span></div>{update.state === "available" || update.state === "ready" || update.state === "deferred" ? <button disabled={update.state === "deferred"} onClick={() => void onApplyUpdate()}>{update.state === "ready" ? "重启安装" : update.state === "deferred" ? "等待任务" : "下载"}</button> : <button disabled={update.state === "checking" || update.state === "downloading" || update.state === "installing"} onClick={() => void onCheckUpdate()}>{update.state === "checking" ? "检查中" : update.state === "downloading" ? `${update.percent || 0}%` : update.state === "installing" ? "安装中" : "检查更新"}</button>}</div><button className="settings-link" onClick={() => { onClose(); onDiagnostics(); }}><Activity size={14}/><span>诊断中心</span><ChevronRight size={13}/></button></div>
+      <details className="advanced-settings"><summary>手动连接设置</summary><p>仅在自动生成的地址无法使用时修改。</p><label className="field"><span>Bridge 地址</span><input value={config.endpoint} onChange={(event) => setConfig({ ...config, endpoint: event.target.value })}/></label><label className="field"><span>配对令牌</span><input type="password" value={config.token} onChange={(event) => setConfig({ ...config, token: event.target.value })}/></label><button className="save-connection" onClick={() => void onSave()}>保存并重新连接</button></details>
+      <div className="settings-footer"><span>Relay Desktop</span><button onClick={onClose}>完成</button></div>
     </aside>
   </div>;
 }

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("relayDesktop", {
   startService: () => ipcRenderer.invoke("relay:start-service"),
   setPreferences: (patch) => ipcRenderer.invoke("relay:set-preferences", patch),
   notify: (payload) => ipcRenderer.invoke("relay:notify", payload),
+  copyText: (value) => ipcRenderer.invoke("relay:copy-text", value),
   exportDiagnostics: (report) => ipcRenderer.invoke("relay:export-diagnostics", report),
   updateStatus: () => ipcRenderer.invoke("relay:update-status"),
   checkUpdate: () => ipcRenderer.invoke("relay:check-update"),

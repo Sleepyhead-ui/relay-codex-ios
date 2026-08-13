@@ -29,7 +29,7 @@ export function installDevBridge() {
   const emit = (message: any) => messageListeners.forEach((listener) => listener(message));
   const rpcResult = (request: any, result: any) => setTimeout(() => emit({ type: "rpcResult", id: request.id, result }), 15);
   window.relayDesktop = {
-    bootstrap: async () => ({ connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" }, version: "preview", service: previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" }, preferences }),
+    bootstrap: async () => ({ connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" }, version: "preview", computerName: "Studio PC", service: previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" }, preferences }),
     serviceStatus: async () => previewServiceRunning ? { state: "running", message: "远程服务已启动" } : { state: "stopped", message: "远程服务未启动" },
     startService: async () => {
       const status = { state: "running" as const, message: "远程服务已启动", connection: { endpoint: "ws://127.0.0.1:8765", token: "preview-token" } };
@@ -38,6 +38,7 @@ export function installDevBridge() {
     },
     setPreferences: async (patch) => (preferences = { ...preferences, ...patch }),
     notify: async () => true,
+    copyText: async () => true,
     exportDiagnostics: async () => true,
     updateStatus: async () => update,
     checkUpdate: async () => update,

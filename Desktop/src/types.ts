@@ -29,7 +29,7 @@ export interface SidebarPreferences {
   sort: SidebarSort;
 }
 export interface DesktopUpdateState { state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "deferred" | "installing" | "error"; currentVersion?: string; version?: string; percent?: number; message?: string; blockers?: string[] }
-export interface Bootstrap { connection: ConnectionConfig; version: string; service: ServiceStatus; preferences: DesktopPreferences }
+export interface Bootstrap { connection: ConnectionConfig; version: string; computerName: string; service: ServiceStatus; preferences: DesktopPreferences }
 
 export interface CodexProfile {
   id: string;
@@ -221,6 +221,7 @@ declare global {
       startService(): Promise<ServiceStatus>;
       setPreferences(patch: Partial<DesktopPreferences>): Promise<DesktopPreferences>;
       notify(payload: { title: string; body: string }): Promise<boolean>;
+      copyText(value: string): Promise<boolean>;
       exportDiagnostics(report: DiagnosticReport): Promise<boolean>;
       updateStatus(): Promise<DesktopUpdateState>;
       checkUpdate(): Promise<DesktopUpdateState>;

@@ -39,6 +39,8 @@
     <true/>
     <key>MinimumOSVersion</key>
     <string>$(IPHONEOS_DEPLOYMENT_TARGET)</string>
+    <key>NSCameraUsageDescription</key>
+    <string>用于扫描 Relay Desktop 显示的配对二维码。</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>

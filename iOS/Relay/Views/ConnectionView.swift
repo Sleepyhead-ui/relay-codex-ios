@@ -11,6 +11,7 @@ struct ConnectionView: View {
     @EnvironmentObject private var store: RelayStore
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: ConnectionField?
+    @State private var showingScanner = false
     let canDismiss: Bool
 
     var body: some View {
@@ -22,11 +23,34 @@ struct ConnectionView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("连接 Windows 电脑")
                                 .font(.system(size: 28, weight: .semibold))
-                            Text("输入 Relay Desktop 显示的连接地址和配对令牌，也可以使用相机扫描配对二维码。")
+                            Text("扫描 Relay Desktop 中的配对二维码，或手动输入连接信息。")
                                 .font(.system(size: 15))
                                 .foregroundStyle(.secondary)
                                 .lineSpacing(3)
                         }
+                    }
+
+                    Button {
+                        focusedField = nil
+                        showingScanner = true
+                    } label: {
+                        Label("扫描配对二维码", systemImage: "qrcode.viewfinder")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 50)
+                            .foregroundStyle(RelayTheme.canvas)
+                            .background(RelayTheme.accent)
+                            .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
+                    }
+                    .buttonStyle(.plain)
+
+                    HStack(spacing: 10) {
+                        Rectangle().fill(RelayTheme.hairline).frame(height: 1)
+                        Text("或手动输入")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                        Rectangle().fill(RelayTheme.hairline).frame(height: 1)
                     }
 
                     VStack(spacing: 18) {
@@ -53,14 +77,13 @@ struct ConnectionView: View {
                                     .font(.system(size: 16, weight: .semibold))
                                 Spacer()
                             }
-                            .foregroundStyle(Color.white)
+                            .foregroundStyle(canConnect ? RelayTheme.canvas : Color.secondary)
                             .frame(height: 50)
-                            .background(RelayTheme.accent)
+                            .background(canConnect ? Color.primary : RelayTheme.softFill)
                             .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                         }
                         .buttonStyle(.plain)
-                        .disabled(store.socket.state.isConnecting)
-                        .opacity(store.socket.state.isConnecting ? 0.72 : 1)
+                        .disabled(!canConnect || store.socket.state.isConnecting)
 
                         Label("远程连接请使用 Tailscale 地址，不要把 Relay 端口直接暴露到公网。", systemImage: "lock.shield")
                             .font(.system(size: 12))
@@ -87,7 +110,15 @@ struct ConnectionView: View {
                         .fontWeight(.semibold)
                 }
             }
+            .fullScreenCover(isPresented: $showingScanner) {
+                PairingScannerView { url in store.consumePairingURL(url) }
+            }
         }
+    }
+
+    private var canConnect: Bool {
+        !store.host.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

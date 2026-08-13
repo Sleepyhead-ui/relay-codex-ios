@@ -157,14 +157,10 @@ extension RelayStore {
             return
         }
         if url.host == "open" { return }
-        guard url.host == "connect" else { return }
-        var values: [String: String] = [:]
-        for item in components.queryItems ?? [] {
-            if let value = item.value { values[item.name] = value }
-        }
-        if let endpoint = values["url"] { host.endpoint = endpoint }
-        if let name = values["name"] { host.name = name }
-        if let pairingToken = values["token"] { token = pairingToken }
+        guard let pairing = PairingPayload(url: url) else { return }
+        host.endpoint = pairing.endpoint
+        host.name = pairing.computerName
+        token = pairing.token
         if let existing = savedHosts.first(where: { $0.endpoint.caseInsensitiveCompare(host.endpoint) == .orderedSame }) {
             currentHostId = existing.id
         } else {

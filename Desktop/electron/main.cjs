@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Notification, shell } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const https = require("node:https");
@@ -527,7 +527,7 @@ ipcMain.handle("relay:bootstrap", async () => {
       try { connection = finalizeLocalConnection(service.endpoint, service).connection; } catch {}
     }
   }
-  return { connection, version: app.getVersion(), service, preferences: readPreferences() };
+  return { connection, version: app.getVersion(), computerName: os.hostname() || "Windows PC", service, preferences: readPreferences() };
 });
 ipcMain.handle("relay:update-status", () => updateState);
 ipcMain.handle("relay:check-update", async () => {
@@ -551,6 +551,11 @@ ipcMain.handle("relay:set-preferences", (_event, patch) => {
 ipcMain.handle("relay:notify", (_event, payload) => {
   if (!readPreferences().notifications || mainWindow?.isFocused() || !Notification.isSupported()) return false;
   new Notification({ title: String(payload?.title || "Relay"), body: String(payload?.body || "") }).show();
+  return true;
+});
+ipcMain.handle("relay:copy-text", (_event, value) => {
+  if (typeof value !== "string" || value.length > 8_192) return false;
+  clipboard.writeText(value);
   return true;
 });
 ipcMain.handle("relay:export-diagnostics", async (_event, report) => {
