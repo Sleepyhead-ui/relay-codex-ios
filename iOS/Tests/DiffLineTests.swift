@@ -24,4 +24,20 @@ final class DiffLineTests: XCTestCase {
             DiffFileStatistics(path: "Old.swift", added: 0, removed: 1)
         ])
     }
+
+    func testCountsBinaryAndRenameOnlyFilesFromGitHeaders() {
+        let statistics = DiffStatistics.parse("""
+        diff --git a/Assets/Icon.png b/Assets/Icon.png
+        Binary files a/Assets/Icon.png and b/Assets/Icon.png differ
+        diff --git a/Sources/Old Name.swift b/Sources/New Name.swift
+        similarity index 100%
+        rename from Sources/Old Name.swift
+        rename to Sources/New Name.swift
+        """)
+
+        XCTAssertEqual(statistics.files, [
+            DiffFileStatistics(path: "Assets/Icon.png", added: 0, removed: 0),
+            DiffFileStatistics(path: "Sources/New Name.swift", added: 0, removed: 0)
+        ])
+    }
 }

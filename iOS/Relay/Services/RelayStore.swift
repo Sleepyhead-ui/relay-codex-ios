@@ -155,6 +155,12 @@ final class RelayStore: ObservableObject {
               state.planTurnId == state.turnId else { return [] }
         return state.plan
     }
+    var activeTurnDiffStatistics: DiffStatistics? {
+        guard let selectedThreadId,
+              let state = taskRunStates[selectedThreadId],
+              state.diffTurnId == state.turnId else { return nil }
+        return state.diffStatistics
+    }
     var activeTurnId: String? {
         guard let selectedThreadId,
               let state = taskRunStates[selectedThreadId],

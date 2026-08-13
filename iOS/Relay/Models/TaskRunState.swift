@@ -19,6 +19,8 @@ struct TaskRunState: Equatable {
     var retryMessage: String?
     var planTurnId: String?
     var plan: [ExecutionPlanStep] = []
+    var diffTurnId: String?
+    var diffStatistics: DiffStatistics?
 
     var isRunning: Bool { phase == .starting || phase == .running || phase == .retrying }
 
@@ -47,6 +49,8 @@ struct TaskRunState: Equatable {
             if self.turnId != turnId {
                 plan = []
                 planTurnId = nil
+                diffTurnId = nil
+                diffStatistics = nil
                 self.startedAt = startedAt ?? Date()
             } else if self.startedAt == nil {
                 self.startedAt = startedAt ?? Date()
@@ -59,6 +63,10 @@ struct TaskRunState: Equatable {
             guard self.turnId == turnId, isRunning else { return }
             planTurnId = turnId
             plan = steps
+        case .diff(let turnId, let statistics):
+            guard self.turnId == turnId, isRunning else { return }
+            diffTurnId = turnId
+            diffStatistics = statistics
         case .retrying(let turnId, let message):
             guard turnId == nil || self.turnId == nil || self.turnId == turnId else { return }
             if isRunning { phase = .retrying }
@@ -79,6 +87,8 @@ struct TaskRunState: Equatable {
             retryMessage = nil
             planTurnId = nil
             plan = []
+            diffTurnId = nil
+            diffStatistics = nil
         }
     }
 }
@@ -90,6 +100,7 @@ enum TaskRunEvent {
     case started(turnId: String, startedAt: Date?)
     case progress(turnId: String, startedAt: Date?)
     case plan(turnId: String, steps: [ExecutionPlanStep])
+    case diff(turnId: String, statistics: DiffStatistics)
     case retrying(turnId: String?, message: String?)
     case clearRetry
     case terminal(turnId: String?, phase: TaskRunPhase, completedAt: Date?)

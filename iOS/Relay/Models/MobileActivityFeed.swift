@@ -213,6 +213,18 @@ struct MobileFileChangeSummary: Equatable {
 
     static let empty = MobileFileChangeSummary(items: [], added: 0, removed: 0, hasLineCounts: false)
 
+    static func make(aggregatedStatistics: DiffStatistics?, fallback: MobileFileChangeSummary) -> MobileFileChangeSummary {
+        guard let statistics = aggregatedStatistics, !statistics.files.isEmpty else { return fallback }
+        return MobileFileChangeSummary(
+            items: statistics.files.map {
+                MobileFileChangeItem(path: $0.path, added: $0.added, removed: $0.removed)
+            },
+            added: statistics.added,
+            removed: statistics.removed,
+            hasLineCounts: true
+        )
+    }
+
     static func make(items: [TranscriptItem]) -> MobileFileChangeSummary {
         guard !items.isEmpty else { return .empty }
         var totalAdded = 0
@@ -279,6 +291,24 @@ struct MobileFileChangeSummary: Equatable {
         let left = lhs.replacingOccurrences(of: "\\", with: "/")
         let right = rhs.replacingOccurrences(of: "\\", with: "/")
         return left == right || left.hasSuffix("/\(right)") || right.hasSuffix("/\(left)")
+    }
+}
+
+struct MobilePlanSummary: Equatable {
+    let currentStep: Int
+    let totalSteps: Int
+    let currentText: String?
+
+    static func make(steps: [ExecutionPlanStep]) -> MobilePlanSummary? {
+        guard !steps.isEmpty else { return nil }
+        let runningIndex = steps.firstIndex(where: \.isRunning)
+        let firstPendingIndex = steps.firstIndex { !$0.isCompleted }
+        let index = runningIndex ?? firstPendingIndex ?? max(0, steps.count - 1)
+        return MobilePlanSummary(
+            currentStep: index + 1,
+            totalSteps: steps.count,
+            currentText: steps[index].text.nonEmpty
+        )
     }
 }
 

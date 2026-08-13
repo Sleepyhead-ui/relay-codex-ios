@@ -63,7 +63,8 @@ struct ConversationView: View {
             feed: store.mobileActivityFeed(threadId: threadId, turnId: turnId),
             metadata: metadata,
             isLive: true,
-            plan: store.activePlan
+            plan: store.activePlan,
+            diffStatistics: store.activeTurnDiffStatistics
         )
     }
 

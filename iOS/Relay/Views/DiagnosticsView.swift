@@ -241,6 +241,7 @@ struct DiagnosticsView: View {
         case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta": return "首项：思考"
         case "item/agentMessage/delta": return "首项：回答"
         case "turn/plan/updated": return "首项：计划"
+        case "turn/diff/updated": return "首项：文件统计"
         case "item/started", "item/completed": return "首项：操作"
         case nil: return "未收到可见事件"
         default: return "首项：其他"

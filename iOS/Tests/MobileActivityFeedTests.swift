@@ -216,6 +216,43 @@ final class MobileActivityFeedTests: XCTestCase {
         ])
     }
 
+    func testAggregatedTurnDiffOverridesIncompleteFileChangeItems() {
+        let fallback = MobileFileChangeSummary(
+            items: [MobileFileChangeItem(path: "Old.swift", added: 1, removed: 0)],
+            added: 1,
+            removed: 0,
+            hasLineCounts: true
+        )
+        let diff = "--- a/Sources/App.swift\n+++ b/Sources/App.swift\n@@ -1 +1,2 @@\n-old\n+new\n+more\n--- a/Sources/Store.swift\n+++ b/Sources/Store.swift\n@@ -1 +0,0 @@\n-gone"
+
+        let summary = MobileFileChangeSummary.make(
+            aggregatedStatistics: DiffStatistics.parse(diff),
+            fallback: fallback
+        )
+
+        XCTAssertEqual(summary.items, [
+            MobileFileChangeItem(path: "Sources/App.swift", added: 2, removed: 1),
+            MobileFileChangeItem(path: "Sources/Store.swift", added: 0, removed: 1)
+        ])
+        XCTAssertEqual(summary.added, 2)
+        XCTAssertEqual(summary.removed, 2)
+    }
+
+    func testPlanSummaryPrefersRunningThenFirstPendingStep() {
+        let running = MobilePlanSummary.make(steps: [
+            ExecutionPlanStep(id: "1", text: "完成分析", status: "completed"),
+            ExecutionPlanStep(id: "2", text: "修复界面", status: "inProgress"),
+            ExecutionPlanStep(id: "3", text: "运行测试", status: "pending")
+        ])
+        XCTAssertEqual(running, MobilePlanSummary(currentStep: 2, totalSteps: 3, currentText: "修复界面"))
+
+        let pending = MobilePlanSummary.make(steps: [
+            ExecutionPlanStep(id: "1", text: "完成分析", status: "completed"),
+            ExecutionPlanStep(id: "2", text: "运行测试", status: "pending")
+        ])
+        XCTAssertEqual(pending, MobilePlanSummary(currentStep: 2, totalSteps: 2, currentText: "运行测试"))
+    }
+
     func testToolRevisionIgnoresInvisibleStreamingDetail() {
         let first = TranscriptItem(
             id: "command.1",

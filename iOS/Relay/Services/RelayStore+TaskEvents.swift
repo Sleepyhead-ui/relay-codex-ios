@@ -142,7 +142,7 @@ extension RelayStore {
             markTurnActive(eventTurnId)
             appendDetail(id: params["itemId"]?.stringValue, delta: params["delta"]?.stringValue, turnId: eventTurnId, kind: .command)
             if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
-        case "turn/plan/updated":
+        case "turn/plan/updated", "turn/diff/updated":
             if let eventTurnId { reconcileStartedTurnDelivery(turnId: eventTurnId, hasOutput: true) }
         case "thread/tokenUsage/updated":
             if let threadId = params["threadId"]?.stringValue, let usage = params["tokenUsage"] {
@@ -209,7 +209,7 @@ extension RelayStore {
             }
         case "item/agentMessage/delta", "item/reasoning/summaryTextDelta",
              "item/reasoningSummaryText/delta", "item/reasoning/textDelta",
-             "item/commandExecution/outputDelta", "turn/plan/updated":
+             "item/commandExecution/outputDelta", "turn/plan/updated", "turn/diff/updated":
             if let turnId {
                 reconcileStartedTurnDelivery(turnId: turnId, hasOutput: true)
             }

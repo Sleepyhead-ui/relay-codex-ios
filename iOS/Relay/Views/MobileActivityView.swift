@@ -6,6 +6,7 @@ struct MobileActivityPresentation: Identifiable {
     let metadata: TurnMetadata
     let isLive: Bool
     let plan: [ExecutionPlanStep]
+    let diffStatistics: DiffStatistics?
 }
 
 struct MobileLiveActivityConsole: View {
@@ -16,10 +17,15 @@ struct MobileLiveActivityConsole: View {
 
     var body: some View {
         let feed = presentation.feed
+        let fileChangeSummary = MobileFileChangeSummary.make(
+            aggregatedStatistics: presentation.diffStatistics,
+            fallback: feed.fileChangeSummary
+        )
         let hasReasoning = feed.latestReasoningText?.nonEmpty != nil
         let hasProgress = !feed.progressItems.isEmpty
+        let hasPlan = !presentation.plan.isEmpty
         let hasCommands = !feed.commandItems.isEmpty
-        let hasFileChanges = !feed.fileChangeSummary.items.isEmpty
+        let hasFileChanges = !fileChangeSummary.items.isEmpty
 
         VStack(spacing: 0) {
             HStack(spacing: 9) {
@@ -60,7 +66,7 @@ struct MobileLiveActivityConsole: View {
             .padding(.horizontal, 13)
             .frame(height: 38)
 
-            if !isCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+            if !isCollapsed && (hasReasoning || hasProgress || hasPlan || hasCommands || hasFileChanges) {
                 Divider().opacity(0.45)
             }
 
@@ -70,9 +76,7 @@ struct MobileLiveActivityConsole: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(RelayTheme.accent)
                         .frame(width: 16, height: 16)
-                    Text(cleanActivityText(reasoning))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+                    ShimmeringStatusText(cleanActivityText(reasoning), font: .system(size: 11.5))
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -80,10 +84,16 @@ struct MobileLiveActivityConsole: View {
                 .padding(.vertical, 8)
             }
 
+            if !isCollapsed && hasPlan {
+                MobilePlanWindow(steps: presentation.plan)
+                    .padding(.horizontal, 7)
+                    .padding(.top, hasReasoning ? 0 : 8)
+            }
+
             if !isCollapsed && hasProgress {
                 MobileProgressWindow(feed: feed)
                     .padding(.horizontal, 7)
-                    .padding(.top, hasReasoning ? 0 : 8)
+                    .padding(.top, hasPlan || hasReasoning ? 7 : 8)
             }
 
             if !isCollapsed && hasCommands {
@@ -93,12 +103,12 @@ struct MobileLiveActivityConsole: View {
             }
 
             if !isCollapsed && hasFileChanges {
-                MobileFileChangeWindow(summary: feed.fileChangeSummary)
+                MobileFileChangeWindow(summary: fileChangeSummary)
                     .padding(.horizontal, 7)
                     .padding(.top, 7)
             }
 
-            if !isCollapsed && (hasReasoning || hasProgress || hasCommands || hasFileChanges) {
+            if !isCollapsed && (hasReasoning || hasProgress || hasPlan || hasCommands || hasFileChanges) {
                 Color.clear.frame(height: 8)
             }
         }
@@ -113,6 +123,91 @@ struct MobileLiveActivityConsole: View {
 
     private var isCollapsed: Bool { manuallyCollapsed || compact }
 
+}
+
+private struct MobilePlanWindow: View {
+    let steps: [ExecutionPlanStep]
+    @State private var expanded = false
+
+    private var summary: MobilePlanSummary? { MobilePlanSummary.make(steps: steps) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { toggleExpandedWithoutAnimation() } label: {
+                HStack(spacing: 7) {
+                    Circle()
+                        .stroke(RelayTheme.accent.opacity(0.65), lineWidth: 1.4)
+                        .frame(width: 11, height: 11)
+                    if let summary {
+                        Text("第 \(summary.currentStep)/\(summary.totalSteps) 步")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        if let currentText = summary.currentText {
+                            Text(currentText)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Spacer(minLength: 4)
+                        }
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "折叠任务步骤" : "展开任务步骤")
+
+            if expanded {
+                Divider().opacity(0.35)
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(steps) { step in
+                        HStack(alignment: .top, spacing: 8) {
+                            planStatus(step)
+                                .frame(width: 13, height: 15)
+                            Text(step.text)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(step.isCompleted ? Color.secondary : Color.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+            }
+        }
+        .background(RelayTheme.softFill)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .transaction { $0.animation = nil }
+    }
+
+    @ViewBuilder
+    private func planStatus(_ step: ExecutionPlanStep) -> some View {
+        if step.isCompleted {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(RelayTheme.accent)
+        } else if step.isRunning {
+            ProgressView().controlSize(.mini)
+        } else {
+            Circle()
+                .stroke(Color.secondary.opacity(0.55), lineWidth: 1.2)
+                .frame(width: 10, height: 10)
+        }
+    }
+
+    private func toggleExpandedWithoutAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { expanded.toggle() }
+    }
 }
 
 private struct MobileProgressWindow: View {
@@ -512,7 +607,8 @@ struct MobileCompletedActivityRow: View {
                     feed: feed,
                     metadata: metadata,
                     isLive: false,
-                    plan: []
+                    plan: [],
+                    diffStatistics: nil
                 ))
             } label: {
                 HStack(spacing: 9) {
@@ -660,7 +756,8 @@ struct MobileActivitySheet: View {
             feed: MobileActivityFeed.make(items: items),
             metadata: metadata,
             isLive: isLive,
-            plan: isLive ? store.activePlan : []
+            plan: isLive ? store.activePlan : [],
+            diffStatistics: isLive ? store.activeTurnDiffStatistics : nil
         )
     }
 }
@@ -692,9 +789,10 @@ private struct MobileActivityEntryRow: View {
                 }
                 Group {
                     if isLive {
-                        Text(text.replacingOccurrences(of: "**", with: ""))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
+                        ShimmeringStatusText(
+                            text.replacingOccurrences(of: "**", with: ""),
+                            font: .system(size: 12)
+                        )
                     } else {
                         Text(text.replacingOccurrences(of: "**", with: ""))
                             .font(.system(size: 12))
@@ -737,6 +835,52 @@ private struct MobileActivityEntryRow: View {
             }
             .animation(.easeOut(duration: 0.16), value: toolsExpanded)
         }
+    }
+}
+
+private struct ShimmeringStatusText: View {
+    let text: String
+    let font: Font
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(_ text: String, font: Font) {
+        self.text = text
+        self.font = font
+    }
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .foregroundStyle(.secondary)
+            .overlay {
+                if !reduceMotion {
+                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                        GeometryReader { geometry in
+                            let highlightWidth = max(44, geometry.size.width * 0.42)
+                            let phase = shimmerPhase(at: context.date)
+                            LinearGradient(
+                                colors: [.clear, Color.primary.opacity(0.72), .clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: highlightWidth)
+                            .offset(x: -highlightWidth + phase * (geometry.size.width + highlightWidth * 2))
+                            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+                            .mask(alignment: .leading) {
+                                Text(text)
+                                    .font(font)
+                                    .frame(width: geometry.size.width, alignment: .leading)
+                            }
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+            .clipped()
+    }
+
+    private func shimmerPhase(at date: Date) -> CGFloat {
+        CGFloat(date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.65) / 1.65)
     }
 }
 

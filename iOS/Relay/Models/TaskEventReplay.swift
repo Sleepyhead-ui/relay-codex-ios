@@ -70,7 +70,7 @@ struct TaskStateCore {
 private extension TaskRunEvent {
     var referencedTurnId: String? {
         switch self {
-        case .started(let turnId, _), .progress(let turnId, _), .plan(let turnId, _): return turnId
+        case .started(let turnId, _), .progress(let turnId, _), .plan(let turnId, _), .diff(let turnId, _): return turnId
         case .retrying(let turnId, _), .terminal(let turnId, _, _): return turnId
         case .hydrate(_, let turnId, _): return turnId
         case .reset, .starting, .clearRetry: return nil
@@ -79,7 +79,7 @@ private extension TaskRunEvent {
 
     var isReplayableProgress: Bool {
         switch self {
-        case .started, .progress, .plan: return true
+        case .started, .progress, .plan, .diff: return true
         default: return false
         }
     }
@@ -124,6 +124,12 @@ enum TaskEventDecoder {
                 .progress(turnId: turnId, startedAt: nil),
                 .plan(turnId: turnId, steps: steps)
             ]
+        case "turn/diff/updated":
+            guard let turnId, let diff = params["diff"]?.stringValue else { events = []; break }
+            events = [
+                .progress(turnId: turnId, startedAt: nil),
+                .diff(turnId: turnId, statistics: DiffStatistics.parse(diff))
+            ]
         case "error":
             let message = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue
             if params["willRetry"]?.boolValue == true {
@@ -147,6 +153,7 @@ enum TaskEventDecoder {
     static func isProgress(_ method: String) -> Bool {
         method == "item/started"
             || method == "item/completed"
+            || method == "turn/diff/updated"
             || (method.hasPrefix("item/") && (method.hasSuffix("/delta") || method.hasSuffix("Delta")))
     }
 }

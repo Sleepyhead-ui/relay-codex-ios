@@ -52,7 +52,20 @@ struct DiffStatistics: Equatable {
         var fileOrder: [String] = []
         var fileCounts: [String: (added: Int, removed: Int)] = [:]
 
+        func registerFile(_ path: String?) {
+            guard let path, !path.isEmpty, fileCounts[path] == nil else { return }
+            fileOrder.append(path)
+            fileCounts[path] = (0, 0)
+        }
+
         for line in source.components(separatedBy: .newlines) {
+            if line.hasPrefix("diff --git ") {
+                let paths = gitHeaderPaths(String(line.dropFirst("diff --git ".count)))
+                oldPath = paths.old
+                currentPath = paths.new ?? paths.old
+                registerFile(currentPath)
+                continue
+            }
             if line.hasPrefix("--- ") {
                 oldPath = normalizedPath(String(line.dropFirst(4)))
                 continue
@@ -60,10 +73,7 @@ struct DiffStatistics: Equatable {
             if line.hasPrefix("+++ ") {
                 let newPath = normalizedPath(String(line.dropFirst(4)))
                 currentPath = newPath ?? oldPath
-                if let currentPath, fileCounts[currentPath] == nil {
-                    fileOrder.append(currentPath)
-                    fileCounts[currentPath] = (0, 0)
-                }
+                registerFile(currentPath)
                 continue
             }
             if line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("@@") {
@@ -108,5 +118,14 @@ struct DiffStatistics: Equatable {
             return String(path.dropFirst(2))
         }
         return path
+    }
+
+    private static func gitHeaderPaths(_ source: String) -> (old: String?, new: String?) {
+        guard let separator = source.range(of: " b/", options: .backwards) else {
+            return (normalizedPath(source), nil)
+        }
+        let old = normalizedPath(String(source[..<separator.lowerBound]))
+        let new = normalizedPath(String(source[separator.lowerBound...]).trimmingCharacters(in: .whitespaces))
+        return (old, new)
     }
 }

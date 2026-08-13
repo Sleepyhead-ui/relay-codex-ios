@@ -250,6 +250,48 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertEqual(state.turnId, "turn.2")
     }
 
+    func testTurnDiffTracksOnlyTheActiveTurn() {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.started(turnId: "turn.2", startedAt: nil))
+        state.apply(.diff(turnId: "turn.1", statistics: DiffStatistics.parse("old")))
+        XCTAssertNil(state.diffStatistics)
+
+        state.apply(.diff(turnId: "turn.2", statistics: DiffStatistics.parse("latest")))
+        XCTAssertEqual(state.diffTurnId, "turn.2")
+        XCTAssertEqual(state.diffStatistics, DiffStatistics.parse("latest"))
+
+        state.apply(.started(turnId: "turn.3", startedAt: nil))
+        XCTAssertNil(state.diffTurnId)
+        XCTAssertNil(state.diffStatistics)
+    }
+
+    func testTurnDiffNotificationAdoptsAndUpdatesRunningTurn() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "turn/diff/updated", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "diff": .string("--- a/App.swift\n+++ b/App.swift\n@@ -1 +1 @@\n-old\n+new")
+        ]))
+
+        XCTAssertEqual(replay.states["thread.1"]?.phase, .running)
+        XCTAssertEqual(replay.states["thread.1"]?.diffStatistics, DiffStatistics(
+            added: 1,
+            removed: 1,
+            files: [DiffFileStatistics(path: "App.swift", added: 1, removed: 1)]
+        ))
+    }
+
+    func testStaleTurnDiffCannotReplaceCurrentTurnDiff() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.new"))
+        replay.apply(method: "turn/diff/updated", params: diffParams(threadId: "thread.1", turnId: "turn.new", diff: "new"))
+        replay.apply(method: "turn/diff/updated", params: diffParams(threadId: "thread.1", turnId: "turn.old", diff: "old"))
+
+        XCTAssertEqual(replay.states["thread.1"]?.turnId, "turn.new")
+        XCTAssertEqual(replay.states["thread.1"]?.diffStatistics, DiffStatistics.parse("new"))
+    }
+
     private func eventParams(threadId: String, turnId: String) -> JSONValue {
         .object([
             "threadId": .string(threadId),
@@ -263,6 +305,14 @@ final class TaskRunStateTests: XCTestCase {
             "threadId": .string(threadId),
             "turnId": .string(turnId),
             "plan": .array([.object(["step": .string(step), "status": .string("inProgress")])])
+        ])
+    }
+
+    private func diffParams(threadId: String, turnId: String, diff: String) -> JSONValue {
+        .object([
+            "threadId": .string(threadId),
+            "turnId": .string(turnId),
+            "diff": .string(diff)
         ])
     }
 }
