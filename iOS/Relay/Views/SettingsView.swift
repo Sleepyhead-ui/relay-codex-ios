@@ -239,7 +239,7 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("关于 Relay") {
-            LabeledContent("版本", value: appVersion)
+            LabeledContent("版本", value: AppBuildIdentity().displayText)
 
             if let update = store.updateInfo, update.available {
                 Button {
@@ -288,10 +288,6 @@ struct SettingsView: View {
 
     private var selectedEffortName: String {
         store.availableEfforts.first(where: { $0.id == store.selectedEffort })?.displayName ?? "默认"
-    }
-
-    private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
     }
 
     private func updateDownloadLabel(_ version: String) -> String {

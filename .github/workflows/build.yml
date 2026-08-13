@@ -85,6 +85,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            RELAY_GIT_COMMIT="$GITHUB_SHA" \
             build
       - name: Package IPA
         working-directory: iOS

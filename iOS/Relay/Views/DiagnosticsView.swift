@@ -11,6 +11,11 @@ struct DiagnosticsView: View {
         NavigationStack {
             List {
                 if let report = store.diagnosticsReport {
+                    Section("构建信息") {
+                        LabeledContent("Relay", value: AppBuildIdentity().displayText)
+                            .font(.system(size: 12, design: .monospaced))
+                    }
+
                     Section {
                         ForEach(report.checks) { check in
                             HStack(alignment: .top, spacing: 11) {

@@ -1,5 +1,30 @@
 import Foundation
 
+struct AppBuildIdentity: Equatable {
+    let version: String
+    let build: String
+    let commit: String
+
+    init(infoDictionary: [String: Any] = Bundle.main.infoDictionary ?? [:]) {
+        version = infoDictionary["CFBundleShortVersionString"] as? String ?? "未知"
+        build = infoDictionary["CFBundleVersion"] as? String ?? "未知"
+        let rawCommit = infoDictionary["RelayGitCommit"] as? String ?? "未知"
+        commit = rawCommit.count > 12 ? String(rawCommit.prefix(12)) : rawCommit
+    }
+
+    var displayText: String {
+        "v\(version) (\(build)) · \(commit)"
+    }
+
+    var json: JSONValue {
+        .object([
+            "version": .string(version),
+            "build": .string(build),
+            "commit": .string(commit)
+        ])
+    }
+}
+
 struct DiagnosticCheck: Identifiable, Equatable {
     let id: String
     let level: String

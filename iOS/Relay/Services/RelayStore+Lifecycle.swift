@@ -7,6 +7,7 @@ extension RelayStore {
         do {
             let result = try await socket.rpc(method: "relay/diagnostics/report", timeoutSeconds: 12, reconnectOnTimeout: false)
             var combined = result.objectValue ?? [:]
+            combined["appBuild"] = AppBuildIdentity().json
             combined["clientPerformance"] = socket.performanceMetrics.report()
             let uniqueMessageIds = Set(messages.map(\.id)).count
             combined["clientState"] = .object([

@@ -2,6 +2,20 @@ import XCTest
 @testable import Relay
 
 final class DiagnosticsModelsTests: XCTestCase {
+    func testBuildIdentityUsesVersionBuildAndShortCommit() {
+        let identity = AppBuildIdentity(infoDictionary: [
+            "CFBundleShortVersionString": "1.5.11",
+            "CFBundleVersion": "118",
+            "RelayGitCommit": "1234567890abcdef"
+        ])
+
+        XCTAssertEqual(identity.version, "1.5.11")
+        XCTAssertEqual(identity.build, "118")
+        XCTAssertEqual(identity.commit, "1234567890ab")
+        XCTAssertEqual(identity.displayText, "v1.5.11 (118) · 1234567890ab")
+        XCTAssertEqual(identity.json["commit"]?.stringValue, "1234567890ab")
+    }
+
     func testNumericBridgeEventIdIsAccepted() {
         let event = DiagnosticEvent(json: .object([
             "id": .number(7),
