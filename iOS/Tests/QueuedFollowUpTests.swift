@@ -13,6 +13,7 @@ final class QueuedFollowUpTests: XCTestCase {
         let json = JSONValue.object([
             "id": .string("queue.1"),
             "threadId": .string("thread.1"),
+            "clientUserMessageId": .string("relay-user.1"),
             "text": .string("before"),
             "createdAt": .number(1_800_000_000),
             "input": .array([
@@ -31,6 +32,7 @@ final class QueuedFollowUpTests: XCTestCase {
 
         let item = QueuedFollowUp(json: json)
 
+        XCTAssertEqual(item?.clientUserMessageId, "relay-user.1")
         XCTAssertEqual(item?.text, "before")
         XCTAssertEqual(item?.attachmentNames, ["preview.png", "notes.txt"])
         XCTAssertEqual(item?.imagePaths, ["C:\\workspace\\preview.png"])
