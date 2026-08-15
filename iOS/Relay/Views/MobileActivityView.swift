@@ -4,6 +4,7 @@ struct MobileActivityPresentation: Identifiable {
     let id: String
     let feed: MobileActivityFeed
     let metadata: TurnMetadata
+    let outputStartedAt: Date?
     let isLive: Bool
     let plan: [ExecutionPlanStep]
     let diffStatistics: DiffStatistics?
@@ -34,11 +35,13 @@ struct MobileLiveActivityConsole: View {
                     .tint(RelayTheme.accent)
                     .frame(width: 18, height: 18)
 
-                Text("正在处理")
+                Text(presentation.outputStartedAt == nil ? "正在思考" : "正在处理")
                     .font(.system(size: 12, weight: .semibold))
 
                 Spacer(minLength: 8)
-                LiveElapsedText(startedAt: presentation.metadata.startedAt)
+                if let outputStartedAt = presentation.outputStartedAt {
+                    LiveElapsedText(startedAt: outputStartedAt)
+                }
 
                 Button {
                     RelayHaptics.selection()
@@ -613,6 +616,7 @@ struct MobileCompletedActivityRow: View {
                     id: id,
                     feed: feed,
                     metadata: metadata,
+                    outputStartedAt: nil,
                     isLive: false,
                     plan: [],
                     diffStatistics: nil
@@ -762,6 +766,11 @@ struct MobileActivitySheet: View {
             id: turnId,
             feed: MobileActivityFeed.make(items: items),
             metadata: metadata,
+            outputStartedAt: isLive
+                ? (store.selectedThreadId.flatMap { store.taskRunStates[$0]?.outputStartedAt }
+                    ?? presentation.outputStartedAt
+                    ?? items.first(where: \.isVisibleAssistantOutput)?.createdAt)
+                : presentation.outputStartedAt,
             isLive: isLive,
             plan: isLive ? store.activePlan : [],
             diffStatistics: isLive ? store.activeTurnDiffStatistics : nil

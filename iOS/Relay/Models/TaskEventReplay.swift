@@ -70,7 +70,8 @@ struct TaskStateCore {
 private extension TaskRunEvent {
     var referencedTurnId: String? {
         switch self {
-        case .started(let turnId, _), .progress(let turnId, _), .plan(let turnId, _), .diff(let turnId, _): return turnId
+        case .started(let turnId, _), .progress(let turnId, _), .outputStarted(let turnId, _),
+             .plan(let turnId, _), .diff(let turnId, _): return turnId
         case .retrying(let turnId, _), .terminal(let turnId, _, _): return turnId
         case .hydrate(_, let turnId, _): return turnId
         case .reset, .starting, .clearRetry: return nil
@@ -79,7 +80,7 @@ private extension TaskRunEvent {
 
     var isReplayableProgress: Bool {
         switch self {
-        case .started, .progress, .plan, .diff: return true
+        case .started, .progress, .outputStarted, .plan, .diff: return true
         default: return false
         }
     }
@@ -130,6 +131,22 @@ enum TaskEventDecoder {
                 .progress(turnId: turnId, startedAt: nil),
                 .diff(turnId: turnId, statistics: DiffStatistics.parse(diff))
             ]
+        case "item/agentMessage/delta":
+            guard let turnId else { events = []; break }
+            var outputEvents: [TaskRunEvent] = [.progress(turnId: turnId, startedAt: nil)]
+            if isVisibleAssistantOutputDelta(params) {
+                outputEvents.append(.outputStarted(turnId: turnId, at: Date()))
+            }
+            events = outputEvents
+        case "item/started", "item/completed":
+            guard let turnId else { events = []; break }
+            var itemEvents: [TaskRunEvent] = [.progress(turnId: turnId, startedAt: nil)]
+            if let itemJSON = params["item"],
+               let item = TranscriptItem.from(json: itemJSON, turnId: turnId),
+               item.isVisibleAssistantOutput {
+                itemEvents.append(.outputStarted(turnId: turnId, at: item.createdAt))
+            }
+            events = itemEvents
         case "error":
             let message = params["error"]?["message"]?.stringValue ?? params["message"]?.stringValue
             if params["willRetry"]?.boolValue == true {
@@ -155,6 +172,12 @@ enum TaskEventDecoder {
             || method == "item/completed"
             || method == "turn/diff/updated"
             || (method.hasPrefix("item/") && (method.hasSuffix("/delta") || method.hasSuffix("Delta")))
+    }
+
+    private static func isVisibleAssistantOutputDelta(_ params: JSONValue) -> Bool {
+        guard params["phase"]?.stringValue != "commentary",
+              let delta = params["delta"]?.stringValue else { return false }
+        return !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

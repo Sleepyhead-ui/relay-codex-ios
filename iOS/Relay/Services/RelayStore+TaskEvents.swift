@@ -57,7 +57,12 @@ extension RelayStore {
 
     func applyEvent(method: String, params: JSONValue) {
         let eventTurnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
+        let previousOutputStartedAt = selectedThreadId.flatMap { taskRunStates[$0]?.outputStartedAt }
         guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: selectedThreadId) else { return }
+        if previousOutputStartedAt == nil,
+           selectedThreadId.flatMap({ taskRunStates[$0]?.outputStartedAt }) != nil {
+            RelayHaptics.impact()
+        }
         switch method {
         case "turn/started":
             let metadata = TurnMetadata(json: params["turn"] ?? .object([:]))

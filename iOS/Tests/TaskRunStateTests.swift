@@ -102,6 +102,62 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertNil(replay.states["thread.1"]?.turnId)
     }
 
+    func testOutputTimerStartsOnceForTheFirstVisibleAnswerDelta() throws {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "item/agentMessage/delta", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "phase": .string("commentary"),
+            "delta": .string("Checking the implementation")
+        ]))
+        XCTAssertNil(replay.states["thread.1"]?.outputStartedAt)
+
+        replay.apply(method: "item/agentMessage/delta", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "phase": .string("final_answer"),
+            "delta": .string("Done")
+        ]))
+        let firstOutputAt = try XCTUnwrap(replay.states["thread.1"]?.outputStartedAt)
+
+        replay.apply(method: "item/agentMessage/delta", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "phase": .string("final_answer"),
+            "delta": .string(".")
+        ]))
+        XCTAssertEqual(replay.states["thread.1"]?.outputStartedAt, firstOutputAt)
+    }
+
+    func testTerminalTurnClearsLiveOutputTimer() {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.started(turnId: "turn.1", startedAt: nil))
+        state.apply(.outputStarted(turnId: "turn.1", at: Date(timeIntervalSince1970: 123)))
+        XCTAssertNotNil(state.outputStartedAt)
+
+        state.apply(.terminal(turnId: "turn.1", phase: .completed, completedAt: nil))
+        XCTAssertNil(state.outputStartedAt)
+    }
+
+    func testCompletedAnswerItemRestoresItsCreationTimeWithoutDelta() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "item/completed", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "item": .object([
+                "id": .string("agent.1"),
+                "type": .string("agentMessage"),
+                "phase": .string("final_answer"),
+                "text": .string("Finished"),
+                "createdAt": .number(123)
+            ])
+        ]))
+
+        XCTAssertEqual(replay.states["thread.1"]?.outputStartedAt, Date(timeIntervalSince1970: 123))
+    }
+
     func testStartingStateIsRunningBeforeTurnIdArrives() {
         var state = TaskRunState(threadId: "thread.1")
         state.apply(.starting(startedAt: nil))

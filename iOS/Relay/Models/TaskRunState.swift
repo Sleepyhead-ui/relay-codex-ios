@@ -15,6 +15,7 @@ struct TaskRunState: Equatable {
     var phase: TaskRunPhase = .idle
     var turnId: String?
     var startedAt: Date?
+    var outputStartedAt: Date?
     var completedAt: Date?
     var retryMessage: String?
     var planTurnId: String?
@@ -59,6 +60,9 @@ struct TaskRunState: Equatable {
             phase = .running
             completedAt = nil
             retryMessage = nil
+        case .outputStarted(let turnId, let outputStartedAt):
+            guard self.turnId == turnId, isRunning, self.outputStartedAt == nil else { return }
+            self.outputStartedAt = outputStartedAt ?? Date()
         case .plan(let turnId, let steps):
             guard self.turnId == turnId, isRunning else { return }
             planTurnId = turnId
@@ -84,6 +88,7 @@ struct TaskRunState: Equatable {
             phase = terminalPhase
             self.turnId = nil
             self.completedAt = completedAt ?? Date()
+            outputStartedAt = nil
             retryMessage = nil
             planTurnId = nil
             plan = []
@@ -99,6 +104,7 @@ enum TaskRunEvent {
     case hydrate(running: Bool, turnId: String?, startedAt: Date?)
     case started(turnId: String, startedAt: Date?)
     case progress(turnId: String, startedAt: Date?)
+    case outputStarted(turnId: String, at: Date?)
     case plan(turnId: String, steps: [ExecutionPlanStep])
     case diff(turnId: String, statistics: DiffStatistics)
     case retrying(turnId: String?, message: String?)

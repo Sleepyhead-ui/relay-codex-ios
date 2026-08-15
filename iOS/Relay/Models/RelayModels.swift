@@ -721,6 +721,12 @@ struct TranscriptItem: Identifiable, Equatable {
 
     var isCommentary: Bool { role == .assistant && phase == "commentary" }
     var isFinalAnswer: Bool { role == .assistant && phase != "commentary" }
+    var isVisibleAssistantOutput: Bool {
+        role == .assistant
+            && kind == .message
+            && !isCommentary
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     var isActivity: Bool { role == .tool || isCommentary }
     var isRunningStatus: Bool {
         let normalized = status?
@@ -805,7 +811,8 @@ struct TranscriptItem: Identifiable, Equatable {
                 text: content.visibleText,
                 detail: content.thinkingText,
                 phase: json["phase"]?.stringValue ?? (content.containsThinking ? "commentary" : nil),
-                rawAgentText: content.containsThinking || content.visibleText != rawText ? rawText : nil
+                rawAgentText: content.containsThinking || content.visibleText != rawText ? rawText : nil,
+                createdAt: createdAt
             )
         case "reasoning":
             let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
