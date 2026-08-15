@@ -37,6 +37,7 @@ interface DiagnosticState {
   socket: Record<string, unknown>;
   rpc: Record<string, unknown>;
   codexProfile: Record<string, unknown>;
+  codexRuntime?: Record<string, unknown>;
   performance: Record<string, unknown>;
 }
 
@@ -103,6 +104,10 @@ export class DiagnosticsLog {
   }
 
   report(state: DiagnosticState): Record<string, unknown> {
+    const codexRuntime = state.codexRuntime ?? {
+      version: null,
+      compatibility: "unavailable",
+    };
     const checks: DiagnosticCheck[] = [
       {
         id: "bridge",
@@ -115,6 +120,12 @@ export class DiagnosticsLog {
         level: state.codexReady ? "ok" : state.codexRestartAttempt > 0 ? "warning" : "error",
         title: "Codex App Server",
         detail: state.codexReady ? "已就绪" : state.codexRestartAttempt > 0 ? `正在进行第 ${state.codexRestartAttempt} 次恢复` : "尚未就绪",
+      },
+      {
+        id: "codex-runtime",
+        level: codexRuntime.compatibility === "compatible" ? "ok" : "warning",
+        title: "Codex 运行时",
+        detail: `${codexRuntime.version ?? "版本未知"} · ${runtimeCompatibilityLabel(codexRuntime.compatibility)}`,
       },
       {
         id: "client",
@@ -168,10 +179,18 @@ export class DiagnosticsLog {
       socket: state.socket,
       rpc: state.rpc,
       codexProfile: state.codexProfile,
+      codexRuntime,
       performance: state.performance,
       events: [...this.events].reverse(),
     };
   }
+}
+
+function runtimeCompatibilityLabel(value: unknown): string {
+  if (value === "compatible") return "兼容";
+  if (value === "outdated") return "版本过旧";
+  if (value === "untested") return "尚未验证";
+  return "无法检测";
 }
 
 function isDiagnosticEvent(value: unknown): value is DiagnosticEvent {

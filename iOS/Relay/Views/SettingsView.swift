@@ -150,6 +150,18 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if let runtime = store.codexRuntimeInfo {
+                LabeledContent("运行时") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(runtime.version.map { "Codex \($0)" } ?? "版本未知")
+                            .foregroundStyle(.primary)
+                        Text("\(runtime.sourceLabel) · \(runtime.compatibilityLabel)")
+                            .font(.caption)
+                            .foregroundStyle(runtime.compatibility == "compatible" ? Color.secondary : Color.orange)
+                    }
+                }
+            }
         }
     }
 
@@ -213,9 +225,9 @@ struct SettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(store.workspaceAccess == .fullAccess ? Color.orange : Color.secondary)
         } header: {
-            Text("新任务默认设置")
+            Text("任务设置")
         } footer: {
-            Text("项目目录和文件权限用于新任务；已有任务继续使用创建时的工作区。")
+            Text("项目目录用于新任务；模型、思考深度和文件权限会同时应用到当前任务。完全访问不会再逐项请求审批。")
         }
     }
 

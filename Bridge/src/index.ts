@@ -4,7 +4,7 @@ import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import qrcode from "qrcode-terminal";
 import { CodexAppServer } from "./codexAppServer.js";
-import { resolveCodexExecutable } from "./codexExecutable.js";
+import { inspectCodexRuntime, type CodexRuntimeInfo } from "./codexExecutable.js";
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { CodexRuntimeConfigMonitor } from "./codexRuntimeConfigMonitor.js";
 import { ClientPreferencesStore } from "./clientPreferences.js";
@@ -126,6 +126,7 @@ let codexStartupTimer: NodeJS.Timeout | undefined;
 let recoveringDeliveries = false;
 let shuttingDown = false;
 let activeCodexProfile = (await codexProfiles.list()).find((profile) => profile.active)!;
+let codexRuntimeInfo: CodexRuntimeInfo = inspectCodexRuntime(codexProfiles.activeCodexHome, config.codexBin);
 let codexConfigReloadPending = false;
 let codexConfigReloadInProgress = false;
 let codexConfigReloadTimer: NodeJS.Timeout | undefined;
@@ -185,6 +186,7 @@ const httpServer = createServer((request, response) => {
       ownedThreadCount: threadControl.ownedIds.length,
       pendingThreadReleaseCount: threadControl.pendingReleaseIds.length,
       queuedPromptCount: promptQueue.list(activeCodexProfile.id).length,
+      codexRuntime: codexRuntimeInfo,
       pendingDeliveryCount: deliveryRegistry.pendingCount,
       codexRestartAttempt,
       socket: socketDiagnostics,
@@ -558,6 +560,54 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       const removed = id ? await promptQueue.remove(id) : false;
       send(socket, { type: "rpcResult", id: message.id, result: { removed } });
       if (existing) broadcastPromptQueue(existing.threadId);
+      return;
+    }
+    if (message.method === "relay/prompt/queue/promote") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      const id = typeof message.params.id === "string" ? message.params.id : "";
+      const item = promptQueue.list(activeCodexProfile.id).find((candidate) => candidate.id === id);
+      if (!item) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: "The queued message is no longer waiting to be processed." } });
+        return;
+      }
+      if (dispatchingQueueThreads.has(item.threadId)) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: "The queued message is already being processed." } });
+        return;
+      }
+      dispatchingQueueThreads.add(item.threadId);
+      const retryTimer = queueRetryTimers.get(item.threadId);
+      if (retryTimer) clearTimeout(retryTimer);
+      queueRetryTimers.delete(item.threadId);
+      try {
+        const runtime = await runtimeState.snapshotWithExternal(item.threadId, sessionActivity);
+        if (!runtime.isRunning || !runtime.activeTurnId) throw new Error("The current task has already ended.");
+        if (item.waitForTurnId && item.waitForTurnId !== runtime.activeTurnId) {
+          throw new Error("The queued message belongs to a different active task.");
+        }
+        const access = await ensureThreadControl(item.threadId);
+        if (access.mode !== "relay-write") throw new Error("Another Codex instance owns this task.");
+        const params: JsonObject = {
+          threadId: item.threadId,
+          expectedTurnId: runtime.activeTurnId,
+          clientUserMessageId: item.clientUserMessageId,
+          input: item.input,
+        };
+        performanceMetrics.recordTurnReceived(params);
+        performanceMetrics.recordTurnForwarded(item.clientUserMessageId);
+        const result = await codexRequest("turn/steer", params);
+        performanceMetrics.recordTurnAccepted(item.clientUserMessageId, runtime.activeTurnId);
+        await promptQueue.remove(item.id);
+        desktopSync.activateThread(item.threadId, "turn-steered");
+        broadcastPromptQueue(item.threadId);
+        send(socket, { type: "rpcResult", id: message.id, result: { item, turnId: result.turnId ?? runtime.activeTurnId } });
+      } catch (error) {
+        performanceMetrics.recordTurnRejected(item.clientUserMessageId);
+        scheduleQueueRetry(item.threadId);
+        send(socket, { type: "rpcResult", id: message.id, error: { message: error instanceof Error ? error.message : "Could not promote the queued message." } });
+      } finally {
+        dispatchingQueueThreads.delete(item.threadId);
+        if (threadControl.hasPendingRelease) scheduleThreadControlRelease(100);
+      }
       return;
     }
     if (message.method === "relay/prompt/queue/update") {
@@ -1378,7 +1428,14 @@ function sendError(socket: WebSocket, message: string): void {
 }
 
 function bridgeStatus(status: string, sync = desktopSync.status): JsonObject {
-  return { type: "bridgeStatus", status, version: relayVersion, desktopSync: sync, codexProfile: activeCodexProfile };
+  return {
+    type: "bridgeStatus",
+    status,
+    version: relayVersion,
+    desktopSync: sync,
+    codexProfile: activeCodexProfile,
+    codexRuntime: codexRuntimeInfo,
+  };
 }
 
 function diagnosticsReport(): JsonObject {
@@ -1399,14 +1456,15 @@ function diagnosticsReport(): JsonObject {
     socket: { ...socketDiagnostics },
     rpc: { ...rpcDiagnostics },
     codexProfile: { ...activeCodexProfile },
+    codexRuntime: { ...codexRuntimeInfo },
     performance: performanceMetrics.report(),
   });
 }
 
 function createCodexAppServer(generation: number): CodexAppServer {
-  const executable = resolveCodexExecutable(codexProfiles.activeCodexHome, config.codexBin);
-  console.log(`[codex] Starting App Server with ${executable}`);
-  return new CodexAppServer(executable, {
+  codexRuntimeInfo = inspectCodexRuntime(codexProfiles.activeCodexHome, config.codexBin);
+  console.log(`[codex] Starting App Server with ${codexRuntimeInfo.executable} (${codexRuntimeInfo.version ?? "unknown"}, ${codexRuntimeInfo.compatibility})`);
+  return new CodexAppServer(codexRuntimeInfo.executable, {
     onResponse: (message) => {
       if (generation === codexGeneration) void handleCodexResponse(message);
     },
@@ -1694,6 +1752,7 @@ async function dispatchNextQueuedPrompt(threadId: string, completedTurnId?: stri
       clientUserMessageId: next.clientUserMessageId,
       input: next.input,
       summary: "auto",
+      ...(next.approvalPolicy ? { approvalPolicy: next.approvalPolicy } : {}),
       ...(next.sandboxPolicy ? { sandboxPolicy: next.sandboxPolicy } : {}),
       ...(next.model ? { model: next.model } : {}),
       ...(next.effort ? { effort: next.effort } : {}),
@@ -1746,6 +1805,7 @@ async function switchCodexProfile(profileId: unknown): Promise<CodexProfile> {
   if (requested.active) return requested;
 
   activeCodexProfile = await codexProfiles.select(profileId);
+  codexRuntimeInfo = inspectCodexRuntime(codexProfiles.activeCodexHome, config.codexBin);
   await codexConfigMonitor.setCodexHome(codexProfiles.activeCodexHome);
   codexConfigReloadPending = false;
   changedCodexConfigFiles.clear();

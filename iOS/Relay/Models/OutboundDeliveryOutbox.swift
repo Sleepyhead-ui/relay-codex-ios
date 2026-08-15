@@ -6,12 +6,13 @@ struct OutboundDraft: Codable {
     let attachments: [PendingAttachment]
     var expectedTurnId: String? = nil
     var sandboxPolicy: JSONValue? = nil
+    var approvalPolicy: String? = nil
     var model: String? = nil
     var effort: String? = nil
     var collaborationMode: JSONValue? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case threadId, text, attachments, expectedTurnId, sandboxPolicy, model, effort, collaborationMode
+        case threadId, text, attachments, expectedTurnId, sandboxPolicy, approvalPolicy, model, effort, collaborationMode
     }
 
     init(
@@ -20,6 +21,7 @@ struct OutboundDraft: Codable {
         attachments: [PendingAttachment],
         expectedTurnId: String? = nil,
         sandboxPolicy: JSONValue? = nil,
+        approvalPolicy: String? = nil,
         model: String? = nil,
         effort: String? = nil,
         collaborationMode: JSONValue? = nil
@@ -29,6 +31,7 @@ struct OutboundDraft: Codable {
         self.attachments = attachments
         self.expectedTurnId = expectedTurnId
         self.sandboxPolicy = sandboxPolicy
+        self.approvalPolicy = approvalPolicy
         self.model = model
         self.effort = effort
         self.collaborationMode = collaborationMode
@@ -41,6 +44,7 @@ struct OutboundDraft: Codable {
         attachments = try values.decode([StoredOutboundAttachment].self, forKey: .attachments).map(\.pendingAttachment)
         expectedTurnId = try values.decodeIfPresent(String.self, forKey: .expectedTurnId)
         sandboxPolicy = try values.decodeIfPresent(JSONValue.self, forKey: .sandboxPolicy)
+        approvalPolicy = try values.decodeIfPresent(String.self, forKey: .approvalPolicy)
         model = try values.decodeIfPresent(String.self, forKey: .model)
         effort = try values.decodeIfPresent(String.self, forKey: .effort)
         collaborationMode = try values.decodeIfPresent(JSONValue.self, forKey: .collaborationMode)
@@ -53,6 +57,7 @@ struct OutboundDraft: Codable {
         try values.encode(attachments.compactMap { StoredOutboundAttachment($0) }, forKey: .attachments)
         try values.encodeIfPresent(expectedTurnId, forKey: .expectedTurnId)
         try values.encodeIfPresent(sandboxPolicy, forKey: .sandboxPolicy)
+        try values.encodeIfPresent(approvalPolicy, forKey: .approvalPolicy)
         try values.encodeIfPresent(model, forKey: .model)
         try values.encodeIfPresent(effort, forKey: .effort)
         try values.encodeIfPresent(collaborationMode, forKey: .collaborationMode)

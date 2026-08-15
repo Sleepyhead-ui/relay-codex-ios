@@ -7,6 +7,8 @@ export interface ThreadRuntimeSnapshot extends JsonObject {
   activeTurnId?: string;
   observedTurnId?: string;
   startedAt?: number;
+  outputStartedAt?: number;
+  plan?: unknown[];
   upstreamRetrying?: boolean;
   upstreamError?: string;
   updatedAt: number;
@@ -16,6 +18,8 @@ interface StoredThreadRuntime {
   isRunning: boolean;
   activeTurnId?: string;
   startedAt?: number;
+  outputStartedAt?: number;
+  plan?: unknown[];
   upstreamRetrying?: boolean;
   upstreamError?: string;
   updatedAt: number;
@@ -83,8 +87,24 @@ export class RuntimeStateTracker {
       return;
     }
 
+    const existing = this.threads.get(threadId);
+    if (message.method === "turn/plan/updated" && existing?.isRunning && Array.isArray(params.plan)) {
+      this.set(threadId, { ...existing, plan: params.plan, updatedAt: this.now() });
+      return;
+    }
+
+    if (existing?.isRunning && !existing.outputStartedAt && isVisibleAssistantOutput(message.method, params)) {
+      const item = isObject(params.item) ? params.item : {};
+      const { upstreamRetrying: _retrying, upstreamError: _error, ...active } = existing;
+      this.set(threadId, {
+        ...active,
+        outputStartedAt: numberValue(item.createdAt) ?? this.now(),
+        updatedAt: this.now(),
+      });
+      return;
+    }
+
     if (isProgressNotification(message.method)) {
-      const existing = this.threads.get(threadId);
       if (existing?.isRunning && existing.upstreamRetrying) {
         const { upstreamRetrying: _retrying, upstreamError: _error, ...active } = existing;
         this.set(threadId, { ...active, updatedAt: this.now() });
@@ -142,6 +162,8 @@ export class RuntimeStateTracker {
       isRunning: true,
       ...(observed.turnId ? { activeTurnId: observed.turnId } : current.activeTurnId ? { activeTurnId: current.activeTurnId } : {}),
       ...(observed.startedAt ? { startedAt: observed.startedAt } : {}),
+      ...(current.outputStartedAt ? { outputStartedAt: current.outputStartedAt } : {}),
+      ...(current.plan ? { plan: current.plan } : {}),
       ...(current.upstreamRetrying ? { upstreamRetrying: true } : {}),
       ...(current.upstreamError ? { upstreamError: current.upstreamError } : {}),
       updatedAt: Math.max(current.updatedAt, observed.updatedAt),
@@ -190,4 +212,15 @@ function isProgressNotification(method: string): boolean {
     || method === "item/completed"
     || method.startsWith("item/") && method.endsWith("/delta")
     || method === "turn/plan/updated";
+}
+
+function isVisibleAssistantOutput(method: string, params: JsonObject): boolean {
+  if (method === "item/agentMessage/delta") {
+    return params.phase !== "commentary"
+      && typeof params.delta === "string"
+      && params.delta.trim().length > 0;
+  }
+  if (method !== "item/started" && method !== "item/completed") return false;
+  if (!isObject(params.item) || params.item.type !== "agentMessage" || params.item.phase === "commentary") return false;
+  return typeof params.item.text === "string" && params.item.text.trim().length > 0;
 }

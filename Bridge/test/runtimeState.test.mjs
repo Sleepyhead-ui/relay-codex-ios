@@ -31,6 +31,40 @@ test("marks only the matching active turn completed", () => {
   assert.equal(tracker.activeCount, 0);
 });
 
+test("restores first output time and plan while a turn remains active", () => {
+  let now = 200;
+  const tracker = new RuntimeStateTracker(() => now);
+  tracker.observeTurnStart("thread-live", { id: "turn-live", startedAt: 100 });
+  tracker.observeNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-live", turnId: "turn-live", phase: "final_answer", delta: "hello" },
+  });
+  now = 220;
+  tracker.observeNotification({
+    method: "turn/plan/updated",
+    params: { threadId: "thread-live", turnId: "turn-live", plan: [{ step: "Inspect", status: "completed" }] },
+  });
+  assert.deepEqual(tracker.snapshot("thread-live"), {
+    known: true,
+    isRunning: true,
+    activeTurnId: "turn-live",
+    startedAt: 100,
+    outputStartedAt: 200,
+    plan: [{ step: "Inspect", status: "completed" }],
+    updatedAt: 220,
+  });
+});
+
+test("does not start output timing for an empty assistant item", () => {
+  const tracker = new RuntimeStateTracker(() => 200);
+  tracker.observeTurnStart("thread-thinking", { id: "turn-thinking", startedAt: 100 });
+  tracker.observeNotification({
+    method: "item/started",
+    params: { threadId: "thread-thinking", turnId: "turn-thinking", item: { type: "agentMessage", phase: "final_answer" } },
+  });
+  assert.equal(tracker.snapshot("thread-thinking").outputStartedAt, undefined);
+});
+
 test("returns unknown when the bridge has not observed a thread", () => {
   const tracker = new RuntimeStateTracker();
   const snapshot = tracker.snapshot("thread-missing");

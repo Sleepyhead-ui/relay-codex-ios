@@ -46,11 +46,14 @@ struct ComposerView: View {
                 }
             }
 
-            if !focused && (!store.activePlan.isEmpty || visibleGoal != nil) {
-                TaskContextPanel(
-                    steps: store.activePlan,
-                    goal: visibleGoal
-                )
+            if !focused, let goal = visibleGoal {
+                ActiveGoalPanel(goal: goal)
+                    .background(RelayTheme.elevated)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(RelayTheme.hairline, lineWidth: 1)
+                    }
             }
 
             VStack(spacing: 2) {
@@ -680,32 +683,6 @@ struct ComposerView: View {
         if showsStopControl { return "停止任务" }
         if store.isRunning { return store.followUpBehavior == .steer ? "立即引导当前任务" : "加入等待队列" }
         return "发送"
-    }
-}
-
-private struct TaskContextPanel: View {
-    let steps: [ExecutionPlanStep]
-    let goal: GoalState?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if !steps.isEmpty {
-                ExecutionPlanPanel(steps: steps)
-            }
-            if !steps.isEmpty, goal != nil {
-                Divider()
-                    .padding(.horizontal, 11)
-            }
-            if let goal {
-                ActiveGoalPanel(goal: goal)
-            }
-        }
-        .background(RelayTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(RelayTheme.hairline, lineWidth: 1)
-        }
     }
 }
 

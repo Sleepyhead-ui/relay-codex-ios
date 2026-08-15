@@ -28,6 +28,7 @@ struct TurnGroupView: View, Equatable {
                         item: item,
                         isFollowUp: isFollowUp,
                         timestamp: item.createdAt ?? group.metadata.startedAt,
+                        allowsPromptEditing: group.metadata.allowsPromptEditing,
                         store: store
                     )
                 case .activity:
@@ -118,6 +119,7 @@ struct TranscriptRow: View {
     let isFollowUp: Bool
     let timestamp: Date?
     let forkTurnId: String?
+    let allowsPromptEditing: Bool
     // Intentionally unobserved: the item value owns row updates. Observing the
     // global store here would invalidate every historical row on each token.
     let store: RelayStore
@@ -127,12 +129,14 @@ struct TranscriptRow: View {
         isFollowUp: Bool = false,
         timestamp: Date? = nil,
         forkTurnId: String? = nil,
+        allowsPromptEditing: Bool = false,
         store: RelayStore
     ) {
         self.item = item
         self.isFollowUp = isFollowUp
         self.timestamp = timestamp
         self.forkTurnId = forkTurnId
+        self.allowsPromptEditing = allowsPromptEditing
         self.store = store
     }
 
@@ -158,7 +162,13 @@ struct TranscriptRow: View {
                         deliveryStatus(deliveryState)
                     }
                     if item.deliveryState == nil, !item.text.isEmpty {
-                        MessageActionsRow(text: item.text, timestamp: timestamp, forkTurnId: nil, store: store)
+                        MessageActionsRow(
+                            text: item.text,
+                            timestamp: timestamp,
+                            forkTurnId: nil,
+                            editableItem: allowsPromptEditing ? item : nil,
+                            store: store
+                        )
                     }
                 }
             }
@@ -276,6 +286,26 @@ struct QueuedFollowUpRow: View {
                         .foregroundStyle(.tertiary)
 
                     Button {
+                        RelayHaptics.impact(.medium)
+                        Task { await store.promoteQueuedFollowUp(item) }
+                    } label: {
+                        Group {
+                            if store.promotingQueuedFollowUpIds.contains(item.id) {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Image(systemName: "arrow.turn.down.left")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                        }
+                        .frame(width: 28, height: 28)
+                        .background(RelayTheme.elevated)
+                        .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!store.isRunning || store.promotingQueuedFollowUpIds.contains(item.id))
+                    .accessibilityLabel("改为立即引导")
+
+                    Button {
                         UIPasteboard.general.string = item.displayText
                         copied = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
@@ -301,6 +331,12 @@ struct QueuedFollowUpRow: View {
                         Button { store.beginEditingQueuedFollowUp(item) } label: {
                             Label("编辑消息", systemImage: "pencil")
                         }
+                        Button {
+                            Task { await store.promoteQueuedFollowUp(item) }
+                        } label: {
+                            Label("立即引导", systemImage: "arrow.turn.down.left")
+                        }
+                        .disabled(!store.isRunning)
                         Button(role: .destructive) {
                             store.removeQueuedFollowUp(item.id)
                         } label: {
@@ -325,6 +361,7 @@ private struct MessageActionsRow: View {
     let text: String
     let timestamp: Date?
     let forkTurnId: String?
+    var editableItem: TranscriptItem? = nil
     let store: RelayStore
     @State private var copied = false
     @State private var isForking = false
@@ -342,6 +379,18 @@ private struct MessageActionsRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(copied ? "已复制" : "复制内容")
+
+            if let editableItem {
+                Button {
+                    store.beginEditingProcessedMessage(editableItem)
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("编辑提示词后重新发送")
+            }
 
             if let forkTurnId {
                 Button {

@@ -24,6 +24,10 @@ struct TranscriptIndex {
     private var ranges: [GroupRange] = []
     private var itemIndexes: [String: Int] = [:]
     private var itemGroupIds: [String: String] = [:]
+    private var commentaryIdsByTurn: [String: [String]] = [:]
+    private var commandIdsByTurn: [String: [String]] = [:]
+    private var fileChangeIdsByTurn: [String: [String]] = [:]
+    private var otherActivityIdsByTurn: [String: [String]] = [:]
     private var nextRevision = 0
     private(set) var fullRebuildCount = 0
     private(set) var incrementalUpdateCount = 0
@@ -32,6 +36,10 @@ struct TranscriptIndex {
         ranges.removeAll(keepingCapacity: true)
         itemIndexes.removeAll(keepingCapacity: true)
         itemGroupIds.removeAll(keepingCapacity: true)
+        commentaryIdsByTurn.removeAll(keepingCapacity: true)
+        commandIdsByTurn.removeAll(keepingCapacity: true)
+        fileChangeIdsByTurn.removeAll(keepingCapacity: true)
+        otherActivityIdsByTurn.removeAll(keepingCapacity: true)
         for (index, item) in messages.enumerated() {
             itemIndexes[item.id] = index
             itemGroupIds[item.id] = Self.groupKey(item)
@@ -140,7 +148,21 @@ struct TranscriptIndex {
         return Array(result.reversed())
     }
 
+    func balancedActivityItems(forTurnId turnId: String, messages: [TranscriptItem]) -> [TranscriptItem] {
+        let ids = Array((commentaryIdsByTurn[turnId] ?? []).suffix(24))
+            + Array((commandIdsByTurn[turnId] ?? []).suffix(96))
+            + Array((fileChangeIdsByTurn[turnId] ?? []).suffix(32))
+            + Array((otherActivityIdsByTurn[turnId] ?? []).suffix(24))
+        return ids.compactMap { id -> (Int, TranscriptItem)? in
+            guard let index = itemIndexes[id], messages.indices.contains(index) else { return nil }
+            return (index, messages[index])
+        }
+        .sorted { $0.0 < $1.0 }
+        .map(\.1)
+    }
+
     private mutating func appendRange(for item: TranscriptItem, at index: Int) {
+        indexActivity(item)
         let key = Self.groupKey(item)
         if let lastIndex = ranges.indices.last, ranges[lastIndex].id == key {
             let revision = makeRevision()
@@ -154,6 +176,19 @@ struct TranscriptIndex {
                 range: index..<(index + 1),
                 revision: revision
             ))
+        }
+    }
+
+    private mutating func indexActivity(_ item: TranscriptItem) {
+        guard let turnId = item.turnId, item.isActivity, item.kind != .plan else { return }
+        if item.isCommentary {
+            commentaryIdsByTurn[turnId, default: []].append(item.id)
+        } else if item.kind == .command {
+            commandIdsByTurn[turnId, default: []].append(item.id)
+        } else if item.kind == .fileChange {
+            fileChangeIdsByTurn[turnId, default: []].append(item.id)
+        } else {
+            otherActivityIdsByTurn[turnId, default: []].append(item.id)
         }
     }
 

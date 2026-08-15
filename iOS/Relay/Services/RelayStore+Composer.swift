@@ -350,6 +350,7 @@ extension RelayStore {
                     "clientUserMessageId": .string(id),
                     "input": .array(input),
                     "summary": .string("auto"),
+                    "approvalPolicy": .string(draft.approvalPolicy ?? WorkspaceAccessMode.workspaceWrite.approvalPolicy),
                     "sandboxPolicy": draft.sandboxPolicy
                         ?? WorkspaceAccessMode.workspaceWrite.sandboxPolicy(
                             workingDirectory: threads.first(where: { $0.id == threadId })?.cwd ?? host.workingDirectory
@@ -441,6 +442,15 @@ extension RelayStore {
     func canEditFailedTurnStart(_ id: String) -> Bool {
         guard let draft = outboundDrafts[id] else { return false }
         return DeliveryFailurePolicy.canEditFailedTurnStart(expectedTurnId: draft.expectedTurnId)
+    }
+
+    func beginEditingProcessedMessage(_ item: TranscriptItem) {
+        guard item.role == .user, !item.text.isEmpty else { return }
+        guard composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, attachments.isEmpty else {
+            errorMessage = "请先发送或清空当前输入框，再编辑这条提示词。"
+            return
+        }
+        composerText = item.text
     }
 
     func confirmMessageDelivery(_ id: String) async {
@@ -675,6 +685,7 @@ extension RelayStore {
             sequence: nextUserMessageSequence
         )
         let sandboxPolicy = workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
+        let approvalPolicy = workspaceAccess.approvalPolicy
         let model = selectedModel?.model
         let effort = selectedEffort.isEmpty ? nil : selectedEffort
         let collaborationMode = collaborationModePayload()
@@ -683,6 +694,7 @@ extension RelayStore {
             text: text,
             attachments: readyAttachments,
             sandboxPolicy: sandboxPolicy,
+            approvalPolicy: approvalPolicy,
             model: model,
             effort: effort,
             collaborationMode: collaborationMode
@@ -710,6 +722,7 @@ extension RelayStore {
                 "clientUserMessageId": .string(clientMessageId),
                 "input": .array(userInput(text: text, attachments: readyAttachments)),
                 "summary": .string("auto"),
+                "approvalPolicy": .string(approvalPolicy),
                 "sandboxPolicy": sandboxPolicy
             ]
             if let model { params["model"] = .string(model) }

@@ -80,7 +80,7 @@ struct ApprovalSheet: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: 46)
-                        .background(Color.primary)
+                        .background(RelayTheme.accent)
                         .clipShape(RoundedRectangle(cornerRadius: RelayTheme.controlRadius))
                     }
                     .buttonStyle(.plain)

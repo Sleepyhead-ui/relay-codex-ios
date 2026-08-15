@@ -36,6 +36,41 @@ struct CodexProfile: Identifiable, Equatable {
     }
 }
 
+struct CodexRuntimeInfo: Equatable {
+    let version: String?
+    let source: String
+    let compatibility: String
+    let minimumSupportedVersion: String
+    let maximumTestedVersion: String
+
+    init?(json: JSONValue?) {
+        guard let json, let source = json["source"]?.stringValue,
+              let compatibility = json["compatibility"]?.stringValue else { return nil }
+        version = json["version"]?.stringValue
+        self.source = source
+        self.compatibility = compatibility
+        minimumSupportedVersion = json["minimumSupportedVersion"]?.stringValue ?? ""
+        maximumTestedVersion = json["maximumTestedVersion"]?.stringValue ?? ""
+    }
+
+    var sourceLabel: String {
+        switch source {
+        case "codexDesktop": return "Codex Desktop"
+        case "configured": return "自定义路径"
+        default: return "Relay 内置"
+        }
+    }
+
+    var compatibilityLabel: String {
+        switch compatibility {
+        case "compatible": return "兼容"
+        case "outdated": return "版本过旧"
+        case "untested": return "尚未验证"
+        default: return "无法检测"
+        }
+    }
+}
+
 enum GoalStatus: String, Equatable {
     case active
     case paused
@@ -193,6 +228,10 @@ enum WorkspaceAccessMode: String, Codable, CaseIterable, Identifiable {
         case .fullAccess: return "danger-full-access"
         }
     }
+
+    var approvalPolicy: String {
+        self == .fullAccess ? "never" : "on-request"
+    }
     func sandboxPolicy(workingDirectory: String) -> JSONValue {
         switch self {
         case .readOnly:
@@ -236,6 +275,7 @@ enum FollowUpBehavior: String, Codable, CaseIterable, Identifiable {
 struct QueuedFollowUp: Identifiable, Equatable {
     let id: String
     let threadId: String
+    let clientUserMessageId: String
     let text: String
     let attachmentNames: [String]
     let createdAt: Date
@@ -243,9 +283,11 @@ struct QueuedFollowUp: Identifiable, Equatable {
 
     init?(json: JSONValue) {
         guard let id = json["id"]?.stringValue,
-              let threadId = json["threadId"]?.stringValue else { return nil }
+              let threadId = json["threadId"]?.stringValue,
+              let clientUserMessageId = json["clientUserMessageId"]?.stringValue else { return nil }
         self.id = id
         self.threadId = threadId
+        self.clientUserMessageId = clientUserMessageId
         text = json["text"]?.stringValue ?? ""
         createdAt = Date(timeIntervalSince1970: json["createdAt"]?.doubleValue ?? 0)
         let parsedInput = json["input"]?.arrayValue ?? []
@@ -456,6 +498,15 @@ struct TurnMetadata: Equatable {
             .lowercased()
         return errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             || ["failed", "error", "cancelled", "canceled"].contains(normalized)
+    }
+
+    var allowsPromptEditing: Bool {
+        let normalized = status
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || ["failed", "error", "cancelled", "canceled", "interrupted", "aborted"].contains(normalized)
     }
 }
 

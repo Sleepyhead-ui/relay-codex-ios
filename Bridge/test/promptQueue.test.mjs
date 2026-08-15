@@ -83,11 +83,13 @@ test("persists the active turn a prompt must wait for", async () => {
       profileId: "profile.1",
       threadId: "thread.1",
       waitForTurnId: "turn.active",
+      approvalPolicy: "never",
       text: "next",
       input: [{ type: "text", text: "next" }],
     });
     assert.equal(queued.waitForTurnId, "turn.active");
     assert.equal((await PromptQueue.create(storage)).peek("profile.1", "thread.1")?.waitForTurnId, "turn.active");
+    assert.equal((await PromptQueue.create(storage)).peek("profile.1", "thread.1")?.approvalPolicy, "never");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -113,6 +113,35 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(activity.map(\.id), ["item.494", "item.496", "item.498"])
     }
 
+    func testBalancedActivityLookupKeepsProgressWhenToolsExceedTheLiveLimit() {
+        var messages = [
+            TranscriptItem(
+                id: "progress.1",
+                turnId: "turn.live",
+                role: .assistant,
+                kind: .message,
+                text: "正在检查恢复状态",
+                phase: "commentary"
+            )
+        ]
+        messages += (0..<180).map { index in
+            TranscriptItem(
+                id: "command.\(index)",
+                turnId: "turn.live",
+                role: .tool,
+                kind: .command,
+                text: "command \(index)"
+            )
+        }
+        var index = TranscriptIndex()
+        index.rebuild(messages: messages)
+
+        let activity = index.balancedActivityItems(forTurnId: "turn.live", messages: messages)
+        XCTAssertTrue(activity.contains(where: { $0.id == "progress.1" }))
+        XCTAssertEqual(activity.filter { $0.kind == .command }.count, 96)
+        XCTAssertLessThanOrEqual(activity.count, 176)
+    }
+
     func testAdoptsOneHundredSessionPatchesWithoutRebuildingGroups() {
         var messages = (0..<1_000).map { index in
             TranscriptItem(id: "message.\(index)", turnId: "turn.\(index)", role: .assistant, kind: .message, text: "\(index)")

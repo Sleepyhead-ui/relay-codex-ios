@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveCodexExecutable } from "../dist/codexExecutable.js";
+import { codexRuntimeCompatibility, parseCodexVersion, resolveCodexExecutable } from "../dist/codexExecutable.js";
 
 test("uses the CLI path configured by the selected Codex profile", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "relay-codex-bin-"));
@@ -23,4 +23,12 @@ test("falls back when a profile CLI path is missing or stale", async () => {
 
   assert.equal(resolveCodexExecutable(root, "bundled-codex.exe"), "bundled-codex.exe");
   assert.equal(resolveCodexExecutable(path.join(root, "absent"), "bundled-codex.exe"), "bundled-codex.exe");
+});
+
+test("parses Codex versions and classifies the supported range", () => {
+  assert.equal(parseCodexVersion("codex-cli 0.148.0-alpha.9"), "0.148.0-alpha.9");
+  assert.equal(parseCodexVersion("unexpected output"), null);
+  assert.equal(codexRuntimeCompatibility("0.144.5"), "compatible");
+  assert.equal(codexRuntimeCompatibility("0.143.9"), "outdated");
+  assert.equal(codexRuntimeCompatibility("0.149.0"), "untested");
 });

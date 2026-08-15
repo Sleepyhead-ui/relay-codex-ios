@@ -284,7 +284,6 @@ private struct MobileProgressWindow: View {
                             )
                         }
                     }
-                    .scrollDisabled(!canScroll)
                     .onPreferenceChange(ActivityWindowContentHeightPreferenceKey.self) { height in
                         if abs(contentHeight - height) > 0.5 { contentHeight = height }
                     }

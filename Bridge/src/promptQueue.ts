@@ -16,6 +16,7 @@ export interface QueuedPrompt extends JsonObject {
   waitForTurnId?: string;
   model?: string;
   effort?: string;
+  approvalPolicy?: string;
   sandboxPolicy?: unknown;
 }
 
@@ -62,6 +63,7 @@ export class PromptQueue {
       ...(typeof params.waitForTurnId === "string" && params.waitForTurnId ? { waitForTurnId: params.waitForTurnId } : {}),
       ...(typeof params.model === "string" && params.model ? { model: params.model } : {}),
       ...(typeof params.effort === "string" && params.effort ? { effort: params.effort } : {}),
+      ...(typeof params.approvalPolicy === "string" && params.approvalPolicy ? { approvalPolicy: params.approvalPolicy } : {}),
       ...(isObject(params.sandboxPolicy) ? { sandboxPolicy: params.sandboxPolicy } : {}),
     };
     this.items.push(item);
@@ -111,6 +113,7 @@ export class PromptQueue {
           ...(typeof value.waitForTurnId === "string" && value.waitForTurnId ? { waitForTurnId: value.waitForTurnId } : {}),
           ...(typeof value.model === "string" ? { model: value.model } : {}),
           ...(typeof value.effort === "string" ? { effort: value.effort } : {}),
+          ...(typeof value.approvalPolicy === "string" ? { approvalPolicy: value.approvalPolicy } : {}),
           ...(isObject(value.sandboxPolicy) ? { sandboxPolicy: value.sandboxPolicy } : {}),
         }];
       }).slice(0, 100);

@@ -46,6 +46,7 @@ final class RelayStore: ObservableObject {
     @Published var followUpBehavior: FollowUpBehavior = .queue
     @Published var queuedFollowUps: [QueuedFollowUp] = []
     @Published var editingQueuedFollowUp: QueuedFollowUp?
+    @Published var promotingQueuedFollowUpIds = Set<String>()
     @Published var forkingTurnId: String?
     @Published var taskRunStates: [String: TaskRunState] = [:]
     @Published var goalStates: [String: GoalState] = [:]
@@ -54,6 +55,7 @@ final class RelayStore: ObservableObject {
     @Published var relayOwnedThreadIds = Set<String>()
     @Published var isPreparingPrompt = false
     @Published var codexProfiles: [CodexProfile] = []
+    @Published var codexRuntimeInfo: CodexRuntimeInfo?
     @Published var activeCodexProfileId = ""
     @Published var isSwitchingCodexProfile = false
     @Published private(set) var pinnedThreadIds = Set<String>()
@@ -209,7 +211,7 @@ final class RelayStore: ObservableObject {
 
     func mobileActivityFeed(threadId: String, turnId: String?) -> MobileActivityFeed {
         let activityItems = turnId.map {
-            transcriptIndex.activityItems(forTurnId: $0, messages: messages, limit: 160)
+            transcriptIndex.balancedActivityItems(forTurnId: $0, messages: messages)
         } ?? []
         // The live card only needs enough recent entries to remain useful while
         // streaming. Keeping the full transcript for the activity sheet avoids
@@ -500,7 +502,7 @@ final class RelayStore: ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let projectAccess = storedAccess(for: projectDirectory)
             var params: [String: JSONValue] = [
-                "approvalPolicy": .string("on-request"),
+                "approvalPolicy": .string(projectAccess.approvalPolicy),
                 "sandbox": .string(projectAccess.threadSandbox),
                 "threadSource": .string("relay-ios")
             ]
@@ -1358,6 +1360,7 @@ final class RelayStore: ObservableObject {
         var params: [String: JSONValue] = [
             "threadId": .string(threadId),
             "summary": .string("auto"),
+            "approvalPolicy": .string(workspaceAccess.approvalPolicy),
             "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         ]
         if let model = selectedModel?.model { params["model"] = .string(model) }
@@ -1507,6 +1510,7 @@ final class RelayStore: ObservableObject {
             "clientUserMessageId": .string(clientMessageId),
             "text": .string(text),
             "input": .array(userInput(text: text, attachments: readyAttachments)),
+            "approvalPolicy": .string(workspaceAccess.approvalPolicy),
             "sandboxPolicy": workspaceAccess.sandboxPolicy(workingDirectory: currentWorkingDirectory)
         ]
         if let activeTurnId { params["waitForTurnId"] = .string(activeTurnId) }
@@ -1530,6 +1534,51 @@ final class RelayStore: ObservableObject {
         } catch {
             report(error)
             return false
+        }
+    }
+
+    func promoteQueuedFollowUp(_ item: QueuedFollowUp) async {
+        guard item.threadId == selectedThreadId, isRunning,
+              !promotingQueuedFollowUpIds.contains(item.id) else { return }
+        promotingQueuedFollowUpIds.insert(item.id)
+        defer { promotingQueuedFollowUpIds.remove(item.id) }
+        do {
+            let result = try await socket.rpc(
+                method: "relay/prompt/queue/promote",
+                params: ["id": .string(item.id)],
+                timeoutSeconds: 120,
+                reconnectOnTimeout: false
+            )
+            let turnId = result["turnId"]?.stringValue ?? activeTurnId
+            queuedFollowUps.removeAll { $0.id == item.id }
+            if editingQueuedFollowUp?.id == item.id { cancelQueuedFollowUpEdit() }
+            guard let turnId, !messages.contains(where: { $0.id == item.clientUserMessageId }) else { return }
+            nextUserMessageSequence += 1
+            userMessagePlacements[item.clientUserMessageId] = UserMessagePlacement(
+                threadId: item.threadId,
+                turnId: turnId,
+                afterItemId: TranscriptReconciler.userMessagePlacementAnchor(turnId: turnId, in: messages),
+                sequence: nextUserMessageSequence
+            )
+            let attachmentSummary = item.nonImageAttachmentNames
+                .map { "附件 \($0)" }
+                .joined(separator: "\n")
+            let displayText = [item.text, attachmentSummary]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            messages.append(TranscriptItem(
+                id: item.clientUserMessageId,
+                turnId: turnId,
+                role: .user,
+                kind: .message,
+                text: displayText,
+                imagePaths: item.imagePaths,
+                createdAt: item.createdAt
+            ))
+            applyUserMessagePlacements(turnId: turnId, threadId: item.threadId)
+            revealOutgoingMessage(item.clientUserMessageId)
+        } catch {
+            report(error)
         }
     }
 
@@ -1593,6 +1642,7 @@ final class RelayStore: ObservableObject {
 
     private func handleBridgeStatus(_ message: JSONValue) {
         let status = message["status"]?.stringValue
+        codexRuntimeInfo = CodexRuntimeInfo(json: message["codexRuntime"])
         var changedWithoutSwitchNotification = false
         if let profileId = message["codexProfile"]?["id"]?.stringValue {
             let hadActiveProfile = !activeCodexProfileId.isEmpty

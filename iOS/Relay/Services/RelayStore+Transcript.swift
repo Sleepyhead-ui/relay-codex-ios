@@ -313,6 +313,11 @@ extension RelayStore {
             turnMetadata[turnId] = metadata
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
             applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: metadata.startedAt))
+            if let firstOutputAt = messages.first(where: {
+                $0.turnId == turnId && $0.isVisibleAssistantOutput
+            })?.createdAt {
+                applyTaskRunEvent(threadId: threadId, event: .outputStarted(turnId: turnId, at: firstOutputAt))
+            }
         } else {
             let currentState = taskRunStates[threadId]
             let shouldApplyTerminalState = currentState?.isRunning == true
@@ -435,6 +440,12 @@ extension RelayStore {
         ))
         if let turnId = snapshot.activeTurnId, snapshot.activePlanTurnId == turnId {
             applyTaskRunEvent(threadId: threadId, event: .plan(turnId: turnId, steps: snapshot.activePlan))
+        }
+        if let turnId = snapshot.activeTurnId,
+           let firstOutputAt = messages.first(where: {
+               $0.turnId == turnId && $0.isVisibleAssistantOutput
+           })?.createdAt {
+            applyTaskRunEvent(threadId: threadId, event: .outputStarted(turnId: turnId, at: firstOutputAt))
         }
         selectedModelId = snapshot.modelId
         selectedEffort = snapshot.effort

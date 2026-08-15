@@ -40,6 +40,15 @@ export interface CodexProfile {
   running: boolean;
 }
 
+export interface CodexRuntimeInfo {
+  executable: string;
+  source: "codexDesktop" | "configured" | "relayBundled";
+  version: string | null;
+  compatibility: "compatible" | "outdated" | "untested" | "unavailable";
+  minimumSupportedVersion: string;
+  maximumTestedVersion: string;
+}
+
 export interface ThreadSummary {
   id: string;
   title: string;

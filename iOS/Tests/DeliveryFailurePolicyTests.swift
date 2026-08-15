@@ -2,9 +2,9 @@ import XCTest
 @testable import Relay
 
 final class DeliveryFailurePolicyTests: XCTestCase {
-    func testOnlyFailedNewTurnCanBeEdited() {
+    func testFailedNewTurnAndSteerCanBeEdited() {
         XCTAssertTrue(DeliveryFailurePolicy.canEditFailedTurnStart(expectedTurnId: nil))
-        XCTAssertFalse(DeliveryFailurePolicy.canEditFailedTurnStart(expectedTurnId: "active-turn"))
+        XCTAssertTrue(DeliveryFailurePolicy.canEditFailedTurnStart(expectedTurnId: "active-turn"))
     }
 
     func testRecognizesRelayClientMessageIdsInFailedHistory() {

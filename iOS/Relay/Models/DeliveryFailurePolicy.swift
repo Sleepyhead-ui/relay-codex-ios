@@ -13,7 +13,7 @@ enum StartedTurnDisposition: Equatable {
 
 enum DeliveryFailurePolicy {
     static func canEditFailedTurnStart(expectedTurnId: String?) -> Bool {
-        expectedTurnId == nil
+        true
     }
 
     static func isRelayClientMessageId(_ id: String) -> Bool {

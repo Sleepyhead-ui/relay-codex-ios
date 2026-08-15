@@ -298,7 +298,24 @@ extension RelayStore {
         }
         if runtime["isRunning"]?.boolValue == true {
             let startedAt = runtime["startedAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
-            markTurnActive(runtime["activeTurnId"]?.stringValue, startedAt: startedAt)
+            let turnId = runtime["activeTurnId"]?.stringValue
+            markTurnActive(turnId, startedAt: startedAt)
+            if let selectedThreadId, let turnId,
+               let outputStartedAt = runtime["outputStartedAt"]?.doubleValue.map({ Date(timeIntervalSince1970: $0) }) {
+                applyTaskRunEvent(threadId: selectedThreadId, event: .outputStarted(turnId: turnId, at: outputStartedAt))
+            }
+            if let selectedThreadId, let turnId, let plan = runtime["plan"]?.arrayValue {
+                let steps = plan.enumerated().compactMap { index, value -> ExecutionPlanStep? in
+                    guard let text = value["step"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !text.isEmpty else { return nil }
+                    return ExecutionPlanStep(
+                        id: "\(turnId).\(index)",
+                        text: text,
+                        status: value["status"]?.stringValue ?? "pending"
+                    )
+                }
+                applyTaskRunEvent(threadId: selectedThreadId, event: .plan(turnId: turnId, steps: steps))
+            }
         } else {
             if let staleTurnId = activeTurnId, var metadata = turnMetadata[staleTurnId], metadata.isRunning {
                 metadata.status = runtimeError == nil ? "completed" : "failed"

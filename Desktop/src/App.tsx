@@ -20,7 +20,7 @@ import { IncrementalMarkdownChunks } from "./markdownChunks";
 import { pairingURL as makePairingURL } from "./pairing";
 import { previewTechnicalText } from "./technicalText";
 import type {
-  ApprovalRequest, Attachment, CodexProfile, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
+  ApprovalRequest, Attachment, CodexProfile, CodexRuntimeInfo, ConnectionConfig, ConnectionState, DesktopPreferences, DesktopUpdateState, DiagnosticReport, ModelOption,
   GoalState, PlanStep, QueuedPrompt, ServiceStatus, SidebarPreferences, ThreadSummary, TranscriptItem, TurnMetadata, WorkspaceAccess,
 } from "./types";
 
@@ -68,6 +68,7 @@ export default function App() {
   const [error, setError] = useState<string>();
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [codexProfiles, setCodexProfiles] = useState<CodexProfile[]>([]);
+  const [codexRuntime, setCodexRuntime] = useState<CodexRuntimeInfo>();
   const [activeProfileId, setActiveProfileId] = useState("");
   const [profileSwitching, setProfileSwitching] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -150,6 +151,15 @@ export default function App() {
   function setAccess(value: WorkspaceAccess) {
     if (accessKey) setProjectAccesses((current) => ({ ...current, [accessKey]: value }));
     else setDefaultAccess(value);
+    const threadId = selectedRef.current;
+    if (threadId && connection === "connected") {
+      void rpc.rpc("thread/settings/update", {
+        threadId,
+        summary: "auto",
+        approvalPolicy: approvalPolicy(value),
+        sandboxPolicy: sandboxPolicy(value, selectedThread?.cwd || workspace),
+      }).catch((reason) => setError(errorText(reason)));
+    }
   }
 
   useEffect(() => { selectedRef.current = selectedThreadId; }, [selectedThreadId]);
@@ -271,6 +281,7 @@ export default function App() {
   }
 
   function handleBridgeStatus(message: any) {
+    if (message.codexRuntime) setCodexRuntime(message.codexRuntime as CodexRuntimeInfo);
     if (message.codexProfile?.id) {
       rpc.setDeliveryScope(config.endpoint, message.codexProfile.id);
       setActiveProfileId(message.codexProfile.id);
@@ -868,7 +879,7 @@ export default function App() {
     const threadAccess = accessForWorkspace(cwd, defaultAccess, projectAccesses);
     const result = await rpc.rpc("thread/start", {
       cwd: cwd || undefined,
-      approvalPolicy: "on-request",
+      approvalPolicy: approvalPolicy(threadAccess),
       sandbox: threadAccess === "fullAccess" ? "danger-full-access" : threadAccess === "readOnly" ? "read-only" : "workspace-write",
       threadSource: "relay-desktop",
       model: selectedModel || undefined,
@@ -917,6 +928,7 @@ export default function App() {
           clientUserMessageId: clientId,
           text,
           input,
+          approvalPolicy: approvalPolicy(access),
           sandboxPolicy: sandboxPolicy(access, selectedThread?.cwd || workspace),
           model: selectedModelOption?.model || selectedModel || undefined,
           effort: effort || undefined,
@@ -951,6 +963,7 @@ export default function App() {
         updateTaskState(threadId, { type: "starting" });
         const result = await rpc.rpc("turn/start", {
           threadId, clientUserMessageId: clientId, input, summary: "auto",
+          approvalPolicy: approvalPolicy(access),
           sandboxPolicy: sandboxPolicy(access, selectedThread?.cwd || workspace),
           model: selectedModelOption?.model || selectedModel || undefined,
           effort: effort || undefined,
@@ -1251,7 +1264,7 @@ export default function App() {
         </main>
       </div>
 
-      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} computerName={computerName} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={profileSwitchBlocked} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onTestPush={testRemotePush} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
+      {settingsOpen && <SettingsPanel config={config} setConfig={setConfig} computerName={computerName} workspace={workspace} setWorkspace={setWorkspace} access={access} setAccess={setAccess} profiles={codexProfiles} codexRuntime={codexRuntime} activeProfileId={activeProfileId} switching={profileSwitching} switchDisabled={profileSwitchBlocked} onSwitch={switchCodexProfile} onStartService={startRemoteService} service={service} preferences={preferences} update={update} onPreferences={updatePreferences} onTestPush={testRemotePush} onCheckUpdate={checkDesktopUpdate} onApplyUpdate={applyDesktopUpdate} onDiagnostics={openDiagnostics} onClose={() => setSettingsOpen(false)} onSave={saveConnection}/>
       }
       {newTaskOpen && <Modal title="新建任务" onClose={() => setNewTaskOpen(false)}><label className="field"><span>工作目录</span><input value={newTaskCwd} onChange={(event) => setNewTaskCwd(event.target.value)} placeholder="C:\\项目目录"/></label><div className="modal-actions"><button onClick={() => setNewTaskOpen(false)}>取消</button><button className="accent" onClick={() => { void createThread(newTaskCwd).then(() => setNewTaskOpen(false)).catch((reason) => setError(errorText(reason))); }}>创建</button></div></Modal>}
       {renamingThread && <Modal title="重命名任务" onClose={() => setRenamingThread(undefined)}><label className="field"><span>任务名称</span><input autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void renameThread(); }}/></label><div className="modal-actions"><button onClick={() => setRenamingThread(undefined)}>取消</button><button className="accent" disabled={!renameDraft.trim()} onClick={() => void renameThread()}>保存</button></div></Modal>}
@@ -1490,9 +1503,9 @@ function queuedPromptLabel(item: QueuedPrompt) {
   return item.input.filter((input) => input.type !== "text").map((input) => input.name || input.path?.split(/[\\/]/).at(-1)).filter(Boolean).join("、") || "附件";
 }
 
-function SettingsPanel({ config, setConfig, computerName, workspace, setWorkspace, access, setAccess, profiles, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, update, onPreferences, onTestPush, onCheckUpdate, onApplyUpdate, onDiagnostics, onClose, onSave }: {
+function SettingsPanel({ config, setConfig, computerName, workspace, setWorkspace, access, setAccess, profiles, codexRuntime, activeProfileId, switching, switchDisabled, onSwitch, onStartService, service, preferences, update, onPreferences, onTestPush, onCheckUpdate, onApplyUpdate, onDiagnostics, onClose, onSave }: {
   config: ConnectionConfig; setConfig: (value: ConnectionConfig) => void; computerName: string; workspace: string; setWorkspace: (value: string) => void;
-  access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; activeProfileId: string;
+  access: WorkspaceAccess; setAccess: (value: WorkspaceAccess) => void; profiles: CodexProfile[]; codexRuntime?: CodexRuntimeInfo; activeProfileId: string;
   switching: boolean; switchDisabled: boolean; onSwitch: (id: string) => Promise<void>; onStartService: () => Promise<void>;
   service: ServiceStatus; preferences: DesktopPreferences; onPreferences: (patch: Partial<DesktopPreferences>) => Promise<void>;
   onTestPush: (barkUrl: string) => Promise<void>;
@@ -1547,6 +1560,7 @@ function SettingsPanel({ config, setConfig, computerName, workspace, setWorkspac
             <button disabled={!selectedProfileId || selectedProfileId === activeProfileId || switching || switchDisabled} onClick={() => void onSwitch(selectedProfileId)}>{switching ? "切换中" : "切换"}</button>
           </div>
           <div className="profile-status"><span className="running-dot"/><span>{switching ? "正在重新连接 Codex" : `正在使用 ${profiles.find((profile) => profile.id === activeProfileId)?.name || "Codex"}`}</span></div>
+          {codexRuntime && <div className="profile-status"><ShieldCheck size={13}/><span>{`Codex ${codexRuntime.version || "版本未知"} · ${runtimeSourceLabel(codexRuntime.source)} · ${runtimeCompatibilityLabel(codexRuntime.compatibility)}`}</span></div>}
           {switchDisabled && <p>任务运行或等待审批时不能切换实例。</p>}
           {selected && !selected.running && selected.id !== activeProfileId && <p>该桌面实例当前未运行，仍可使用它保存的配置和会话。</p>}
         </> : <button className="primary-action service-action" disabled={service.state === "starting"} onClick={() => void onStartService()}>{service.state === "starting" ? <span className="spinner small"/> : <Power size={15}/>}<span>{service.state === "starting" ? "正在启动" : "启动远程服务"}</span></button>}
@@ -1652,6 +1666,9 @@ function ServiceState({ status, onStart }: { status: ServiceStatus; onStart: () 
 function EmptyState({ cwd }: { cwd?: string }) { return <div className="empty-state"><div className="relay-mark"><Sparkles size={24}/></div><h1>Codex 要处理什么？</h1><p>{cwd || "选择项目目录后开始任务"}</p></div>; }
 
 function sandboxPolicy(access: WorkspaceAccess, cwd: string) { if (access === "fullAccess") return { type: "dangerFullAccess" }; if (access === "readOnly") return { type: "readOnly", networkAccess: false }; return { type: "workspaceWrite", writableRoots: cwd ? [cwd] : [], networkAccess: false }; }
+function approvalPolicy(access: WorkspaceAccess) { return access === "fullAccess" ? "never" : "on-request"; }
+function runtimeSourceLabel(source: CodexRuntimeInfo["source"]) { return source === "codexDesktop" ? "Codex Desktop" : source === "configured" ? "自定义路径" : "Relay 内置"; }
+function runtimeCompatibilityLabel(value: CodexRuntimeInfo["compatibility"]) { return value === "compatible" ? "兼容" : value === "outdated" ? "版本过旧" : value === "untested" ? "尚未验证" : "无法检测"; }
 function storedWorkspaceAccess(): WorkspaceAccess { const value = localStorage.getItem("relay.desktop.access"); return value === "readOnly" || value === "fullAccess" || value === "workspaceWrite" ? value : "workspaceWrite"; }
 function storedProjectAccesses(): Record<string, WorkspaceAccess> {
   try {
