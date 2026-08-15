@@ -41,6 +41,7 @@ struct MobileLiveActivityConsole: View {
                 LiveElapsedText(startedAt: presentation.metadata.startedAt)
 
                 Button {
+                    RelayHaptics.selection()
                     manuallyCollapsed.toggle()
                 } label: {
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
@@ -53,7 +54,10 @@ struct MobileLiveActivityConsole: View {
                 .disabled(compact)
                 .accessibilityLabel(isCollapsed ? "展开当前任务" : "折叠当前任务")
 
-                Button(action: showTimeline) {
+                Button {
+                    RelayHaptics.impact()
+                    showTimeline()
+                } label: {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -204,6 +208,7 @@ private struct MobilePlanWindow: View {
     }
 
     private func toggleExpandedWithoutAnimation() {
+        RelayHaptics.selection()
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { expanded.toggle() }
@@ -416,6 +421,7 @@ private struct MobileCommandWindow: View {
     }
 
     private func toggleExpandedWithoutAnimation() {
+        RelayHaptics.selection()
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { expanded.toggle() }
@@ -496,6 +502,7 @@ private struct MobileFileChangeWindow: View {
     }
 
     private func toggleExpandedWithoutAnimation() {
+        RelayHaptics.selection()
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) { expanded.toggle() }

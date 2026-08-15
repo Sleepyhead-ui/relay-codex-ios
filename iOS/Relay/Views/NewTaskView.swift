@@ -23,6 +23,7 @@ struct NewTaskView: View {
                     if !store.host.workingDirectory.isEmpty,
                        projectPath.normalizedWindowsPath != store.host.workingDirectory.normalizedWindowsPath {
                         Button("使用默认项目目录") {
+                            RelayHaptics.selection()
                             projectPath = store.host.workingDirectory
                         }
                     }
@@ -36,6 +37,7 @@ struct NewTaskView: View {
                     Section("最近项目") {
                         ForEach(store.recentProjectDirectories.prefix(8), id: \.normalizedWindowsPath) { path in
                             Button {
+                                RelayHaptics.selection()
                                 projectPath = path
                             } label: {
                                 HStack(spacing: 11) {
@@ -107,14 +109,27 @@ struct NewTaskView: View {
     private func startTask(at path: String) async {
         isCreating = true
         defer { isCreating = false }
-        if await store.newThread(workingDirectory: path) { dismiss() }
+        if await store.newThread(workingDirectory: path) {
+            RelayHaptics.notification(.success)
+            dismiss()
+        } else {
+            RelayHaptics.notification(.error)
+        }
     }
 
     private func createProjectAndStart() async {
         isCreating = true
         defer { isCreating = false }
-        guard let path = await store.createProjectFolder(named: newFolderName) else { return }
+        guard let path = await store.createProjectFolder(named: newFolderName) else {
+            RelayHaptics.notification(.error)
+            return
+        }
         projectPath = path
-        if await store.newThread(workingDirectory: path) { dismiss() }
+        if await store.newThread(workingDirectory: path) {
+            RelayHaptics.notification(.success)
+            dismiss()
+        } else {
+            RelayHaptics.notification(.error)
+        }
     }
 }

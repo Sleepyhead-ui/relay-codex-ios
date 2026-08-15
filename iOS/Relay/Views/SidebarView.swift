@@ -15,6 +15,7 @@ struct SidebarView: View {
                     .font(.system(size: 19, weight: .semibold))
                 Spacer()
                 Button {
+                    RelayHaptics.selection()
                     withAnimation { store.sidebarOpen = false }
                 } label: {
                     Image(systemName: "sidebar.left")
@@ -49,6 +50,7 @@ struct SidebarView: View {
                         Spacer()
                         organizationMenu
                         Button {
+                            RelayHaptics.impact()
                             store.showingNewTask = true
                             store.sidebarOpen = false
                         } label: {
@@ -70,6 +72,7 @@ struct SidebarView: View {
                                 group: group,
                                 expanded: search.isEmpty ? !collapsedProjects.contains(group.id) : true
                             ) {
+                                RelayHaptics.selection()
                                 withAnimation(.easeOut(duration: 0.18)) {
                                     if collapsedProjects.contains(group.id) {
                                         collapsedProjects.remove(group.id)
@@ -106,6 +109,7 @@ struct SidebarView: View {
 
             Divider().opacity(0.55)
             Button {
+                RelayHaptics.selection()
                 Task { await store.setShowingArchivedThreads(!store.showingArchivedThreads) }
             } label: {
                 HStack(spacing: 10) {
@@ -119,10 +123,13 @@ struct SidebarView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 13)
-                .frame(height: 38)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(store.showingArchivedThreads ? "返回当前任务" : "已归档任务")
             Button {
+                RelayHaptics.selection()
                 store.showingSettings = true
                 store.sidebarOpen = false
             } label: {
@@ -138,7 +145,8 @@ struct SidebarView: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 13)
-                .frame(height: 48)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("设置")
@@ -171,14 +179,20 @@ struct SidebarView: View {
     private var organizationMenu: some View {
         Menu {
             Section("整理") {
-                Button { store.setSidebarOrganization(.byProject) } label: {
+                Button {
+                    RelayHaptics.selection()
+                    store.setSidebarOrganization(.byProject)
+                } label: {
                     if organization == .byProject {
                         Label("按项目", systemImage: "checkmark")
                     } else {
                         Text("按项目")
                     }
                 }
-                Button { store.setSidebarOrganization(.singleList) } label: {
+                Button {
+                    RelayHaptics.selection()
+                    store.setSidebarOrganization(.singleList)
+                } label: {
                     if organization == .singleList {
                         Label("在一个列表中", systemImage: "checkmark")
                     } else {
@@ -187,14 +201,20 @@ struct SidebarView: View {
                 }
             }
             Section("排序方式") {
-                Button { store.setSidebarSort(.priority) } label: {
+                Button {
+                    RelayHaptics.selection()
+                    store.setSidebarSort(.priority)
+                } label: {
                     if selectedSort == .priority {
                         Label("优先级", systemImage: "checkmark")
                     } else {
                         Text("优先级")
                     }
                 }
-                Button { store.setSidebarSort(.recent) } label: {
+                Button {
+                    RelayHaptics.selection()
+                    store.setSidebarSort(.recent)
+                } label: {
                     if selectedSort == .recent {
                         Label("最近更新", systemImage: "checkmark")
                     } else {
@@ -220,28 +240,33 @@ struct SidebarView: View {
             needsApproval: store.hasPendingApproval(threadId: thread.id),
             pinned: store.isThreadPinned(thread.id)
         ) {
+            RelayHaptics.selection()
             Task { await store.selectThread(thread.id) }
         }
         .contextMenu {
             if !store.showingArchivedThreads {
                 Button {
+                    RelayHaptics.selection()
                     store.toggleThreadPin(thread.id)
                 } label: {
                     Label(store.isThreadPinned(thread.id) ? "取消置顶" : "置顶", systemImage: store.isThreadPinned(thread.id) ? "pin.slash" : "pin")
                 }
                 Button {
+                    RelayHaptics.selection()
                     renameDraft = thread.title
                     renamingThread = thread
                 } label: {
                     Label("重命名", systemImage: "pencil")
                 }
                 Button(role: .destructive) {
+                    RelayHaptics.impact(.medium)
                     Task { await store.archiveThread(thread.id) }
                 } label: {
                     Label("归档", systemImage: "archivebox")
                 }
             } else {
                 Button {
+                    RelayHaptics.impact()
                     Task { await store.unarchiveThread(thread.id) }
                 } label: {
                     Label("恢复任务", systemImage: "arrow.uturn.backward")

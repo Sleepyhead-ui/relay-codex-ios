@@ -24,6 +24,7 @@ struct ComposerView: View {
                     percentage: percentage,
                     isBusy: store.isRunning || store.isCompacting
                 ) {
+                    RelayHaptics.impact(.medium)
                     Task { await store.compactContext() }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -68,12 +69,14 @@ struct ComposerView: View {
                 HStack(alignment: .bottom, spacing: 8) {
                     Menu {
                         Button {
+                            RelayHaptics.selection()
                             focused = false
                             presentPhotoPicker()
                         } label: {
                             Label("照片或视频", systemImage: "photo.on.rectangle")
                         }
                         Button {
+                            RelayHaptics.selection()
                             focused = false
                             presentFileImporter()
                         } label: {
@@ -83,6 +86,7 @@ struct ComposerView: View {
                         Divider()
 
                         Button {
+                            RelayHaptics.selection()
                             focused = false
                             store.composerMode = store.composerMode == .plan ? .standard : .plan
                         } label: {
@@ -94,6 +98,7 @@ struct ComposerView: View {
                         .disabled(store.isRunning || !store.planModeAvailable)
 
                         Button {
+                            RelayHaptics.selection()
                             focused = false
                             if store.currentGoal != nil {
                                 store.prepareCurrentGoalForEditing()
@@ -134,11 +139,13 @@ struct ComposerView: View {
                         .submitLabel(.send)
                         .onSubmit {
                             guard canSend else { return }
+                            RelayHaptics.impact(.medium)
                             focused = false
                             Task { await store.sendPrompt() }
                         }
 
                     Button {
+                        RelayHaptics.impact(.medium)
                         Task {
                             if showsStopControl {
                                 await store.stopTurn()
@@ -293,12 +300,15 @@ struct ComposerView: View {
 
             selectedPhotos = []
             guard !urls.isEmpty else {
+                RelayHaptics.notification(.error)
                 store.errorMessage = "没有读取到可上传的照片或视频。"
                 return
             }
             store.addAttachments(urls)
+            RelayHaptics.notification(.success)
         } catch {
             selectedPhotos = []
+            RelayHaptics.notification(.error)
             store.errorMessage = "读取照片或视频失败：\(error.localizedDescription)"
         }
     }
@@ -308,11 +318,14 @@ struct ComposerView: View {
         do {
             let stagedURLs = try await stageFiles(urls)
             guard !stagedURLs.isEmpty else {
+                RelayHaptics.notification(.error)
                 store.errorMessage = "没有读取到可上传的文件。"
                 return
             }
             store.addAttachments(stagedURLs)
+            RelayHaptics.notification(.success)
         } catch {
+            RelayHaptics.notification(.error)
             store.errorMessage = "读取文件失败：\(error.localizedDescription)"
         }
     }
@@ -370,7 +383,10 @@ struct ComposerView: View {
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
 
-                        Button { store.removeAttachment(attachment.id) } label: {
+                        Button {
+                            RelayHaptics.selection()
+                            store.removeAttachment(attachment.id)
+                        } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(.secondary)
@@ -408,7 +424,10 @@ struct ComposerView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(RelayTheme.accent)
             Spacer()
-            Button { store.composerMode = .standard } label: {
+            Button {
+                RelayHaptics.selection()
+                store.composerMode = .standard
+            } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
@@ -440,7 +459,10 @@ struct ComposerView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button { store.cancelQueuedFollowUpEdit() } label: {
+            Button {
+                RelayHaptics.selection()
+                store.cancelQueuedFollowUpEdit()
+            } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
@@ -463,6 +485,7 @@ struct ComposerView: View {
             Menu {
                 ForEach(store.modelOptions) { model in
                     Button {
+                        RelayHaptics.selection()
                         Task { await store.selectModel(model) }
                     } label: {
                         if store.selectedModel?.id == model.id {
@@ -479,6 +502,7 @@ struct ComposerView: View {
             Menu {
                 ForEach(store.availableEfforts) { effort in
                     Button {
+                        RelayHaptics.selection()
                         Task { await store.selectEffort(effort.id) }
                     } label: {
                         if store.selectedEffort == effort.id {
@@ -495,6 +519,7 @@ struct ComposerView: View {
             Menu {
                 ForEach(WorkspaceAccessMode.allCases) { mode in
                     Button {
+                        RelayHaptics.selection()
                         Task { await store.selectWorkspaceAccess(mode) }
                     } label: {
                         if store.workspaceAccess == mode {
@@ -512,6 +537,7 @@ struct ComposerView: View {
 
             if store.isSelectedThreadRelayOwned, !store.isRunning, let threadId = store.selectedThreadId {
                 Button {
+                    RelayHaptics.impact()
                     Task { await store.releaseThreadControl(threadId) }
                 } label: {
                     Label("释放任务控制权", systemImage: "arrow.down.left.and.arrow.up.right")
@@ -520,7 +546,10 @@ struct ComposerView: View {
                 Divider()
             }
 
-            Button { store.showingSettings = true } label: {
+            Button {
+                RelayHaptics.selection()
+                store.showingSettings = true
+            } label: {
                 Label("更多设置", systemImage: "gearshape")
             }
         } label: {
@@ -536,6 +565,7 @@ struct ComposerView: View {
         Menu {
             ForEach(FollowUpBehavior.allCases) { behavior in
                 Button {
+                    RelayHaptics.selection()
                     store.selectFollowUpBehavior(behavior)
                 } label: {
                     if store.followUpBehavior == behavior {
@@ -569,6 +599,7 @@ struct ComposerView: View {
                 Text("本轮 \(usage.last.totalTokens.formatted()) tokens")
                 Text("累计 \(usage.total.totalTokens.formatted()) tokens")
                 Button {
+                    RelayHaptics.impact(.medium)
                     Task { await store.compactContext() }
                 } label: {
                     Label("压缩上下文", systemImage: "arrow.triangle.2.circlepath")

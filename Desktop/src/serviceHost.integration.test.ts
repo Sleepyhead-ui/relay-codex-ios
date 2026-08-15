@@ -49,6 +49,7 @@ describe("Relay service host", () => {
         RELAY_HOST: "127.0.0.1",
         RELAY_PORT: String(port),
         RELAY_ADVERTISE_URL: `ws://127.0.0.1:${port}`,
+        RELAY_HEALTH_URL: `http://127.0.0.1:${port}/health`,
         RELAY_SERVICE_VERSION: "test",
         FAKE_BRIDGE_COUNTER: counterPath,
       },
@@ -130,7 +131,7 @@ describe("Relay service host", () => {
     `, "utf8");
 
     const args = [path.resolve(process.cwd(), "electron/service-host.cjs"), fakeBridgePath, heartbeatPath, hostPidPath, bridgePidPath];
-    const env = { ...process.env, RELAY_HOST: "127.0.0.1", RELAY_PORT: String(port), RELAY_ADVERTISE_URL: `ws://127.0.0.1:${port}`, RELAY_SERVICE_VERSION: "1.0.1", FAKE_BRIDGE_COUNTER: counterPath };
+    const env = { ...process.env, RELAY_HOST: "127.0.0.1", RELAY_PORT: String(port), RELAY_ADVERTISE_URL: `ws://127.0.0.1:${port}`, RELAY_HEALTH_URL: `http://127.0.0.1:${port}/health`, RELAY_SERVICE_VERSION: "1.0.1", FAKE_BRIDGE_COUNTER: counterPath };
     const first = spawn(process.execPath, args, { windowsHide: true, stdio: "ignore", env });
     const second = spawn(process.execPath, args, { windowsHide: true, stdio: "ignore", env });
     if (first.pid) spawnedPids.add(first.pid);
@@ -281,7 +282,7 @@ function spawnServiceHost(fakeBridgePath: string, heartbeatPath: string, hostPid
   const hostPath = path.resolve(process.cwd(), "electron/service-host.cjs");
   const host = spawn(process.execPath, [hostPath, fakeBridgePath, heartbeatPath, hostPidPath, bridgePidPath], {
     windowsHide: true, stdio: "ignore",
-    env: { ...process.env, RELAY_HOST: "127.0.0.1", RELAY_PORT: String(port), RELAY_ADVERTISE_URL: `ws://127.0.0.1:${port}`, ...extraEnv },
+    env: { ...process.env, RELAY_HOST: "127.0.0.1", RELAY_PORT: String(port), RELAY_ADVERTISE_URL: `ws://127.0.0.1:${port}`, RELAY_HEALTH_URL: `http://127.0.0.1:${port}/health`, ...extraEnv },
   });
   if (host.pid) spawnedPids.add(host.pid);
   return host;

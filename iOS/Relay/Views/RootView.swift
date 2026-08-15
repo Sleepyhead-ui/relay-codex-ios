@@ -14,7 +14,10 @@ struct RootView: View {
             if store.sidebarOpen {
                 Color.black.opacity(0.28)
                     .ignoresSafeArea()
-                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { store.sidebarOpen = false } }
+                    .onTapGesture {
+                        RelayHaptics.selection()
+                        withAnimation(.easeOut(duration: 0.2)) { store.sidebarOpen = false }
+                    }
                     .transition(.opacity)
             }
 

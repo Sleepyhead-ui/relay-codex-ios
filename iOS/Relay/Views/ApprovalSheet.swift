@@ -52,6 +52,7 @@ struct ApprovalSheet: View {
 
                 HStack(spacing: 10) {
                     Button(role: .destructive) {
+                        RelayHaptics.notification(.warning)
                         Task { await store.resolveApproval(approval.id, decision: "decline") }
                     } label: {
                         Text("Deny")
@@ -65,6 +66,7 @@ struct ApprovalSheet: View {
                     .disabled(isResolving)
 
                     Button {
+                        RelayHaptics.impact(.medium)
                         Task { await store.resolveApproval(approval.id, decision: "accept") }
                     } label: {
                         Group {

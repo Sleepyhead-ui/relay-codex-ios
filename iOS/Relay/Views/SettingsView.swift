@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var store: RelayStore
     @Environment(\.dismiss) private var dismiss
     @State private var showingForgetConfirmation = false
+    @AppStorage(RelayHaptics.preferenceKey) private var hapticsEnabled = true
 
     var body: some View {
         NavigationStack {
@@ -224,6 +225,10 @@ struct SettingsView: View {
                 get: { store.notificationsEnabled },
                 set: { enabled in Task { await store.setNotificationsEnabled(enabled) } }
             ))
+            Toggle("触感反馈", isOn: $hapticsEnabled)
+                .onChange(of: hapticsEnabled) { enabled in
+                    if enabled { RelayHaptics.selection() }
+                }
             Button {
                 dismiss()
                 store.showingDiagnostics = true
@@ -231,9 +236,9 @@ struct SettingsView: View {
                 Label("诊断中心", systemImage: "stethoscope")
             }
         } header: {
-            Text("通知与诊断")
+            Text("提醒与反馈")
         } footer: {
-            Text("任务完成、执行失败或需要确认时发送通知。")
+            Text("任务完成、执行失败或需要确认时发送通知；触感反馈只用于主动操作。")
         }
     }
 

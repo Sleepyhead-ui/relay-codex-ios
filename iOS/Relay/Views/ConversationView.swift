@@ -31,6 +31,7 @@ struct ConversationView: View {
                         presentation: presentation,
                         compact: store.composerIsFocused || keyboardTransitionID != nil
                     ) {
+                        RelayHaptics.selection()
                         activityPresentation = presentation
                     }
                     .padding(.horizontal, 12)
@@ -77,6 +78,7 @@ struct ConversationView: View {
             Spacer()
             if let threadId = store.selectedThreadId {
                 Button {
+                    RelayHaptics.impact()
                     Task { await store.unarchiveThread(threadId) }
                 } label: {
                     Label("恢复", systemImage: "arrow.uturn.backward")
@@ -96,6 +98,7 @@ struct ConversationView: View {
     private var topBar: some View {
         HStack(spacing: 8) {
             Button {
+                RelayHaptics.selection()
                 withAnimation { store.sidebarOpen = true }
             } label: {
                 Image(systemName: "line.3.horizontal")
@@ -129,6 +132,7 @@ struct ConversationView: View {
             }
 
             Button {
+                RelayHaptics.impact()
                 store.showingNewTask = true
             } label: {
                 Image(systemName: "square.and.pencil")
@@ -156,6 +160,7 @@ struct ConversationView: View {
                         LazyVStack(spacing: 30) {
                             if window.hasEarlierGroups || store.hasOlderTurns {
                                 Button {
+                                    RelayHaptics.selection()
                                     revealEarlier(window: window, proxy: proxy)
                                 } label: {
                                     HStack(spacing: 7) {
@@ -228,6 +233,7 @@ struct ConversationView: View {
 
                     if !isAtBottom {
                         Button {
+                            RelayHaptics.selection()
                             isAtBottom = true
                             DispatchQueue.main.async {
                                 scrollToBottom(proxy, animated: true, reason: .bottomButton)
