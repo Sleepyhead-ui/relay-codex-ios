@@ -754,8 +754,6 @@ extension RelayStore {
                 }
                 if selectedThreadId == threadId, !alreadyCompleted {
                     turnMetadata[confirmedTurnId] = TurnMetadata(json: result["turn"] ?? .object([:]))
-                } else if selectedThreadId != threadId, !alreadyCompleted {
-                    updateCachedSnapshot(threadId: threadId, isRunning: true, activeTurnId: confirmedTurnId)
                 }
             }
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
@@ -782,7 +780,6 @@ extension RelayStore {
             if !uncertain || !wasAccepted {
                 applyTaskRunEvent(threadId: threadId, event: .terminal(turnId: nil, phase: .failed, completedAt: Date()))
                 setThreadStatus(threadId, status: "idle")
-                updateCachedSnapshot(threadId: threadId, isRunning: false, activeTurnId: nil)
             }
             errorMessage = uncertain
                 ? "消息已保留在对话中，Relay 将在重连后确认是否送达。"
