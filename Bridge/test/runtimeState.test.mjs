@@ -103,6 +103,27 @@ test("external terminal state clears stale runtime state", async () => {
   assert.equal(tracker.activeCount, 0);
 });
 
+test("matching external completion wins after newer in-memory activity", () => {
+  let now = 100;
+  const tracker = new RuntimeStateTracker(() => now);
+  tracker.observeTurnStart("thread-restored", { id: "turn-restored", startedAt: 80 });
+  now = 110;
+  tracker.observeNotification({
+    method: "item/reasoning/summaryTextDelta",
+    params: { threadId: "thread-restored", turnId: "turn-restored", delta: "Working" },
+  });
+
+  const snapshot = tracker.snapshotWithObservation("thread-restored", {
+    active: false,
+    turnId: "turn-restored",
+    updatedAt: 105,
+  });
+
+  assert.equal(snapshot.isRunning, false);
+  assert.equal(snapshot.observedTurnId, "turn-restored");
+  assert.equal(tracker.activeCount, 0);
+});
+
 test("reconciles an already-read external observation without another tracker read", () => {
   const tracker = new RuntimeStateTracker(() => 100);
   const snapshot = tracker.snapshotWithObservation("thread-external", {

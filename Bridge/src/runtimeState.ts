@@ -158,7 +158,10 @@ export class RuntimeStateTracker {
         && observed.turnId
         && current.activeTurnId === observed.turnId,
       );
-      const activeFreshness = Math.max(current.updatedAt, current.startedAt ?? 0);
+      // Runtime activity can be newer than the rollout file's mtime even when
+      // that file contains the authoritative completion for the same turn.
+      // Only compare a matching terminal observation with the turn start.
+      const activeFreshness = current.startedAt ?? current.updatedAt;
       if (current.isRunning && (!sameTurn || observed.updatedAt < activeFreshness)) return current;
       const completed: StoredThreadRuntime = {
         isRunning: false,
