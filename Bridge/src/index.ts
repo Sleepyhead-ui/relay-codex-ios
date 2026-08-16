@@ -1172,6 +1172,9 @@ function runtimeSignature(runtime: ThreadRuntimeSnapshot): string {
     activeTurnId: runtime.activeTurnId,
     observedTurnId: runtime.observedTurnId,
     startedAt: runtime.startedAt,
+    outputStartedAt: runtime.outputStartedAt,
+    plan: runtime.plan,
+    diffStatistics: runtime.diffStatistics,
     upstreamRetrying: runtime.upstreamRetrying,
     upstreamError: runtime.upstreamError,
   });

@@ -90,6 +90,7 @@ final class RelayStore: ObservableObject {
     let currentHostDefaultsKey = "relay.host.currentId"
     let outboundDeliveryOutboxDefaultsKey = "relay.outboundDeliveryOutbox.v1"
     let failedTurnDraftDismissalsDefaultsKey = "relay.failedTurnDraftDismissals.v1"
+    let taskRunStateDefaultsKey = "relay.activeTaskRunStates.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
     var backgroundConnectionIdentifier: UUID?
@@ -299,6 +300,13 @@ final class RelayStore: ObservableObject {
             threads = cachedThreads
         }
         selectedThreadId = UserDefaults.standard.string(forKey: lastThreadDefaultsKey)
+        if let data = UserDefaults.standard.data(forKey: taskRunStateDefaultsKey),
+           let storedStates = try? JSONDecoder().decode([String: TaskRunState].self, from: data) {
+            let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+            taskRunStates = storedStates.filter { _, state in
+                state.isRunning && (state.startedAt ?? state.outputStartedAt ?? cutoff) >= cutoff
+            }
+        }
         selectedModelId = UserDefaults.standard.string(forKey: modelDefaultsKey) ?? ""
         selectedEffort = UserDefaults.standard.string(forKey: effortDefaultsKey) ?? ""
         if let storedAccess = UserDefaults.standard.string(forKey: accessDefaultsKey),
@@ -873,6 +881,13 @@ final class RelayStore: ObservableObject {
                         startedAt: loadedActiveTurnId.flatMap { turnMetadata[$0]?.startedAt }
                     )
                 )
+                if let loadedActiveTurnId,
+                   let firstActivityAt = messages.firstVisibleTaskActivityAt(turnId: loadedActiveTurnId) {
+                    applyTaskRunEvent(
+                        threadId: id,
+                        event: .outputStarted(turnId: loadedActiveTurnId, at: firstActivityAt)
+                    )
+                }
             }
             if let runtime = try? await socket.rpc(
                 method: "relay/thread/runtime",
@@ -997,6 +1012,11 @@ final class RelayStore: ObservableObject {
 
     func forkThread(through turnId: String) async {
         guard let sourceThreadId = selectedThreadId, forkingTurnId == nil else { return }
+        let sourceTitle = threads.first(where: { $0.id == sourceThreadId })?.title ?? "New task"
+        let forkTitle = ThreadBranchNaming.nextTitle(
+            sourceTitle: sourceTitle,
+            existingTitles: threads.map(\.title)
+        )
         guard socket.state == .connected else {
             socket.reconnectIfNeeded()
             errorMessage = "尚未连接到 Windows，暂时无法创建分支。"
@@ -1023,14 +1043,25 @@ final class RelayStore: ObservableObject {
             guard let forkedThreadId = result["thread"]?["id"]?.stringValue else {
                 throw RelaySocket.SocketError.remote("Codex 未返回新任务编号。")
             }
+            var renameError: Error?
+            do {
+                _ = try await socket.rpc(
+                    method: "thread/name/set",
+                    params: ["threadId": .string(forkedThreadId), "name": .string(forkTitle)]
+                )
+            } catch {
+                renameError = error
+            }
             showingArchivedThreads = false
-            if let summary = ThreadSummary(json: result["thread"] ?? .object([:])) {
+            if var summary = ThreadSummary(json: result["thread"] ?? .object([:])) {
+                if renameError == nil { summary.title = forkTitle }
                 threads.removeAll { $0.id == summary.id }
                 threads.insert(summary, at: 0)
                 persistThreadCache()
             }
             await refreshThreads(showErrors: false)
             await selectThread(forkedThreadId, closeSidebar: true)
+            if let renameError { report(renameError) }
         } catch {
             report(error)
         }

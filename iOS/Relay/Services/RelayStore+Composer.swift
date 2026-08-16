@@ -498,8 +498,11 @@ extension RelayStore {
             turnMetadata: snapshot.turnMetadata,
             isRunning: snapshot.isRunning,
             activeTurnId: snapshot.activeTurnId,
+            outputStartedAt: snapshot.outputStartedAt,
             activePlan: snapshot.activePlan,
             activePlanTurnId: snapshot.activePlanTurnId,
+            activeDiffStatistics: snapshot.activeDiffStatistics,
+            activeDiffTurnId: snapshot.activeDiffTurnId,
             modelId: snapshot.modelId,
             effort: snapshot.effort,
             cachedAt: Date()

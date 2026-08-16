@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskRunPhase: Equatable {
+enum TaskRunPhase: String, Codable, Equatable {
     case idle
     case starting
     case running
@@ -10,7 +10,7 @@ enum TaskRunPhase: Equatable {
     case failed
 }
 
-struct TaskRunState: Equatable {
+struct TaskRunState: Codable, Equatable {
     let threadId: String
     var phase: TaskRunPhase = .idle
     var turnId: String?
@@ -33,12 +33,23 @@ struct TaskRunState: Equatable {
             self = TaskRunState(threadId: threadId, phase: .starting, startedAt: startedAt ?? Date())
         case .hydrate(let running, let turnId, let startedAt):
             if running {
-                self = TaskRunState(
-                    threadId: threadId,
-                    phase: turnId == nil ? .starting : .running,
-                    turnId: turnId,
-                    startedAt: startedAt ?? Date()
-                )
+                let continuesCurrentTurn = isRunning
+                    && (self.turnId == nil || turnId == nil || self.turnId == turnId)
+                if continuesCurrentTurn {
+                    self.turnId = turnId ?? self.turnId
+                    if phase != .retrying {
+                        phase = self.turnId == nil ? .starting : .running
+                    }
+                    if self.startedAt == nil { self.startedAt = startedAt ?? Date() }
+                    completedAt = nil
+                } else {
+                    self = TaskRunState(
+                        threadId: threadId,
+                        phase: turnId == nil ? .starting : .running,
+                        turnId: turnId,
+                        startedAt: startedAt ?? Date()
+                    )
+                }
             } else {
                 self = TaskRunState(threadId: threadId)
             }

@@ -334,7 +334,7 @@ struct ImagePreviewPresentation: Identifiable, Equatable {
     let url: URL
 }
 
-struct ExecutionPlanStep: Identifiable, Equatable {
+struct ExecutionPlanStep: Identifiable, Codable, Equatable {
     let id: String
     let text: String
     let status: String
@@ -778,6 +778,23 @@ struct TranscriptItem: Identifiable, Equatable {
             && !isCommentary
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    var isVisibleTaskActivity: Bool {
+        guard role != .user else { return false }
+        if role == .assistant && kind == .message {
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        switch kind {
+        case .reasoning:
+            return hasText || hasDetail
+        case .message:
+            return hasText
+        default:
+            let hasTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            return hasText || hasDetail || hasTitle
+        }
+    }
     var isActivity: Bool { role == .tool || isCommentary }
     var isRunningStatus: Bool {
         let normalized = status?
@@ -868,7 +885,7 @@ struct TranscriptItem: Identifiable, Equatable {
         case "reasoning":
             let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
             let content = json["content"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .reasoning, title: "思考", text: summary, detail: content)
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .reasoning, title: "思考", text: summary, detail: content, createdAt: createdAt)
         case "commandExecution":
             let command = json["command"]?.stringValue ?? "Command"
             let output = json["aggregatedOutput"]?.stringValue
@@ -885,15 +902,16 @@ struct TranscriptItem: Identifiable, Equatable {
                 durationMs: json["durationMs"]?.intValue,
                 exitCode: exitCode,
                 cwd: json["cwd"]?.stringValue,
-                errorMessage: (exitCode ?? 0) != 0 ? commandFailureSummary(output) : nil
+                errorMessage: (exitCode ?? 0) != 0 ? commandFailureSummary(output) : nil,
+                createdAt: createdAt
             )
         case "fileChange":
             let changes = json["changes"]?.arrayValue ?? []
             let paths = changes.compactMap { $0["path"]?.stringValue }.joined(separator: "\n")
             let diffs = changes.compactMap { $0["diff"]?.stringValue }.joined(separator: "\n\n")
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .fileChange, title: "修改文件", text: paths, detail: diffs, status: json["status"]?.stringValue)
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .fileChange, title: "修改文件", text: paths, detail: diffs, status: json["status"]?.stringValue, createdAt: createdAt)
         case "webSearch":
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .webSearch, title: "搜索网页", text: json["query"]?.stringValue ?? "")
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .webSearch, title: "搜索网页", text: json["query"]?.stringValue ?? "", createdAt: createdAt)
         case "mcpToolCall":
             let name = json["tool"]?.stringValue ?? "MCP tool"
             let server = json["server"]?.stringValue ?? ""
@@ -917,7 +935,7 @@ struct TranscriptItem: Identifiable, Equatable {
         case "subAgentActivity":
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .subagent, title: "子代理", text: json["agentPath"]?.stringValue ?? "", detail: json["kind"]?.stringValue)
         case "plan":
-            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .plan, title: "计划", text: json["text"]?.stringValue ?? "")
+            return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .plan, title: "计划", text: json["text"]?.stringValue ?? "", createdAt: createdAt)
         case "contextCompaction":
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .contextCompaction, title: "已压缩上下文", text: "Codex 已整理较早的对话内容，为后续工作释放上下文空间。", status: "completed")
         case "imageView":
@@ -1230,6 +1248,15 @@ func formatDuration(milliseconds: Int) -> String {
     let hours = minutes / 60
     let minuteRemainder = minutes % 60
     return "\(hours) 小时 \(minuteRemainder) 分"
+}
+
+extension Sequence where Element == TranscriptItem {
+    func firstVisibleTaskActivityAt(turnId: String?) -> Date? {
+        for item in self where item.turnId == turnId && item.isVisibleTaskActivity {
+            if let createdAt = item.createdAt { return createdAt }
+        }
+        return nil
+    }
 }
 
 extension String {

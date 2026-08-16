@@ -8,14 +8,11 @@ extension RelayStore {
         if taskStateCore.apply(threadId: threadId, event: event, to: &next) {
             taskRunStates = next
             let current = next[threadId] ?? TaskRunState(threadId: threadId)
+            persistTaskRunStates()
             if previous.isRunning != current.isRunning || previous.turnId != current.turnId {
                 setThreadStatus(threadId, status: current.isRunning ? "active" : "idle", touchUpdatedAt: false)
-                updateCachedSnapshot(
-                    threadId: threadId,
-                    isRunning: current.isRunning,
-                    activeTurnId: current.turnId
-                )
             }
+            updateCachedSnapshot(threadId: threadId, state: current)
         }
     }
 
@@ -316,6 +313,11 @@ extension RelayStore {
                 }
                 applyTaskRunEvent(threadId: selectedThreadId, event: .plan(turnId: turnId, steps: steps))
             }
+            if let selectedThreadId, let turnId,
+               let statisticsJSON = runtime["diffStatistics"],
+               let statistics = DiffStatistics.from(json: statisticsJSON) {
+                applyTaskRunEvent(threadId: selectedThreadId, event: .diff(turnId: turnId, statistics: statistics))
+            }
         } else {
             if let staleTurnId = activeTurnId, var metadata = turnMetadata[staleTurnId], metadata.isRunning {
                 metadata.status = runtimeError == nil ? "completed" : "failed"
@@ -346,6 +348,25 @@ extension RelayStore {
             let turnId = runtime["activeTurnId"]?.stringValue ?? runtime["observedTurnId"]?.stringValue
             if running, let turnId {
                 applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: nil))
+                if let outputStartedAt = runtime["outputStartedAt"]?.doubleValue.map({ Date(timeIntervalSince1970: $0) }) {
+                    applyTaskRunEvent(threadId: threadId, event: .outputStarted(turnId: turnId, at: outputStartedAt))
+                }
+                if let plan = runtime["plan"]?.arrayValue {
+                    let steps = plan.enumerated().compactMap { index, value -> ExecutionPlanStep? in
+                        guard let text = value["step"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                              !text.isEmpty else { return nil }
+                        return ExecutionPlanStep(
+                            id: "\(turnId).\(index)",
+                            text: text,
+                            status: value["status"]?.stringValue ?? "pending"
+                        )
+                    }
+                    applyTaskRunEvent(threadId: threadId, event: .plan(turnId: turnId, steps: steps))
+                }
+                if let statisticsJSON = runtime["diffStatistics"],
+                   let statistics = DiffStatistics.from(json: statisticsJSON) {
+                    applyTaskRunEvent(threadId: threadId, event: .diff(turnId: turnId, statistics: statistics))
+                }
             } else if !running {
                 let reconciledTurnId = turnId ?? taskRunStates[threadId]?.turnId
                 applyTaskRunEvent(
@@ -390,18 +411,32 @@ extension RelayStore {
         cacheCurrentThread()
     }
 
-    func updateCachedSnapshot(threadId: String, isRunning: Bool, activeTurnId: String?) {
+    func updateCachedSnapshot(threadId: String, state: TaskRunState) {
         guard let snapshot = threadSnapshots[threadId] else { return }
         threadSnapshots[threadId] = ThreadSnapshot(
             messages: snapshot.messages,
             turnMetadata: snapshot.turnMetadata,
-            isRunning: isRunning,
-            activeTurnId: activeTurnId,
-            activePlan: isRunning ? snapshot.activePlan : [],
-            activePlanTurnId: isRunning ? snapshot.activePlanTurnId : nil,
+            isRunning: state.isRunning,
+            activeTurnId: state.turnId,
+            outputStartedAt: state.isRunning ? state.outputStartedAt : nil,
+            activePlan: state.isRunning ? state.plan : [],
+            activePlanTurnId: state.isRunning ? state.planTurnId : nil,
+            activeDiffStatistics: state.isRunning ? state.diffStatistics : nil,
+            activeDiffTurnId: state.isRunning ? state.diffTurnId : nil,
             modelId: snapshot.modelId,
             effort: snapshot.effort,
             cachedAt: Date()
         )
+    }
+
+    func persistTaskRunStates() {
+        let runningStates = taskRunStates.filter { $0.value.isRunning }
+        guard !runningStates.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: taskRunStateDefaultsKey)
+            return
+        }
+        if let data = try? JSONEncoder().encode(runningStates) {
+            UserDefaults.standard.set(data, forKey: taskRunStateDefaultsKey)
+        }
     }
 }

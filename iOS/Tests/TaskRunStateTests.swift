@@ -102,7 +102,7 @@ final class TaskRunStateTests: XCTestCase {
         XCTAssertNil(replay.states["thread.1"]?.turnId)
     }
 
-    func testOutputTimerStartsOnceForTheFirstVisibleAnswerDelta() throws {
+    func testOutputTimerStartsOnceForTheFirstVisibleTaskActivity() throws {
         var replay = TaskEventReplay()
         replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
         replay.apply(method: "item/agentMessage/delta", params: .object([
@@ -111,7 +111,7 @@ final class TaskRunStateTests: XCTestCase {
             "phase": .string("commentary"),
             "delta": .string("Checking the implementation")
         ]))
-        XCTAssertNil(replay.states["thread.1"]?.outputStartedAt)
+        let firstOutputAt = try XCTUnwrap(replay.states["thread.1"]?.outputStartedAt)
 
         replay.apply(method: "item/agentMessage/delta", params: .object([
             "threadId": .string("thread.1"),
@@ -119,15 +119,52 @@ final class TaskRunStateTests: XCTestCase {
             "phase": .string("final_answer"),
             "delta": .string("Done")
         ]))
-        let firstOutputAt = try XCTUnwrap(replay.states["thread.1"]?.outputStartedAt)
-
-        replay.apply(method: "item/agentMessage/delta", params: .object([
-            "threadId": .string("thread.1"),
-            "turnId": .string("turn.1"),
-            "phase": .string("final_answer"),
-            "delta": .string(".")
-        ]))
         XCTAssertEqual(replay.states["thread.1"]?.outputStartedAt, firstOutputAt)
+    }
+
+    func testHydratingSameRunningTurnPreservesTimerPlanAndDiff() {
+        let outputStartedAt = Date(timeIntervalSince1970: 200)
+        let plan = [ExecutionPlanStep(id: "one", text: "Inspect", status: "completed")]
+        let statistics = DiffStatistics(
+            added: 4,
+            removed: 2,
+            files: [DiffFileStatistics(path: "App.swift", added: 4, removed: 2)]
+        )
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.started(turnId: "turn.1", startedAt: Date(timeIntervalSince1970: 100)))
+        state.apply(.outputStarted(turnId: "turn.1", at: outputStartedAt))
+        state.apply(.plan(turnId: "turn.1", steps: plan))
+        state.apply(.diff(turnId: "turn.1", statistics: statistics))
+
+        state.apply(.hydrate(
+            running: true,
+            turnId: "turn.1",
+            startedAt: Date(timeIntervalSince1970: 150)
+        ))
+
+        XCTAssertEqual(state.outputStartedAt, outputStartedAt)
+        XCTAssertEqual(state.startedAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(state.plan, plan)
+        XCTAssertEqual(state.diffStatistics, statistics)
+    }
+
+    func testPersistedRunningStateRetainsRecoveryFields() throws {
+        var state = TaskRunState(threadId: "thread.1")
+        state.apply(.started(turnId: "turn.1", startedAt: Date(timeIntervalSince1970: 100)))
+        state.apply(.outputStarted(turnId: "turn.1", at: Date(timeIntervalSince1970: 200)))
+        state.apply(.plan(turnId: "turn.1", steps: [
+            ExecutionPlanStep(id: "one", text: "Inspect", status: "inProgress")
+        ]))
+        state.apply(.diff(turnId: "turn.1", statistics: DiffStatistics(
+            added: 3,
+            removed: 1,
+            files: [DiffFileStatistics(path: "RelayStore.swift", added: 3, removed: 1)]
+        )))
+
+        let data = try JSONEncoder().encode(state)
+        let restored = try JSONDecoder().decode(TaskRunState.self, from: data)
+
+        XCTAssertEqual(restored, state)
     }
 
     func testTerminalTurnClearsLiveOutputTimer() {
@@ -151,6 +188,23 @@ final class TaskRunStateTests: XCTestCase {
                 "type": .string("agentMessage"),
                 "phase": .string("final_answer"),
                 "text": .string("Finished"),
+                "createdAt": .number(123)
+            ])
+        ]))
+
+        XCTAssertEqual(replay.states["thread.1"]?.outputStartedAt, Date(timeIntervalSince1970: 123))
+    }
+
+    func testCompletedCommandRestoresItsCreationTimeWithoutDelta() {
+        var replay = TaskEventReplay()
+        replay.apply(method: "turn/started", params: eventParams(threadId: "thread.1", turnId: "turn.1"))
+        replay.apply(method: "item/completed", params: .object([
+            "threadId": .string("thread.1"),
+            "turnId": .string("turn.1"),
+            "item": .object([
+                "id": .string("command.1"),
+                "type": .string("commandExecution"),
+                "command": .string("npm test"),
                 "createdAt": .number(123)
             ])
         ]))

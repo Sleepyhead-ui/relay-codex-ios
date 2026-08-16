@@ -5,8 +5,11 @@ struct ThreadSnapshot: Equatable {
     let turnMetadata: [String: TurnMetadata]
     let isRunning: Bool
     let activeTurnId: String?
+    let outputStartedAt: Date?
     let activePlan: [ExecutionPlanStep]
     let activePlanTurnId: String?
+    let activeDiffStatistics: DiffStatistics?
+    let activeDiffTurnId: String?
     let modelId: String
     let effort: String
     let cachedAt: Date

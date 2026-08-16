@@ -767,8 +767,11 @@ final class TranscriptReconcilerTests: XCTestCase {
             turnMetadata: [:],
             isRunning: false,
             activeTurnId: nil,
+            outputStartedAt: nil,
             activePlan: [],
             activePlanTurnId: nil,
+            activeDiffStatistics: nil,
+            activeDiffTurnId: nil,
             modelId: "",
             effort: "",
             cachedAt: Date(timeIntervalSince1970: seconds)

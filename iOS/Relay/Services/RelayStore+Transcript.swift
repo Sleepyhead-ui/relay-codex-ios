@@ -313,9 +313,7 @@ extension RelayStore {
             turnMetadata[turnId] = metadata
             setThreadStatus(threadId, status: "active", touchUpdatedAt: false)
             applyTaskRunEvent(threadId: threadId, event: .progress(turnId: turnId, startedAt: metadata.startedAt))
-            if let firstOutputAt = messages.first(where: {
-                $0.turnId == turnId && $0.isVisibleAssistantOutput
-            })?.createdAt {
+            if let firstOutputAt = messages.firstVisibleTaskActivityAt(turnId: turnId) {
                 applyTaskRunEvent(threadId: threadId, event: .outputStarted(turnId: turnId, at: firstOutputAt))
             }
         } else {
@@ -420,8 +418,11 @@ extension RelayStore {
             turnMetadata: turnMetadata,
             isRunning: isRunning,
             activeTurnId: activeTurnId,
+            outputStartedAt: taskRunStates[selectedThreadId]?.outputStartedAt,
             activePlan: activePlan,
             activePlanTurnId: taskRunStates[selectedThreadId]?.planTurnId,
+            activeDiffStatistics: activeTurnDiffStatistics,
+            activeDiffTurnId: taskRunStates[selectedThreadId]?.diffTurnId,
             modelId: selectedModelId,
             effort: selectedEffort,
             cachedAt: Date()
@@ -442,9 +443,13 @@ extension RelayStore {
             applyTaskRunEvent(threadId: threadId, event: .plan(turnId: turnId, steps: snapshot.activePlan))
         }
         if let turnId = snapshot.activeTurnId,
-           let firstOutputAt = messages.first(where: {
-               $0.turnId == turnId && $0.isVisibleAssistantOutput
-           })?.createdAt {
+           snapshot.activeDiffTurnId == turnId,
+           let statistics = snapshot.activeDiffStatistics {
+            applyTaskRunEvent(threadId: threadId, event: .diff(turnId: turnId, statistics: statistics))
+        }
+        if let turnId = snapshot.activeTurnId,
+           let firstOutputAt = snapshot.outputStartedAt
+            ?? messages.firstVisibleTaskActivityAt(turnId: turnId) {
             applyTaskRunEvent(threadId: threadId, event: .outputStarted(turnId: turnId, at: firstOutputAt))
         }
         selectedModelId = snapshot.modelId

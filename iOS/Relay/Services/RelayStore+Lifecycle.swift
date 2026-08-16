@@ -130,6 +130,7 @@ extension RelayStore {
         turnMetadata = [:]
         tokenUsageByThread = [:]
         taskRunStates = [:]
+        UserDefaults.standard.removeObject(forKey: taskRunStateDefaultsKey)
         taskStateCore.reset()
         goalStates = [:]
         sendingThreadIds = []

@@ -60,9 +60,7 @@ struct ConversationView: View {
             metadata.startedAt = store.taskRunStates[threadId]?.startedAt
         }
         let outputStartedAt = store.taskRunStates[threadId]?.outputStartedAt
-            ?? store.messages.first(where: {
-                $0.turnId == turnId && $0.isVisibleAssistantOutput
-            })?.createdAt
+            ?? store.messages.firstVisibleTaskActivityAt(turnId: turnId)
         return MobileActivityPresentation(
             id: turnId ?? "starting.\(threadId)",
             feed: store.mobileActivityFeed(threadId: threadId, turnId: turnId),

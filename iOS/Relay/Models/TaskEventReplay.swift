@@ -121,29 +121,43 @@ enum TaskEventDecoder {
                     status: step["status"]?.stringValue ?? "pending"
                 )
             }
-            events = [
+            var planEvents: [TaskRunEvent] = [
                 .progress(turnId: turnId, startedAt: nil),
                 .plan(turnId: turnId, steps: steps)
             ]
+            if !steps.isEmpty { planEvents.append(.outputStarted(turnId: turnId, at: Date())) }
+            events = planEvents
         case "turn/diff/updated":
             guard let turnId, let diff = params["diff"]?.stringValue else { events = []; break }
-            events = [
+            var diffEvents: [TaskRunEvent] = [
                 .progress(turnId: turnId, startedAt: nil),
                 .diff(turnId: turnId, statistics: DiffStatistics.parse(diff))
             ]
+            if !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                diffEvents.append(.outputStarted(turnId: turnId, at: Date()))
+            }
+            events = diffEvents
         case "item/agentMessage/delta":
             guard let turnId else { events = []; break }
             var outputEvents: [TaskRunEvent] = [.progress(turnId: turnId, startedAt: nil)]
-            if isVisibleAssistantOutputDelta(params) {
+            if hasNonemptyDelta(params) {
                 outputEvents.append(.outputStarted(turnId: turnId, at: Date()))
             }
             events = outputEvents
+        case "item/reasoning/summaryTextDelta", "item/reasoningSummaryText/delta",
+             "item/reasoning/textDelta", "item/commandExecution/outputDelta":
+            guard let turnId else { events = []; break }
+            var activityEvents: [TaskRunEvent] = [.progress(turnId: turnId, startedAt: nil)]
+            if hasNonemptyDelta(params) {
+                activityEvents.append(.outputStarted(turnId: turnId, at: Date()))
+            }
+            events = activityEvents
         case "item/started", "item/completed":
             guard let turnId else { events = []; break }
             var itemEvents: [TaskRunEvent] = [.progress(turnId: turnId, startedAt: nil)]
             if let itemJSON = params["item"],
                let item = TranscriptItem.from(json: itemJSON, turnId: turnId),
-               item.isVisibleAssistantOutput {
+               item.isVisibleTaskActivity {
                 itemEvents.append(.outputStarted(turnId: turnId, at: item.createdAt))
             }
             events = itemEvents
@@ -174,9 +188,8 @@ enum TaskEventDecoder {
             || (method.hasPrefix("item/") && (method.hasSuffix("/delta") || method.hasSuffix("Delta")))
     }
 
-    private static func isVisibleAssistantOutputDelta(_ params: JSONValue) -> Bool {
-        guard params["phase"]?.stringValue != "commentary",
-              let delta = params["delta"]?.stringValue else { return false }
+    private static func hasNonemptyDelta(_ params: JSONValue) -> Bool {
+        guard let delta = params["delta"]?.stringValue else { return false }
         return !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

@@ -31,18 +31,27 @@ test("marks only the matching active turn completed", () => {
   assert.equal(tracker.activeCount, 0);
 });
 
-test("restores first output time and plan while a turn remains active", () => {
+test("restores first activity time, plan, and diff while a turn remains active", () => {
   let now = 200;
   const tracker = new RuntimeStateTracker(() => now);
   tracker.observeTurnStart("thread-live", { id: "turn-live", startedAt: 100 });
   tracker.observeNotification({
     method: "item/agentMessage/delta",
-    params: { threadId: "thread-live", turnId: "turn-live", phase: "final_answer", delta: "hello" },
+    params: { threadId: "thread-live", turnId: "turn-live", phase: "commentary", delta: "checking" },
   });
   now = 220;
   tracker.observeNotification({
     method: "turn/plan/updated",
     params: { threadId: "thread-live", turnId: "turn-live", plan: [{ step: "Inspect", status: "completed" }] },
+  });
+  now = 230;
+  tracker.observeNotification({
+    method: "turn/diff/updated",
+    params: {
+      threadId: "thread-live",
+      turnId: "turn-live",
+      diff: "diff --git a/App.swift b/App.swift\n--- a/App.swift\n+++ b/App.swift\n@@ -1,2 +1,3 @@\n-old\n+new\n+added",
+    },
   });
   assert.deepEqual(tracker.snapshot("thread-live"), {
     known: true,
@@ -51,7 +60,12 @@ test("restores first output time and plan while a turn remains active", () => {
     startedAt: 100,
     outputStartedAt: 200,
     plan: [{ step: "Inspect", status: "completed" }],
-    updatedAt: 220,
+    diffStatistics: {
+      added: 2,
+      removed: 1,
+      files: [{ path: "App.swift", added: 2, removed: 1 }],
+    },
+    updatedAt: 230,
   });
 });
 
@@ -104,6 +118,31 @@ test("reconciles an already-read external observation without another tracker re
     startedAt: 80,
     updatedAt: 100,
   });
+  assert.equal(tracker.activeCount, 1);
+
+  tracker.observeNotification({
+    method: "item/reasoning/summaryTextDelta",
+    params: { threadId: "thread-external", turnId: "turn-external", delta: "Recovered activity" },
+  });
+  assert.equal(tracker.snapshot("thread-external").outputStartedAt, 100);
+});
+
+test("ignores activity from a stale turn after external recovery", () => {
+  const tracker = new RuntimeStateTracker(() => 100);
+  tracker.snapshotWithObservation("thread-external", {
+    active: true,
+    turnId: "turn-current",
+    startedAt: 80,
+    updatedAt: 90,
+  });
+
+  tracker.observeNotification({
+    method: "turn/diff/updated",
+    params: { threadId: "thread-external", turnId: "turn-old", diff: "+stale" },
+  });
+
+  assert.equal(tracker.snapshot("thread-external").outputStartedAt, undefined);
+  assert.equal(tracker.snapshot("thread-external").diffStatistics, undefined);
 });
 
 test("stale external terminal state cannot clear a fresh active runtime", async () => {

@@ -768,7 +768,7 @@ struct MobileActivitySheet: View {
             outputStartedAt: isLive
                 ? (store.selectedThreadId.flatMap { store.taskRunStates[$0]?.outputStartedAt }
                     ?? presentation.outputStartedAt
-                    ?? items.first(where: \.isVisibleAssistantOutput)?.createdAt)
+                    ?? items.firstVisibleTaskActivityAt(turnId: turnId))
                 : presentation.outputStartedAt,
             isLive: isLive,
             plan: isLive ? store.activePlan : [],

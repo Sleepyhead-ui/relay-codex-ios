@@ -32,14 +32,14 @@ struct DiffLine: Identifiable, Equatable {
     }
 }
 
-struct DiffFileStatistics: Identifiable, Equatable {
+struct DiffFileStatistics: Identifiable, Codable, Equatable {
     var id: String { path }
     let path: String
     var added: Int
     var removed: Int
 }
 
-struct DiffStatistics: Equatable {
+struct DiffStatistics: Codable, Equatable {
     let added: Int
     let removed: Int
     let files: [DiffFileStatistics]
@@ -105,6 +105,18 @@ struct DiffStatistics: Equatable {
                 return DiffFileStatistics(path: path, added: count.added, removed: count.removed)
             }
         )
+    }
+
+    static func from(json: JSONValue) -> DiffStatistics? {
+        guard let added = json["added"]?.intValue,
+              let removed = json["removed"]?.intValue else { return nil }
+        let files = json["files"]?.arrayValue?.compactMap { file -> DiffFileStatistics? in
+            guard let path = file["path"]?.stringValue,
+                  let fileAdded = file["added"]?.intValue,
+                  let fileRemoved = file["removed"]?.intValue else { return nil }
+            return DiffFileStatistics(path: path, added: fileAdded, removed: fileRemoved)
+        } ?? []
+        return DiffStatistics(added: added, removed: removed, files: files)
     }
 
     private static func normalizedPath(_ source: String) -> String? {
