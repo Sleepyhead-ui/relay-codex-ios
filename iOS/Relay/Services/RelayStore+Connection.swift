@@ -58,6 +58,7 @@ extension RelayStore {
 
     func applicationBecameActive() {
         applicationIsActive = true
+        publishClientPresence()
         let shouldRestore = SelectedSessionSyncPolicy.shouldRestoreOnForeground(
             connected: socket.state == .connected,
             backgroundConnectionIdentifier: backgroundConnectionIdentifier,
@@ -75,8 +76,28 @@ extension RelayStore {
 
     func applicationEnteredBackground() {
         applicationIsActive = false
+        publishClientPresence()
         backgroundConnectionIdentifier = socket.connectionIdentifier
         cacheCurrentThread()
+    }
+
+    func publishClientPresence() {
+        guard socket.state == .connected else { return }
+        clientPresenceRevision += 1
+        let revision = clientPresenceRevision
+        let active = applicationIsActive
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.socket.rpc(
+                method: "relay/client/presence",
+                params: [
+                    "active": .bool(active),
+                    "revision": .number(Double(revision))
+                ],
+                timeoutSeconds: 4,
+                reconnectOnTimeout: false
+            )
+        }
     }
 
     func setNotificationsEnabled(_ enabled: Bool) async {

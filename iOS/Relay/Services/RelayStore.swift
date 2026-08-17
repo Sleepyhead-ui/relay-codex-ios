@@ -93,6 +93,7 @@ final class RelayStore: ObservableObject {
     let taskRunStateDefaultsKey = "relay.activeTaskRunStates.v1"
     let notificationCoordinator = NotificationCoordinator()
     var applicationIsActive = true
+    var clientPresenceRevision = 0
     var backgroundConnectionIdentifier: UUID?
     private var notifiedCompletionTurnIds = Set<String>()
     private var notifiedCompletionTurnOrder: [String] = []
@@ -349,6 +350,7 @@ final class RelayStore: ObservableObject {
         }
 
         socket.onConnected = { [weak self] in
+            self?.publishClientPresence()
             self?.scheduleRestoration()
             Task { @MainActor [weak self] in await self?.loadSidebarPreferences() }
         }
@@ -1299,9 +1301,9 @@ final class RelayStore: ObservableObject {
 
     func notifyTaskCompleted(threadId: String, turnId: String?, failed: Bool) {
         guard notificationsEnabled,
+              !applicationIsActive,
               let turnId,
-              notifiedCompletionTurnIds.insert(turnId).inserted,
-              !applicationIsActive || threadId != selectedThreadId else { return }
+              notifiedCompletionTurnIds.insert(turnId).inserted else { return }
         rememberNotifiedTurn(turnId)
         let taskTitle = threads.first(where: { $0.id == threadId })?.title ?? "Codex 任务"
         let preview = completionPreview(threadId: threadId, turnId: turnId)

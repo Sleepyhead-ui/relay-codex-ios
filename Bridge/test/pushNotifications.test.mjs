@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BarkPushNotifier, cleanPreview, defaultBarkIconUrl, ExternalCompletionTracker, normalizeBarkEndpoint } from "../dist/pushNotifications.js";
+import { BarkPushNotifier, cleanPreview, defaultBarkIconUrl, ExternalCompletionTracker, isActiveTurnCompletion, normalizeBarkEndpoint } from "../dist/pushNotifications.js";
 
 test("normalizes a copied public Bark test URL to its device endpoint", () => {
   assert.equal(
@@ -75,10 +75,19 @@ test("detects observed and skipped running-to-terminal external transitions", ()
   const tracker = new ExternalCompletionTracker(1_000);
   assert.equal(tracker.observe("thread.1", { known: true, turnId: "old", isRunning: false }), false);
   assert.equal(tracker.observe("thread.1", { known: true, turnId: "current", isRunning: true }), false);
-  assert.equal(tracker.observe("thread.1", { known: true, turnId: "other", isRunning: false }), true);
+  assert.equal(tracker.observe("thread.1", { known: true, turnId: "transient", isRunning: false }), false);
+  assert.equal(tracker.observe("thread.1", { known: true, turnId: "other", isRunning: false, completedAt: 1_001 }), true);
   assert.equal(tracker.observe("thread.1", { known: true, turnId: "next", isRunning: true }), false);
   assert.equal(tracker.observe("thread.1", { known: true, turnId: "next", isRunning: false }), true);
   assert.equal(tracker.observe("thread.1", { known: true, turnId: "next", isRunning: false }), false);
+});
+
+test("accepts only the terminal event for the active turn", () => {
+  const active = { known: true, isRunning: true, activeTurnId: "turn.current" };
+  assert.equal(isActiveTurnCompletion(active, { turn: { id: "turn.current" } }), true);
+  assert.equal(isActiveTurnCompletion(active, { turnId: "turn.old" }), false);
+  assert.equal(isActiveTurnCompletion({ ...active, isRunning: false }, { turnId: "turn.current" }), false);
+  assert.equal(isActiveTurnCompletion({ known: false, isRunning: false }, { turnId: "turn.current" }), false);
 });
 
 test("detects a short external turn completed between polls", () => {

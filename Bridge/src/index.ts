@@ -8,6 +8,7 @@ import { inspectCodexRuntime, type CodexRuntimeInfo } from "./codexExecutable.js
 import { CodexProfileRegistry, type CodexProfile } from "./codexProfiles.js";
 import { CodexRuntimeConfigMonitor } from "./codexRuntimeConfigMonitor.js";
 import { ClientPreferencesStore } from "./clientPreferences.js";
+import { ClientPresenceRegistry } from "./clientPresence.js";
 import { awaitFinalAnswer } from "./completionPreview.js";
 import { loadConfig } from "./config.js";
 import { DesktopSync } from "./desktopSync.js";
@@ -17,7 +18,7 @@ import { FileTransferManager } from "./fileTransfer.js";
 import { GoalStore } from "./goalStore.js";
 import { boundHistoryPage, boundThreadHistoryResult } from "./historyPayload.js";
 import { PerformanceMetrics } from "./performanceMetrics.js";
-import { BarkPushNotifier, cleanPreview, ExternalCompletionTracker } from "./pushNotifications.js";
+import { BarkPushNotifier, cleanPreview, ExternalCompletionTracker, isActiveTurnCompletion } from "./pushNotifications.js";
 import {
   codexRestartDelayMs,
   codexStartupWatchdogMs,
@@ -62,6 +63,7 @@ const pushNotifier = new BarkPushNotifier();
 const threadTitles = new Map<string, string>();
 const clients = new Set<WebSocket>();
 const clientLiveness = new WeakMap<WebSocket, boolean>();
+const clientPresence = new ClientPresenceRegistry<WebSocket>();
 const sessionSubscriptions = new SessionSubscriptionRegistry<WebSocket>();
 const socketDiagnostics = {
   lastConnectedAt: null as string | null,
@@ -227,6 +229,7 @@ httpServer.on("upgrade", (request, socket, head) => {
 webSocketServer.on("connection", (socket) => {
   clients.add(socket);
   clientLiveness.set(socket, true);
+  clientPresence.open(socket);
   sessionSubscriptions.open(socket);
   socketDiagnostics.lastConnectedAt = new Date().toISOString();
   socketDiagnostics.lastError = null;
@@ -255,6 +258,7 @@ webSocketServer.on("connection", (socket) => {
   socket.on("pong", () => clientLiveness.set(socket, true));
   socket.on("close", (code, reason) => {
     sessionSubscriptions.close(socket);
+    clientPresence.close(socket);
     clients.delete(socket);
     clientLiveness.delete(socket);
     deliveryRegistry.removeWaiter(socket);
@@ -324,6 +328,21 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     const receivedMs = performance.now();
     rpcDiagnostics.lastReceivedAt = receivedAt;
     rpcDiagnostics.lastMethod = message.method;
+    if (message.method === "relay/client/presence") {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      const active = message.params.active;
+      const revision = message.params.revision;
+      if (typeof active !== "boolean" || typeof revision !== "number" || !Number.isSafeInteger(revision)) {
+        send(socket, { type: "rpcResult", id: message.id, error: { message: "Invalid client presence state." } });
+      } else {
+        const accepted = clientPresence.update(socket, active, revision);
+        send(socket, { type: "rpcResult", id: message.id, result: { active, revision, accepted } });
+      }
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
     if (message.method === "relay/diagnostics/report") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -1127,6 +1146,10 @@ async function pollExternalSessions(): Promise<void> {
       }
       if (!snapshot.known || !snapshot.turnId) continue;
       if (externalCompletionTracker.observe(threadId, snapshot)) {
+        if (clientPresence.hasActiveClient) {
+          diagnostics.record("info", "push", "Suppressed an external task completion notification while Relay is active.", { threadId, turnId: snapshot.turnId });
+          continue;
+        }
         try {
           const preview = await completionPreview(threadId, snapshot.turnId, snapshot.items);
           const sent = await pushNotifier.sendTaskCompletion({
@@ -1190,10 +1213,14 @@ function rememberThreadTitle(thread: JsonObject): void {
 
 function handleCodexNotification(message: JsonObject): void {
   fileTransfer.allowConversationPayload(message);
+  const params = isObject(message.params) ? message.params : {};
+  const terminal = ["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method));
+  const completionEligible = terminal
+    && isActiveTurnCompletion(runtimeState.snapshot(params.threadId), params);
   if (typeof message.method === "string") {
     const latency = performanceMetrics.recordCodexEvent(
       message.method,
-      isObject(message.params) ? message.params : {},
+      params,
     );
     if (latency) {
       diagnostics.record("info", "latency", "Captured Relay turn latency.", {
@@ -1220,9 +1247,8 @@ function handleCodexNotification(message: JsonObject): void {
     });
   }
   broadcast({ type: "event", source: "appServer", ...message });
-  if (["turn/completed", "turn/aborted", "turn/interrupted", "turn/failed"].includes(String(message.method))) {
+  if (terminal) {
     clearTerminalApprovals(message.params);
-    const params = isObject(message.params) ? message.params : {};
     if (typeof params.threadId === "string") {
       const turn = isObject(params.turn) ? params.turn : {};
       const completedTurnId = typeof turn.id === "string"
@@ -1231,7 +1257,7 @@ function handleCodexNotification(message: JsonObject): void {
       sessionSourceOwnership.finish(params.threadId, completedTurnId);
       void dispatchNextQueuedPrompt(params.threadId, completedTurnId);
     }
-    void pushTaskCompletion(String(message.method), params);
+    if (completionEligible) void pushTaskCompletion(String(message.method), params);
     if (codexConfigReloadPending) scheduleCodexConfigReload(100);
     if (threadControl.hasPendingRelease) scheduleThreadControlRelease(100);
   }
@@ -1295,6 +1321,10 @@ async function pushTaskCompletion(method: string, params: JsonObject): Promise<v
     : typeof turn.id === "string" ? turn.id
       : undefined;
   if (!threadId || !turnId) return;
+  if (clientPresence.hasActiveClient) {
+    diagnostics.record("info", "push", "Suppressed a task completion notification while Relay is active.", { threadId, turnId });
+    return;
+  }
   const items = Array.isArray(turn.items) ? turn.items.filter(isObject) : [];
   const taskTitle = threadTitles.get(threadId);
   try {

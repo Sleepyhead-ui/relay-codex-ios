@@ -21,6 +21,12 @@ export interface ExternalSessionState {
   completedAt?: number;
 }
 
+export interface ActiveTurnState {
+  known: boolean;
+  isRunning: boolean;
+  activeTurnId?: string;
+}
+
 type Fetch = typeof fetch;
 
 const defaultPreferences: PushPreferences = {
@@ -30,6 +36,15 @@ const defaultPreferences: PushPreferences = {
 };
 
 export const defaultBarkIconUrl = "https://cdn.jsdelivr.net/gh/Sleepyhead-ui/relay-codex-ios@v1.1.24/assets/relay-push-icon.png";
+
+export function isActiveTurnCompletion(state: ActiveTurnState, params: unknown): boolean {
+  if (!state.known || !state.isRunning || !isRecord(params)) return false;
+  const turn = isRecord(params.turn) ? params.turn : {};
+  const turnId = typeof params.turnId === "string"
+    ? params.turnId
+    : typeof turn.id === "string" ? turn.id : undefined;
+  return Boolean(turnId && state.activeTurnId === turnId);
+}
 
 export class ExternalCompletionTracker {
   private readonly states = new Map<string, { turnId: string; isRunning: boolean }>();
@@ -42,7 +57,9 @@ export class ExternalCompletionTracker {
     this.states.set(threadId, { turnId: snapshot.turnId, isRunning: snapshot.isRunning });
     if (snapshot.isRunning) return false;
     if (previous?.isRunning === true && previous.turnId === snapshot.turnId) return true;
-    if (previous && previous.turnId !== snapshot.turnId) return true;
+    if (previous && previous.turnId !== snapshot.turnId) {
+      return typeof snapshot.completedAt === "number" && snapshot.completedAt >= this.startedAt;
+    }
     return previous === undefined
       && typeof snapshot.completedAt === "number"
       && snapshot.completedAt >= this.startedAt;
@@ -206,4 +223,8 @@ function relayThreadURL(threadId: string): string {
   const url = new URL("relay://thread");
   url.searchParams.set("threadId", threadId);
   return url.toString();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
