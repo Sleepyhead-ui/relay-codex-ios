@@ -572,13 +572,13 @@ struct ComposerView: View {
                         .padding(.vertical, 8)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: $draft.text)
-                    .font(.system(size: 16))
-                    .focused($focused)
-                    .disabled(store.isSelectedThreadExternallyOwned)
-                    .padding(.horizontal, 0)
-                    .padding(.vertical, 1)
-                    .background(Color.clear)
+                LegacyComposerTextView(
+                    text: $draft.text,
+                    isFocused: focused,
+                    isEnabled: !store.isSelectedThreadExternallyOwned
+                ) { value in
+                    if focused != value { focused = value }
+                }
             }
             .frame(minHeight: 44, maxHeight: 76, alignment: .topLeading)
         }
@@ -672,6 +672,74 @@ struct ComposerView: View {
         if showsStopControl { return "停止任务" }
         if store.isRunning { return store.followUpBehavior == .steer ? "立即引导当前任务" : "加入等待队列" }
         return "发送"
+    }
+}
+
+private struct LegacyComposerTextView: UIViewRepresentable {
+    @Binding var text: String
+    let isFocused: Bool
+    let isEnabled: Bool
+    let onFocusChange: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.isOpaque = false
+        textView.textColor = .label
+        textView.tintColor = .systemBlue
+        textView.font = .systemFont(ofSize: 16)
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 5, bottom: 8, right: 5)
+        textView.textContainer.lineFragmentPadding = 0
+        textView.keyboardDismissMode = .interactive
+        textView.isScrollEnabled = true
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.parent = self
+        if textView.text != text { textView.text = text }
+        textView.isEditable = isEnabled
+        textView.isSelectable = isEnabled
+
+        let shouldFocus = isFocused && isEnabled
+        guard textView.window != nil, textView.isFirstResponder != shouldFocus else { return }
+        DispatchQueue.main.async {
+            guard textView.window != nil else { return }
+            if shouldFocus {
+                textView.becomeFirstResponder()
+            } else {
+                textView.resignFirstResponder()
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: LegacyComposerTextView
+
+        init(parent: LegacyComposerTextView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            if parent.text != textView.text { parent.text = textView.text }
+        }
+
+        func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
+            parent.isEnabled
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if !parent.isFocused { parent.onFocusChange(true) }
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if parent.isFocused { parent.onFocusChange(false) }
+        }
     }
 }
 
