@@ -745,8 +745,7 @@ struct MobileActivitySheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .relayResizableSheet()
         .onChange(of: entries.map(\.id)) { _ in
             window.synchronize(with: entries)
         }

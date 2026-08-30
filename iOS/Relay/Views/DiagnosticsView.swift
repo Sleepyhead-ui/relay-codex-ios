@@ -8,12 +8,14 @@ struct DiagnosticsView: View {
     @State private var isExporting = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 if let report = store.diagnosticsReport {
                     Section("构建信息") {
-                        LabeledContent("Relay", value: AppBuildIdentity().displayText)
-                            .font(.system(size: 12, design: .monospaced))
+                        RelayLabeledRow("Relay") {
+                            Text(AppBuildIdentity().displayText)
+                                .font(.system(size: 12, design: .monospaced))
+                        }
                     }
 
                     Section {
@@ -150,12 +152,12 @@ struct DiagnosticsView: View {
                     HStack { ProgressView(); Text("正在读取诊断信息").foregroundStyle(.secondary) }
                 }
             }
-            .scrollContentBackground(.hidden)
+            .relayScrollContentBackgroundHidden()
             .background(RelayTheme.canvas)
             .navigationTitle("诊断中心")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button { beginExport() } label: {
                         if isExporting {
                             ProgressView().controlSize(.small)
@@ -165,7 +167,7 @@ struct DiagnosticsView: View {
                     }
                     .disabled(store.diagnosticsReport == nil || isExporting)
                 }
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
+                ToolbarItem(placement: .navigationBarTrailing) { Button("完成") { dismiss() } }
             }
             .refreshable { await store.refreshDiagnostics() }
             .task { await store.refreshDiagnostics() }
@@ -173,6 +175,7 @@ struct DiagnosticsView: View {
                 ShareSheet(items: [file.url])
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 
     private func beginExport() {

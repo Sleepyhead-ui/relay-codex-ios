@@ -1,6 +1,6 @@
 {
   "name": "relay-codex-bridge",
-  "version": "1.5.19",
+  "version": "1.5.20",
   "private": true,
   "description": "Authenticated local bridge between Relay for iOS and Codex App Server",
   "type": "module",
@@ -13,7 +13,7 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@openai/codex": "0.144.5",
+    "@openai/codex": "0.151.0",
     "qrcode-terminal": "0.12.0",
     "ws": "8.21.1"
   },

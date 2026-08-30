@@ -7,7 +7,7 @@ struct PairingScannerView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ZStack {
                 Color.black.ignoresSafeArea()
                 PairingCameraView { value in
@@ -42,13 +42,12 @@ struct PairingScannerView: View {
             .navigationTitle("扫描配对二维码")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("取消") { dismiss() }
                         .foregroundStyle(.white)
                 }
             }
-            .toolbarBackground(.black.opacity(0.72), for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
+            .relayDarkNavigationBar()
             .alert("无法扫描", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -58,6 +57,7 @@ struct PairingScannerView: View {
                 Text(errorMessage ?? "请重试。")
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 }
 

@@ -27,8 +27,12 @@ test("falls back when a profile CLI path is missing or stale", async () => {
 
 test("parses Codex versions and classifies the supported range", () => {
   assert.equal(parseCodexVersion("codex-cli 0.148.0-alpha.9"), "0.148.0-alpha.9");
+  assert.equal(parseCodexVersion("codex-cli 0.151.0-alpha.7.2"), "0.151.0-alpha.7.2");
   assert.equal(parseCodexVersion("unexpected output"), null);
   assert.equal(codexRuntimeCompatibility("0.144.5"), "compatible");
+  assert.equal(codexRuntimeCompatibility("0.151.0-alpha.7.2"), "compatible");
+  assert.equal(codexRuntimeCompatibility("0.151.9"), "compatible");
+  assert.equal(codexRuntimeCompatibility("0.152.0"), "untested");
   assert.equal(codexRuntimeCompatibility("0.143.9"), "outdated");
-  assert.equal(codexRuntimeCompatibility("0.149.0"), "untested");
+  assert.equal(codexRuntimeCompatibility("0.149.0"), "compatible");
 });

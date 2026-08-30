@@ -40,8 +40,7 @@ struct RootView: View {
         .sheet(isPresented: $store.showingDiagnostics) { DiagnosticsView() }
         .sheet(isPresented: $store.showingNewTask) {
             NewTaskView()
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
+                .relayResizableSheet()
         }
         .sheet(item: Binding(
             get: { store.pendingApproval },

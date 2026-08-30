@@ -89,8 +89,7 @@ struct ApprovalSheet: View {
             }
             .padding(22)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.hidden)
+        .relayResizableSheet(dragIndicatorVisible: false)
         .background(RelayTheme.elevated)
         .interactiveDismissDisabled()
     }

@@ -2,22 +2,22 @@ name: Relay
 options:
   bundleIdPrefix: dev.relay
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "15.0"
   xcodeVersion: "16.0"
 settings:
   base:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Manual
-    CURRENT_PROJECT_VERSION: 126
-    MARKETING_VERSION: 1.5.19
+    CURRENT_PROJECT_VERSION: 127
+    MARKETING_VERSION: 1.5.20
     RELAY_GIT_COMMIT: development
     TARGETED_DEVICE_FAMILY: "1,2"
 targets:
   Relay:
     type: application
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Relay
     settings:
@@ -34,7 +34,7 @@ targets:
   RelayTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Tests
     dependencies:

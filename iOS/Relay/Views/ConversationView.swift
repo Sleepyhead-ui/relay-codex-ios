@@ -231,7 +231,7 @@ struct ConversationView: View {
                         }
                     }
                     .id("transcript-scroll.\(store.selectedThreadId ?? "none")")
-                    .scrollDismissesKeyboard(.interactively)
+                    .relayScrollDismissesKeyboard()
                     .onTapGesture { dismissKeyboard() }
 
                     if !isAtBottom {

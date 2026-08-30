@@ -8,7 +8,7 @@ struct NewTaskView: View {
     @State private var isCreating = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section {
                     HStack(spacing: 9) {
@@ -83,15 +83,15 @@ struct NewTaskView: View {
                     }
                 }
             }
-            .scrollContentBackground(.hidden)
+            .relayScrollContentBackgroundHidden()
             .background(RelayTheme.canvas)
             .navigationTitle("新任务")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("创建") {
                         Task { await startTask(at: projectPath) }
                     }
@@ -100,6 +100,7 @@ struct NewTaskView: View {
                 }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
         .onAppear {
             if projectPath.isEmpty { projectPath = store.currentWorkingDirectory }
         }

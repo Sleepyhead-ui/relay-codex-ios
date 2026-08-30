@@ -15,7 +15,7 @@ struct ConnectionView: View {
     let canDismiss: Bool
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 30) {
                     VStack(alignment: .leading, spacing: 16) {
@@ -96,11 +96,11 @@ struct ConnectionView: View {
                 .padding(.bottom, 30)
                 .frame(maxWidth: .infinity)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .relayScrollDismissesKeyboard()
             .background(RelayTheme.canvas)
             .toolbar {
                 if canDismiss {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .navigationBarTrailing) {
                         Button("完成") { dismiss() }
                     }
                 }
@@ -114,6 +114,7 @@ struct ConnectionView: View {
                 PairingScannerView { url in store.consumePairingURL(url) }
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 
     private var canConnect: Bool {

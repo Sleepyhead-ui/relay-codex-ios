@@ -7,7 +7,7 @@ struct SettingsView: View {
     @AppStorage(RelayHaptics.preferenceKey) private var hapticsEnabled = true
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 windowsSection
                 codexProfilesSection
@@ -23,12 +23,12 @@ struct SettingsView: View {
                     Text("只会移除这台手机保存的连接信息，不会删除 Windows 上的项目或 Codex 对话。")
                 }
             }
-            .scrollContentBackground(.hidden)
+            .relayScrollContentBackgroundHidden()
             .background(RelayTheme.canvas)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { dismiss() }
                 }
             }
@@ -40,6 +40,7 @@ struct SettingsView: View {
             }
             .task { await store.refreshSavedHostStatus() }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 
     private var windowsSection: some View {
@@ -152,7 +153,7 @@ struct SettingsView: View {
             }
 
             if let runtime = store.codexRuntimeInfo {
-                LabeledContent("运行时") {
+                RelayLabeledRow("运行时") {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(runtime.version.map { "Codex \($0)" } ?? "版本未知")
                             .foregroundStyle(.primary)
@@ -191,7 +192,9 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                LabeledContent("模型", value: store.selectedModel?.displayName ?? "默认")
+                RelayLabeledRow("模型") {
+                    Text(store.selectedModel?.displayName ?? "默认")
+                }
             }
             .disabled(store.modelOptions.isEmpty)
 
@@ -208,7 +211,9 @@ struct SettingsView: View {
                     }
                 }
             } label: {
-                LabeledContent("思考深度", value: selectedEffortName)
+                RelayLabeledRow("思考深度") {
+                    Text(selectedEffortName)
+                }
             }
 
             Picker("文件权限", selection: $store.workspaceAccess) {
@@ -256,7 +261,9 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("关于 Relay") {
-            LabeledContent("版本", value: AppBuildIdentity().displayText)
+            RelayLabeledRow("版本") {
+                Text(AppBuildIdentity().displayText)
+            }
 
             if let update = store.updateInfo, update.available {
                 Button {

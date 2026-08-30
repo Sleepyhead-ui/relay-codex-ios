@@ -15,7 +15,7 @@ export interface CodexRuntimeInfo {
 }
 
 const minimumSupportedVersion = "0.144.5";
-const maximumTestedVersion = "0.148.x";
+const maximumTestedVersion = "0.151.x";
 
 /**
  * Cockpit profiles record the Codex binary that owns their local API proxy.
@@ -52,9 +52,10 @@ export function parseCodexVersion(output: string): string | null {
 export function codexRuntimeCompatibility(version: string): CodexRuntimeCompatibility {
   const parsed = semanticVersion(version);
   const minimum = semanticVersion(minimumSupportedVersion)!;
+  const maximum = semanticVersion(maximumTestedVersion.replace(/x$/i, "0"))!;
   if (!parsed) return "unavailable";
   if (compareVersion(parsed, minimum) < 0) return "outdated";
-  if (parsed[0] > 0 || parsed[1] > 148) return "untested";
+  if (parsed[0] > maximum[0] || parsed[0] === maximum[0] && parsed[1] > maximum[1]) return "untested";
   return "compatible";
 }
 

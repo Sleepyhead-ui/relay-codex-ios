@@ -2,7 +2,6 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import PhotosUI
-import CoreTransferable
 
 struct ComposerView: View {
     @EnvironmentObject private var store: RelayStore
@@ -11,7 +10,6 @@ struct ComposerView: View {
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
     @State private var isImportingAttachments = false
-    @State private var selectedPhotos: [PhotosPickerItem] = []
 
     init(draft: ComposerDraftState) {
         self.draft = draft
@@ -130,22 +128,7 @@ struct ComposerView: View {
                     .disabled(isImportingAttachments || store.isSelectedThreadExternallyOwned)
                     .accessibilityLabel("添加内容或选择任务模式")
 
-                    TextField("", text: $draft.text, prompt: composerPrompt, axis: .vertical)
-                        .font(.system(size: 16))
-                        .lineLimit(1...8)
-                        .textFieldStyle(.plain)
-                        .focused($focused)
-                        .disabled(store.isSelectedThreadExternallyOwned)
-                        .padding(.vertical, 9)
-                        .frame(minHeight: 44, maxHeight: 164, alignment: .topLeading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .submitLabel(.send)
-                        .onSubmit {
-                            guard canSend else { return }
-                            RelayHaptics.impact(.medium)
-                            focused = false
-                            Task { await store.sendPrompt() }
-                        }
+                    composerTextInput
 
                     Button {
                         RelayHaptics.impact(.medium)
@@ -227,13 +210,16 @@ struct ComposerView: View {
         .padding(.bottom, 0)
         .frame(maxWidth: .infinity)
         .animation(.easeOut(duration: 0.2), value: store.currentQueuedFollowUps)
-        .photosPicker(
-            isPresented: $showingPhotoPicker,
-            selection: $selectedPhotos,
-            maxSelectionCount: 10,
-            matching: .any(of: [.images, .videos]),
-            photoLibrary: .shared()
-        )
+        .sheet(isPresented: $showingPhotoPicker) {
+            RelayPhotoPicker { result in
+                showingPhotoPicker = false
+                isImportingAttachments = false
+                handlePhotoPickerResult(result)
+            } onCancel: {
+                showingPhotoPicker = false
+                isImportingAttachments = false
+            }
+        }
         .sheet(isPresented: $showingFileImporter) {
             RelayDocumentPicker { urls in
                 showingFileImporter = false
@@ -243,11 +229,6 @@ struct ComposerView: View {
             } onCancel: {
                 showingFileImporter = false
             }
-        }
-        .onChange(of: selectedPhotos) { photos in
-            guard !photos.isEmpty else { return }
-            isImportingAttachments = true
-            Task { await importSelectedPhotos(photos) }
         }
         .onChange(of: focused) { value in
             store.composerIsFocused = value
@@ -260,6 +241,7 @@ struct ComposerView: View {
 
     private func presentPhotoPicker() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            isImportingAttachments = true
             showingPhotoPicker = true
         }
     }
@@ -270,47 +252,15 @@ struct ComposerView: View {
         }
     }
 
-    private func importSelectedPhotos(_ photos: [PhotosPickerItem]) async {
-        defer { isImportingAttachments = false }
-        do {
-            let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Relay Photos", isDirectory: true)
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-            var urls: [URL] = []
-            for (index, item) in photos.enumerated() {
-                if let videoType = item.supportedContentTypes.first(where: { $0.conforms(to: .movie) }) {
-                    guard let video = try await item.loadTransferable(type: PickedVideo.self) else { continue }
-                    defer { try? FileManager.default.removeItem(at: video.localURL.deletingLastPathComponent()) }
-                    let fileExtension = videoType.preferredFilenameExtension ?? video.localURL.pathExtension.nonEmpty ?? "mov"
-                    let url = directory.appendingPathComponent("视频 \(index + 1).\(fileExtension)")
-                    try FileManager.default.copyItem(at: video.localURL, to: url)
-                    urls.append(url)
-                    continue
-                }
-
-                guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                guard data.count <= 50 * 1024 * 1024 else {
-                    throw AttachmentImportError.fileTooLarge("照片 \(index + 1)")
-                }
-                let imageType = item.supportedContentTypes.first(where: { $0.conforms(to: .image) })
-                let fileExtension = imageType?.preferredFilenameExtension ?? "jpg"
-                let url = directory.appendingPathComponent("照片 \(index + 1).\(fileExtension)")
-                try data.write(to: url, options: .atomic)
-                urls.append(url)
-            }
-
-            selectedPhotos = []
-            guard !urls.isEmpty else {
-                RelayHaptics.notification(.error)
-                store.errorMessage = "没有读取到可上传的照片或视频。"
-                return
-            }
+    private func handlePhotoPickerResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls) where !urls.isEmpty:
             store.addAttachments(urls)
             RelayHaptics.notification(.success)
-        } catch {
-            selectedPhotos = []
+        case .success:
+            RelayHaptics.notification(.error)
+            store.errorMessage = "没有读取到可上传的照片或视频。"
+        case .failure(let error):
             RelayHaptics.notification(.error)
             store.errorMessage = "读取照片或视频失败：\(error.localizedDescription)"
         }
@@ -596,6 +546,45 @@ struct ComposerView: View {
     }
 
     @ViewBuilder
+    private var composerTextInput: some View {
+        if #available(iOS 16.0, *) {
+            TextField("", text: $draft.text, prompt: composerPrompt, axis: .vertical)
+                .font(.system(size: 16))
+                .lineLimit(1...8)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .disabled(store.isSelectedThreadExternallyOwned)
+                .padding(.vertical, 9)
+                .frame(minHeight: 44, maxHeight: 164, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .submitLabel(.send)
+                .onSubmit {
+                    guard canSend else { return }
+                    RelayHaptics.impact(.medium)
+                    focused = false
+                    Task { await store.sendPrompt() }
+                }
+        } else {
+            ZStack(alignment: .topLeading) {
+                if draft.text.isEmpty {
+                    composerPrompt
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $draft.text)
+                    .font(.system(size: 16))
+                    .focused($focused)
+                    .disabled(store.isSelectedThreadExternallyOwned)
+                    .padding(.horizontal, 0)
+                    .padding(.vertical, 1)
+                    .background(Color.clear)
+            }
+            .frame(minHeight: 44, maxHeight: 76, alignment: .topLeading)
+        }
+    }
+
+    @ViewBuilder
     private var contextMenu: some View {
         if let usage = store.currentTokenUsage, let percentage = usage.contextPercentage {
             Menu {
@@ -798,34 +787,114 @@ private struct ContextPressureNotice: View {
 
 private enum AttachmentImportError: LocalizedError {
     case fileTooLarge(String)
+    case unreadableItem(Int)
 
     var errorDescription: String? {
         switch self {
         case .fileTooLarge(let name): return "\(name) 超过 50 MB。"
+        case .unreadableItem(let index): return "无法读取第 \(index) 个项目。"
         }
     }
 }
 
-private struct PickedVideo: Transferable {
-    let localURL: URL
+private struct RelayPhotoPicker: UIViewControllerRepresentable {
+    let onPick: (Result<[URL], Error>) -> Void
+    let onCancel: () -> Void
 
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(contentType: .movie) { video in
-            SentTransferredFile(video.localURL)
-        } importing: { received in
-            let values = try received.file.resourceValues(forKeys: [.fileSizeKey])
-            let size = values.fileSize ?? 0
-            guard size <= 50 * 1024 * 1024 else {
-                throw AttachmentImportError.fileTooLarge(received.file.lastPathComponent)
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.selectionLimit = 10
+        configuration.filter = .any(of: [.images, .videos])
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let onPick: (Result<[URL], Error>) -> Void
+        private let onCancel: () -> Void
+
+        init(onPick: @escaping (Result<[URL], Error>) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard !results.isEmpty else {
+                onCancel()
+                return
             }
+
             let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Relay Video Picker", isDirectory: true)
+                .appendingPathComponent("Relay Photos", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let name = received.file.lastPathComponent.nonEmpty ?? "视频.mov"
-            let destination = directory.appendingPathComponent(name)
-            try FileManager.default.copyItem(at: received.file, to: destination)
-            return PickedVideo(localURL: destination)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            } catch {
+                onPick(.failure(error))
+                return
+            }
+
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var staged: [(index: Int, url: URL)] = []
+            var firstError: Error?
+
+            for (index, result) in results.enumerated() {
+                let provider = result.itemProvider
+                guard let type = preferredType(from: provider) else {
+                    if firstError == nil { firstError = AttachmentImportError.unreadableItem(index + 1) }
+                    continue
+                }
+                group.enter()
+                provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { source, error in
+                    defer { group.leave() }
+                    do {
+                        if let error { throw error }
+                        guard let source else { throw AttachmentImportError.unreadableItem(index + 1) }
+                        let values = try source.resourceValues(forKeys: [.fileSizeKey])
+                        guard (values.fileSize ?? 0) <= 50 * 1024 * 1024 else {
+                            throw AttachmentImportError.fileTooLarge(provider.suggestedName ?? source.lastPathComponent)
+                        }
+                        let isVideo = type.conforms(to: .movie)
+                        let fallbackExtension = isVideo ? "mov" : "jpg"
+                        let fileExtension = type.preferredFilenameExtension
+                            ?? source.pathExtension.nonEmpty
+                            ?? fallbackExtension
+                        let prefix = isVideo ? "视频" : "照片"
+                        let destination = directory.appendingPathComponent("\(prefix) \(index + 1).\(fileExtension)")
+                        try FileManager.default.copyItem(at: source, to: destination)
+                        lock.lock()
+                        staged.append((index, destination))
+                        lock.unlock()
+                    } catch {
+                        lock.lock()
+                        if firstError == nil { firstError = error }
+                        lock.unlock()
+                    }
+                }
+            }
+
+            group.notify(queue: .main) { [onPick] in
+                let urls = staged.sorted { $0.index < $1.index }.map(\.url)
+                if !urls.isEmpty {
+                    onPick(.success(urls))
+                } else {
+                    onPick(.failure(firstError ?? AttachmentImportError.unreadableItem(1)))
+                }
+            }
+        }
+
+        private func preferredType(from provider: NSItemProvider) -> UTType? {
+            let types = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
+            return types.first(where: { $0.conforms(to: .movie) })
+                ?? types.first(where: { $0.conforms(to: .image) })
         }
     }
 }
