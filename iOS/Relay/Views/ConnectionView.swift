@@ -98,18 +98,7 @@ struct ConnectionView: View {
             }
             .relayScrollDismissesKeyboard()
             .background(RelayTheme.canvas)
-            .toolbar {
-                if canDismiss {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("完成") { dismiss() }
-                    }
-                }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("完成") { focusedField = nil }
-                        .font(.headline)
-                }
-            }
+            .toolbar { connectionToolbar }
             .fullScreenCover(isPresented: $showingScanner) {
                 PairingScannerView { url in store.consumePairingURL(url) }
             }
@@ -120,6 +109,20 @@ struct ConnectionView: View {
     private var canConnect: Bool {
         !store.host.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !store.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ToolbarContentBuilder
+    private var connectionToolbar: some ToolbarContent {
+        if canDismiss {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button("完成") { dismiss() }
+            }
+        }
+        ToolbarItemGroup(placement: .keyboard) {
+            Spacer()
+            Button("完成") { focusedField = nil }
+                .font(.headline)
+        }
     }
 }
 
