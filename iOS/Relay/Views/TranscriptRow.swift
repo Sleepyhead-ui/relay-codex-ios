@@ -218,7 +218,7 @@ struct TranscriptRow: View {
                 Image(systemName: "questionmark.circle")
                 Text("待确认")
                 Button("检查") { Task { await store.confirmMessageDelivery(item.id) } }
-                    .fontWeight(.semibold)
+                    .font(.system(size: 10, weight: .semibold))
             case .failed(_):
                 Image(systemName: "exclamationmark.circle.fill")
                 if store.canEditFailedTurnStart(item.id) {
@@ -226,7 +226,7 @@ struct TranscriptRow: View {
                     Button { store.restoreMessageToComposer(item.id) } label: {
                         Label("编辑后重发", systemImage: "pencil")
                     }
-                    .fontWeight(.semibold)
+                    .font(.system(size: 10, weight: .semibold))
                 } else {
                     Text("引导未发送")
                 }
@@ -432,8 +432,12 @@ private struct UserMessageBubble: View {
     var body: some View {
         Group {
             if canAttemptSingleLineLayout {
-                ViewThatFits(in: .horizontal) {
-                    singleLineBubble
+                if #available(iOS 16.0, *) {
+                    ViewThatFits(in: .horizontal) {
+                        singleLineBubble
+                        multiLineBubble
+                    }
+                } else {
                     multiLineBubble
                 }
             } else {

@@ -107,7 +107,7 @@ struct ConnectionView: View {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
                     Button("完成") { focusedField = nil }
-                        .fontWeight(.semibold)
+                        .font(.headline)
                 }
             }
             .fullScreenCover(isPresented: $showingScanner) {

@@ -95,7 +95,7 @@ struct NewTaskView: View {
                     Button("创建") {
                         Task { await startTask(at: projectPath) }
                     }
-                    .fontWeight(.semibold)
+                    .font(.headline)
                     .disabled(isCreating)
                 }
             }
