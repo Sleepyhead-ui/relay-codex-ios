@@ -113,10 +113,11 @@ struct ConnectionView: View {
 
     @ToolbarContentBuilder
     private var connectionToolbar: some ToolbarContent {
-        if canDismiss {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("完成") { dismiss() }
-            }
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("完成") { dismiss() }
+                .opacity(canDismiss ? 1 : 0)
+                .disabled(!canDismiss)
+                .accessibilityHidden(!canDismiss)
         }
         ToolbarItemGroup(placement: .keyboard) {
             Spacer()
