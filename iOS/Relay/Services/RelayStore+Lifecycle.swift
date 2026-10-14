@@ -124,6 +124,8 @@ extension RelayStore {
             UserDefaults.standard.removeObject(forKey: currentHostDefaultsKey)
         }
         threads = []
+        locallyCreatedThreadIds = []
+        persistLocallyCreatedThreadIds()
         UserDefaults.standard.removeObject(forKey: threadCacheDefaultsKey)
         setSelectedThread(nil)
         messages = []

@@ -88,6 +88,7 @@ private extension TaskRunEvent {
 
 enum TaskEventDecoder {
     static func decode(method: String, params: JSONValue, fallbackThreadId: String? = nil) -> TaskEventTransition {
+        let normalizedMethod = canonicalMethod(method)
         let threadId = params["threadId"]?.stringValue ?? fallbackThreadId
         let turn = params["turn"] ?? .object([:])
         let turnId = params["turnId"]?.stringValue ?? turn["id"]?.stringValue
@@ -95,7 +96,7 @@ enum TaskEventDecoder {
         let completedAt = turn["completedAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
         let events: [TaskRunEvent]
 
-        switch method {
+        switch normalizedMethod {
         case "turn/started":
             events = turnId.map { [.started(turnId: $0, startedAt: startedAt)] } ?? []
         case "turn/completed", "turn/aborted", "turn/interrupted", "turn/failed":
@@ -182,15 +183,31 @@ enum TaskEventDecoder {
     }
 
     static func isProgress(_ method: String) -> Bool {
-        method == "item/started"
-            || method == "item/completed"
-            || method == "turn/diff/updated"
-            || (method.hasPrefix("item/") && (method.hasSuffix("/delta") || method.hasSuffix("Delta")))
+        let normalizedMethod = canonicalMethod(method)
+        return normalizedMethod == "item/started"
+            || normalizedMethod == "item/completed"
+            || normalizedMethod == "turn/diff/updated"
+            || (normalizedMethod.hasPrefix("item/") && (normalizedMethod.hasSuffix("/delta") || normalizedMethod.hasSuffix("Delta")))
     }
 
     private static func hasNonemptyDelta(_ params: JSONValue) -> Bool {
         guard let delta = params["delta"]?.stringValue else { return false }
         return !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func canonicalMethod(_ method: String) -> String {
+        let compact = method
+            .replacingOccurrences(of: "/", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        switch compact {
+        case "itemagentmessagedelta": return "item/agentMessage/delta"
+        case "itemreasoningsummarytextdelta": return "item/reasoning/summaryTextDelta"
+        case "itemreasoningtextdelta": return "item/reasoning/textDelta"
+        case "itemcommandexecutionoutputdelta": return "item/commandExecution/outputDelta"
+        default: return method
+        }
     }
 }
 

@@ -285,18 +285,14 @@ function isActiveStatus(status: string): boolean {
 }
 
 function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | null {
-  const type = typeof payload.type === "string" ? payload.type : "";
+  const type = canonicalItemType(typeof payload.type === "string" ? payload.type : "");
   const payloadId = typeof payload.id === "string" ? payload.id : undefined;
 
-  if (type === "message") {
+  if (type === "message" || type === "agentMessage") {
     const role = typeof payload.role === "string" ? payload.role : "assistant";
     const id = payloadId ?? (role === "user" ? fallbackId : undefined);
     if (!id) return null;
-    const content = Array.isArray(payload.content) ? payload.content : [];
-    const text = content.flatMap((part) => {
-      if (!isObject(part)) return [];
-      return typeof part.text === "string" ? [part.text] : [];
-    }).join("\n");
+    const text = extractText(payload.text) || extractText(payload.content);
     if (role === "user") {
       if (isInternalEnvironmentContext(text)) return null;
       return { id, type: "userMessage", content: [{ type: "text", text: cleanDesktopUserText(text) }] };
@@ -314,13 +310,38 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
   if (!id) return null;
 
   if (type === "reasoning") {
-    const summary = Array.isArray(payload.summary)
-      ? payload.summary.flatMap((part) => isObject(part) && typeof part.text === "string" ? [part.text] : [])
-      : [];
+    const summary = extractTextParts(payload.summary ?? payload.summaryText ?? payload.summary_text ?? payload.content);
     return { id, type: "reasoning", summary, content: [] };
   }
 
-  if (type === "custom_tool_call" || type === "function_call") {
+  if (type === "commandExecution") {
+    return {
+      id,
+      type: "commandExecution",
+      command: typeof payload.command === "string" ? payload.command : typeof payload.input === "string" ? payload.input : "Command",
+      aggregatedOutput: typeof payload.aggregatedOutput === "string"
+        ? payload.aggregatedOutput
+        : typeof payload.aggregated_output === "string" ? payload.aggregated_output : typeof payload.output === "string" ? payload.output : undefined,
+      status: typeof payload.status === "string" ? payload.status : "inProgress",
+      ...(typeof payload.exitCode === "number" ? { exitCode: payload.exitCode } : typeof payload.exit_code === "number" ? { exitCode: payload.exit_code } : {}),
+    };
+  }
+
+  if (type === "fileChange") {
+    const changes = Array.isArray(payload.changes) ? payload.changes : Array.isArray(payload.fileChanges) ? payload.fileChanges : [];
+    return {
+      id,
+      type: "fileChange",
+      changes: changes.filter(isObject).map((change) => ({
+        ...change,
+        path: typeof change.path === "string" ? change.path : typeof change.file === "string" ? change.file : undefined,
+        diff: typeof change.diff === "string" ? change.diff : typeof change.patch === "string" ? change.patch : undefined,
+      })),
+      status: typeof payload.status === "string" ? payload.status : "completed",
+    };
+  }
+
+  if (type === "customToolCall" || type === "functionCall") {
     return {
       id,
       type: "dynamicToolCall",
@@ -333,6 +354,44 @@ function responseItem(payload: JsonObject, fallbackId?: string): JsonObject | nu
   }
 
   return null;
+}
+
+function canonicalItemType(raw: string): string {
+  const compact = raw.replace(/[-_\s]/g, "").toLowerCase();
+  const aliases: Record<string, string> = {
+    agentmessage: "agentMessage",
+    commandexecution: "commandExecution",
+    customtoolcall: "customToolCall",
+    functioncall: "functionCall",
+    filechange: "fileChange",
+    usermessage: "userMessage",
+    contextcompaction: "contextCompaction",
+  };
+  if (aliases[compact]) return aliases[compact];
+  const words = raw.replace(/[-_]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  return words.map((word, index) => {
+    const normalized = word.toLowerCase();
+    return index === 0 ? normalized : normalized[0]!.toUpperCase() + normalized.slice(1);
+  }).join("");
+}
+
+function extractText(value: unknown): string {
+  return extractTextParts(value).join("\n");
+}
+
+function extractTextParts(value: unknown): string[] {
+  if (typeof value === "string") return value ? [value] : [];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((part) => {
+    if (typeof part === "string") return part ? [part] : [];
+    if (!isObject(part)) return [];
+    for (const key of ["text", "output_text", "input_text", "summary_text", "content"]) {
+      const text = extractText(part[key]);
+      if (text) return [text];
+    }
+    return [];
+  });
 }
 
 function isInternalEnvironmentContext(text: string): boolean {

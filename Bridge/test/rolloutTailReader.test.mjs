@@ -10,6 +10,13 @@ function event(payload, type = "event_msg") {
 }
 
 function parseItem(payload, fallbackId) {
+  if (payload.type === "reasoning") {
+    const summary = Array.isArray(payload.summary)
+      ? payload.summary.map((part) => part.text || "").filter(Boolean).join("\n")
+      : "";
+    return { id: payload.id || fallbackId, type: "reasoning", text: summary };
+  }
+  if (payload.type === "commandExecution") return { id: payload.id || fallbackId, type: "commandExecution", text: payload.command || "" };
   if (payload.type !== "message") return null;
   if (payload.role === "user" && /^\s*<environment_context[\s\S]*<\/environment_context>\s*$/.test(payload.text || "")) return null;
   if (payload.role === "user") return { id: payload.id || fallbackId, type: "userMessage", text: payload.text || "" };
@@ -97,6 +104,49 @@ test("does not bind ignored internal user context to the visible prompt", async 
     assert.equal(snapshot.items.length, 1);
     assert.equal(snapshot.items[0].clientId, "client.visible");
     assert.equal(typeof snapshot.items[0].createdAt, "number");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reads live item updates emitted inside event_msg payloads", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-tail-event-items-"));
+  const file = path.join(directory, "rollout.jsonl");
+  try {
+    const contents = [
+      event({ type: "task_started", turn_id: "turn.event-items" }),
+      event({ type: "item_completed", item: { type: "AgentMessage", id: "progress.event", phase: "commentary", content: [{ type: "Text", text: "Still working" }] } }),
+      event({ type: "item_completed", item: { type: "CommandExecution", id: "command.event", command: "git status", status: "completed", exitCode: 0 } }),
+    ].join("");
+    await writeFile(file, contents, "utf8");
+    const reader = new RolloutTailReader(file, parseItem);
+    const snapshot = await reader.read((await stat(file)).size);
+    assert.deepEqual(snapshot.items.map((item) => item.id), ["progress.event", "command.event"]);
+    assert.equal(snapshot.items[0].text, "Still working");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reads continuous agent reasoning and message progress emitted as event_msg records", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-tail-agent-events-"));
+  const file = path.join(directory, "rollout.jsonl");
+  try {
+    const contents = [
+      event({ type: "task_started", turn_id: "turn.agent-events" }),
+      event({ type: "agent_reasoning", text: "Inspecting the workspace" }),
+      event({ type: "agent_reasoning", text: "Checking the active task" }),
+      event({ type: "agent_message", message: "Still working", phase: "commentary" }),
+    ].join("");
+    await writeFile(file, contents, "utf8");
+    const reader = new RolloutTailReader(file, parseItem);
+    const snapshot = await reader.read((await stat(file)).size);
+    assert.deepEqual(snapshot.items.map((item) => item.type), ["reasoning", "reasoning", "agentMessage"]);
+    assert.deepEqual(snapshot.items.map((item) => item.text), [
+      "Inspecting the workspace",
+      "Checking the active task",
+      "Still working",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

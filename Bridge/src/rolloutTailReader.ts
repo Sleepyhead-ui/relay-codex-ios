@@ -100,9 +100,14 @@ export class RolloutTailReader {
       return;
     }
 
-    if (event.type !== "response_item") return;
+    const responsePayload = event.type === "response_item"
+      ? payload
+      : event.type === "event_msg"
+        ? normalizeEventPayload(payload, type, this.turnId, this.responseIndex + 1)
+        : null;
+    if (!responsePayload) return;
     this.responseIndex += 1;
-    const item = this.parseItem(payload, `rollout.${this.turnId}.${this.responseIndex}`);
+    const item = this.parseItem(responsePayload, `rollout.${this.turnId}.${this.responseIndex}`);
     if (item) {
       if (timestamp > 0 && typeof item.createdAt !== "number") item.createdAt = timestamp;
       const id = String(item.id);
@@ -113,7 +118,9 @@ export class RolloutTailReader {
         this.items.push(item);
       }
       if (item.type === "userMessage") this.lastUserIndex = this.itemIndexes.get(id);
-      const callId = typeof payload.call_id === "string" ? payload.call_id : undefined;
+      const callId = typeof responsePayload.call_id === "string"
+        ? responsePayload.call_id
+        : typeof payload.call_id === "string" ? payload.call_id : undefined;
       if (callId && item.type === "dynamicToolCall") this.toolIndexes.set(callId, this.itemIndexes.get(id)!);
       return;
     }
@@ -183,6 +190,77 @@ export class RolloutTailReader {
     this.lastUserIndex = undefined;
     this.responseIndex = 0;
   }
+}
+
+function normalizeEventPayload(payload: JsonObject, eventType: string, turnId: string, sequence: number): JsonObject | null {
+  if (["item_started", "item_completed"].includes(eventType)) return normalizeEventItem(payload.item);
+
+  // Recent Codex versions expose live commentary as event_msg records instead
+  // of response_item records. Give each record a stable, local id so the
+  // activity feed can append and reconcile it while the rollout is running.
+  if (eventType === "agent_reasoning") {
+    const text = typeof payload.text === "string" ? payload.text : "";
+    if (!text.trim()) return null;
+    return {
+      type: "reasoning",
+      id: `rollout.${turnId}.reasoning.${sequence}`,
+      summary: [{ type: "summary_text", text }],
+    };
+  }
+  if (eventType === "agent_message") {
+    const text = typeof payload.message === "string"
+      ? payload.message
+      : typeof payload.text === "string" ? payload.text : extractText(payload.content);
+    if (!text.trim()) return null;
+    return {
+      type: "message",
+      id: `rollout.${turnId}.message.${sequence}`,
+      role: "assistant",
+      phase: typeof payload.phase === "string" ? payload.phase : "commentary",
+      text,
+    };
+  }
+  return null;
+}
+
+function normalizeEventItem(value: unknown): JsonObject | null {
+  if (!isObject(value) || typeof value.type !== "string") return null;
+  const rawType = value.type;
+  const compact = rawType.replace(/[-_\s]/g, "").toLowerCase();
+  const aliases: Record<string, string> = {
+    agentmessage: "message",
+    usermessage: "message",
+    reasoning: "reasoning",
+    commandexecution: "commandExecution",
+    filechange: "fileChange",
+    customtoolcall: "custom_tool_call",
+    functioncall: "function_call",
+  };
+  const type = aliases[compact] ?? rawType;
+  const normalized: JsonObject = { ...value, type };
+  if (type === "message") {
+    normalized.role = compact === "usermessage" ? "user" : "assistant";
+    if (normalized.text === undefined && normalized.content !== undefined) normalized.text = extractText(normalized.content);
+  } else if (type === "reasoning") {
+    if (normalized.summary === undefined) normalized.summary = normalized.summary_text ?? normalized.summaryText ?? normalized.content ?? [];
+  } else if (type === "commandExecution") {
+    if (normalized.aggregatedOutput === undefined) {
+      normalized.aggregatedOutput = normalized.aggregated_output ?? normalized.output ?? normalized.stdout;
+    }
+  } else if (type === "fileChange") {
+    if (normalized.changes === undefined) normalized.changes = normalized.fileChanges ?? [];
+  }
+  return normalized;
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.flatMap((part) => {
+    if (typeof part === "string") return [part];
+    if (!isObject(part)) return [];
+    return typeof part.text === "string" ? [part.text] : typeof part.output_text === "string" ? [part.output_text] : [];
+  }).join("\n");
 }
 
 async function findLatestTurnOffset(path: string, fileSize: number): Promise<number> {

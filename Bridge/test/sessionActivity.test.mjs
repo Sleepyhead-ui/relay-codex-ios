@@ -107,6 +107,27 @@ test("infers an active desktop turn from the rollout file after bridge restart",
   }
 });
 
+test("normalizes current Codex item type names in rollout activity", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "relay-session-current-items-"));
+  const sessionPath = path.join(directory, "rollout.jsonl");
+  try {
+    const entries = [
+      { timestamp: "2026-10-14T06:00:00.000Z", type: "event_msg", payload: { type: "task_started", turn_id: "turn.current" } },
+      { timestamp: "2026-10-14T06:00:01.000Z", type: "response_item", payload: { type: "AgentMessage", id: "message.current", content: [{ type: "Text", text: "Planning local thread summary merging" }], phase: "commentary" } },
+      { timestamp: "2026-10-14T06:00:02.000Z", type: "response_item", payload: { type: "CommandExecution", id: "command.current", command: "git status", status: "completed", exitCode: 0 } },
+      { timestamp: "2026-10-14T06:00:03.000Z", type: "response_item", payload: { type: "FileChange", id: "file.current", changes: [{ path: "RelayStore.swift", diff: "+1" }] } },
+    ];
+    await writeFile(sessionPath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+    const sessions = new SessionActivityTracker();
+    sessions.observeThreadList({ data: [{ id: "thread.current", path: sessionPath }] });
+    const snapshot = await sessions.turnSnapshot("thread.current");
+    assert.deepEqual(snapshot.items.map((item) => item.type), ["agentMessage", "commandExecution", "fileChange"]);
+    assert.equal(snapshot.items[0].text, "Planning local thread summary merging");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("treats an interrupted rollout turn as terminal", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "relay-session-interrupted-"));
   const sessionPath = path.join(directory, "rollout.jsonl");

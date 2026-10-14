@@ -758,6 +758,10 @@ extension RelayStore {
             }
             updateDeliveryState(clientMessageId, state: nil, threadId: threadId, turnId: confirmedTurnId)
             acceptedMessageIds.remove(clientMessageId)
+            // Keep an empty locally-created thread pinned until its first
+            // turn is actually accepted by Codex.
+            locallyCreatedThreadIds.remove(threadId)
+            persistLocallyCreatedThreadIds()
             if let confirmedTurnId {
                 markOutboundDeliveryAwaitingFirstOutput(clientMessageId, turnId: confirmedTurnId)
             }

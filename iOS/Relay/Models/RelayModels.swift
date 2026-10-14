@@ -837,7 +837,9 @@ struct TranscriptItem: Identifiable, Equatable {
     }
 
     static func from(json: JSONValue, turnId: String? = nil) -> TranscriptItem? {
-        guard let serverId = json["id"]?.stringValue, let type = json["type"]?.stringValue else { return nil }
+        guard let serverId = json["id"]?.stringValue,
+              let rawType = json["type"]?.stringValue else { return nil }
+        let type = canonicalItemType(rawType)
         let id = type == "userMessage" ? (json["clientId"]?.stringValue ?? serverId) : serverId
         let createdAt = json["createdAt"]?.doubleValue.map { Date(timeIntervalSince1970: $0) }
             ?? codexTimestamp(from: serverId)
@@ -869,7 +871,7 @@ struct TranscriptItem: Identifiable, Equatable {
             if isInternalEnvironmentContext(text), imagePaths.isEmpty { return nil }
             return TranscriptItem(id: id, turnId: turnId, role: .user, kind: .message, text: text, imagePaths: imagePaths, goal: goalObjective, createdAt: createdAt)
         case "agentMessage":
-            let rawText = json["text"]?.stringValue ?? ""
+            let rawText = textValue(json["text"]) ?? textValue(json["content"]) ?? ""
             let content = AgentMessageContent.parse(rawText)
             return TranscriptItem(
                 id: id,
@@ -883,12 +885,14 @@ struct TranscriptItem: Identifiable, Equatable {
                 createdAt: createdAt
             )
         case "reasoning":
-            let summary = json["summary"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
-            let content = json["content"]?.arrayValue?.compactMap { $0.stringValue }.joined(separator: "\n\n") ?? ""
+            let summary = textParts(json["summary"] ?? json["summaryText"] ?? json["summary_text"]).joined(separator: "\n\n")
+            let content = textParts(json["content"]).joined(separator: "\n\n")
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .reasoning, title: "思考", text: summary, detail: content, createdAt: createdAt)
         case "commandExecution":
             let command = json["command"]?.stringValue ?? "Command"
             let output = json["aggregatedOutput"]?.stringValue
+                ?? json["output"]?.stringValue
+                ?? json["stdout"]?.stringValue
             let exitCode = json["exitCode"]?.intValue
             return TranscriptItem(
                 id: id,
@@ -906,9 +910,9 @@ struct TranscriptItem: Identifiable, Equatable {
                 createdAt: createdAt
             )
         case "fileChange":
-            let changes = json["changes"]?.arrayValue ?? []
-            let paths = changes.compactMap { $0["path"]?.stringValue }.joined(separator: "\n")
-            let diffs = changes.compactMap { $0["diff"]?.stringValue }.joined(separator: "\n\n")
+            let changes = json["changes"]?.arrayValue ?? json["fileChanges"]?.arrayValue ?? []
+            let paths = changes.compactMap { $0["path"]?.stringValue ?? $0["file"]?.stringValue }.joined(separator: "\n")
+            let diffs = changes.compactMap { $0["diff"]?.stringValue ?? $0["patch"]?.stringValue ?? $0["content"]?.stringValue }.joined(separator: "\n\n")
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .fileChange, title: "修改文件", text: paths, detail: diffs, status: json["status"]?.stringValue, createdAt: createdAt)
         case "webSearch":
             return TranscriptItem(id: id, turnId: turnId, role: .tool, kind: .webSearch, title: "搜索网页", text: json["query"]?.stringValue ?? "", createdAt: createdAt)
@@ -951,6 +955,48 @@ struct TranscriptItem: Identifiable, Equatable {
         default:
             return nil
         }
+    }
+
+    private static func canonicalItemType(_ raw: String) -> String {
+        let compact = raw
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .lowercased()
+        let aliases = [
+            "agentmessage": "agentMessage",
+            "commandexecution": "commandExecution",
+            "customtoolcall": "customToolCall",
+            "functioncall": "functionCall",
+            "filechange": "fileChange",
+            "usermessage": "userMessage",
+            "contextcompaction": "contextCompaction"
+        ]
+        if let alias = aliases[compact] { return alias }
+        let words = raw
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: { $0.isWhitespace })
+        return words.enumerated().map { index, word in
+            let value = word.lowercased()
+            return index == 0 ? value : value.prefix(1).uppercased() + value.dropFirst()
+        }.joined()
+    }
+
+    private static func textValue(_ value: JSONValue?) -> String? {
+        let parts = textParts(value)
+        return parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+
+    private static func textParts(_ value: JSONValue?) -> [String] {
+        if let value = value?.stringValue, !value.isEmpty { return [value] }
+        return value?.arrayValue?.flatMap { part -> [String] in
+            if let text = part.stringValue, !text.isEmpty { return [text] }
+            for key in ["text", "output_text", "input_text", "summary_text", "content"] {
+                if let nested = textValue(part[key]) { return [nested] }
+            }
+            return []
+        } ?? []
     }
 
     private static func codexTimestamp(from identifier: String) -> Date? {

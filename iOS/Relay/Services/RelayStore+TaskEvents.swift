@@ -40,7 +40,8 @@ extension RelayStore {
         return true
     }
 
-    func handleEvent(method: String, params: JSONValue) {
+    func handleEvent(method rawMethod: String, params: JSONValue) {
+        let method = TaskEventDecoder.canonicalMethod(rawMethod)
         if let eventThreadId = params["threadId"]?.stringValue, eventThreadId != selectedThreadId {
             applyBackgroundEvent(method: method, params: params, threadId: eventThreadId)
             return
@@ -52,7 +53,8 @@ extension RelayStore {
         applyEvent(method: method, params: params)
     }
 
-    func applyEvent(method: String, params: JSONValue) {
+    func applyEvent(method rawMethod: String, params: JSONValue) {
+        let method = TaskEventDecoder.canonicalMethod(rawMethod)
         let eventTurnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
         let previousOutputStartedAt = selectedThreadId.flatMap { taskRunStates[$0]?.outputStartedAt }
         guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: selectedThreadId) else { return }
@@ -196,7 +198,8 @@ extension RelayStore {
         }
     }
 
-    func applyBackgroundEvent(method: String, params: JSONValue, threadId: String) {
+    func applyBackgroundEvent(method rawMethod: String, params: JSONValue, threadId: String) {
+        let method = TaskEventDecoder.canonicalMethod(rawMethod)
         let turnId = params["turnId"]?.stringValue ?? params["turn"]?["id"]?.stringValue
         guard applyDecodedTaskEvents(method: method, params: params, fallbackThreadId: threadId) else { return }
         switch method {

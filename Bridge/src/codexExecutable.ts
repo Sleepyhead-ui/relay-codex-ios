@@ -15,7 +15,7 @@ export interface CodexRuntimeInfo {
 }
 
 const minimumSupportedVersion = "0.144.5";
-const maximumTestedVersion = "0.151.x";
+const maximumTestedVersion = "0.162.x";
 
 /**
  * Cockpit profiles record the Codex binary that owns their local API proxy.

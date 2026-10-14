@@ -13,7 +13,7 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@openai/codex": "0.151.0",
+    "@openai/codex": "0.162.1",
     "qrcode-terminal": "0.12.0",
     "ws": "8.21.1"
   },

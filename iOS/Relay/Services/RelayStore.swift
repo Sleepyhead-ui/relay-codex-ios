@@ -71,6 +71,7 @@ final class RelayStore: ObservableObject {
     @Published var isCheckingUpdate = false
     @Published var isDownloadingUpdate = false
     @Published var updateDownloadProgress: Double?
+    var locallyCreatedThreadIds = Set<String>()
 
     let socket = RelaySocket()
     let presentation = RelayPresentationStore()
@@ -81,6 +82,7 @@ final class RelayStore: ObservableObject {
     private let projectAccessDefaultsKey = "relay.workspaceAccessByProject"
     private let lastThreadDefaultsKey = "relay.lastThreadId"
     let threadCacheDefaultsKey = "relay.cachedThreads"
+    private let locallyCreatedThreadsDefaultsKey = "relay.locallyCreatedThreads.v1"
     private let followUpDefaultsKey = "relay.followUpBehavior"
     private let pinnedThreadsDefaultsPrefix = "relay.pinnedThreads"
     let notificationsDefaultsKey = "relay.notifications.enabled"
@@ -300,6 +302,7 @@ final class RelayStore: ObservableObject {
            let cachedThreads = try? JSONDecoder().decode([ThreadSummary].self, from: data) {
             threads = cachedThreads
         }
+        locallyCreatedThreadIds = Set(UserDefaults.standard.stringArray(forKey: locallyCreatedThreadsDefaultsKey) ?? [])
         selectedThreadId = UserDefaults.standard.string(forKey: lastThreadDefaultsKey)
         if let data = UserDefaults.standard.data(forKey: taskRunStateDefaultsKey),
            let storedStates = try? JSONDecoder().decode([String: TaskRunState].self, from: data) {
@@ -419,7 +422,11 @@ final class RelayStore: ObservableObject {
             for index in fetched.indices where taskRunStates[fetched[index].id]?.isRunning == true {
                 fetched[index].status = "active"
             }
-            threads = fetched.sorted { left, right in
+            let fetchedIds = Set(fetched.map(\.id))
+            let retainedLocal = threads.filter { thread in
+                locallyCreatedThreadIds.contains(thread.id) && !fetchedIds.contains(thread.id)
+            }
+            threads = (fetched + retainedLocal).sorted { left, right in
                 let leftPinned = pinnedThreadIds.contains(left.id)
                 let rightPinned = pinnedThreadIds.contains(right.id)
                 return leftPinned == rightPinned ? left.updatedAt > right.updatedAt : leftPinned
@@ -536,6 +543,8 @@ final class RelayStore: ObservableObject {
                 threads.insert(summary, at: 0)
                 persistThreadCache()
             }
+            locallyCreatedThreadIds.insert(id)
+            persistLocallyCreatedThreadIds()
             if !projectDirectory.isEmpty { workingDirectoryOverrides[id] = projectDirectory }
             workspaceAccess = projectAccess
             messages = []
@@ -1476,6 +1485,10 @@ final class RelayStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: threadCacheDefaultsKey)
     }
 
+    func persistLocallyCreatedThreadIds() {
+        UserDefaults.standard.set(Array(locallyCreatedThreadIds).sorted(), forKey: locallyCreatedThreadsDefaultsKey)
+    }
+
     private var pinnedThreadsDefaultsKey: String {
         "\(pinnedThreadsDefaultsPrefix).\(activeCodexProfileId.nonEmpty ?? "default")"
     }
@@ -1490,6 +1503,8 @@ final class RelayStore: ObservableObject {
 
     private func removeThreadFromCurrentList(_ threadId: String) {
         threads.removeAll { $0.id == threadId }
+        locallyCreatedThreadIds.remove(threadId)
+        persistLocallyCreatedThreadIds()
         pinnedThreadIds.remove(threadId)
         persistPinnedThreads()
         if selectedThreadId == threadId {
