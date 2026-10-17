@@ -85,6 +85,45 @@ test("browses without claiming the writer and reports an acquisition conflict", 
   }
 });
 
+test("loads conversation history when paginated thread turns are unsupported", { timeout: 30_000 }, async () => {
+  const fixture = await startFixture({ FAKE_CODEX_PAGINATED_THREADS_UNSUPPORTED: "1" });
+  try {
+    const first = await rpc(fixture.endpoint, fixture.token, "turns.first", "thread/turns/list", {
+      threadId: "thread.active-writer",
+      limit: 2,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    assert.deepEqual(first.data.map((turn) => turn.id), ["turn.5", "turn.4"]);
+    assert.equal(first.nextCursor, "relay-legacy-thread-turns:2");
+
+    const second = await rpc(fixture.endpoint, fixture.token, "turns.second", "thread/turns/list", {
+      threadId: "thread.active-writer",
+      cursor: first.nextCursor,
+      limit: 2,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    assert.deepEqual(second.data.map((turn) => turn.id), ["turn.3", "turn.2"]);
+    assert.equal(second.nextCursor, "relay-legacy-thread-turns:4");
+
+    const oldest = await rpc(fixture.endpoint, fixture.token, "turns.oldest", "thread/turns/list", {
+      threadId: "thread.active-writer",
+      cursor: second.nextCursor,
+      limit: 2,
+      sortDirection: "desc",
+      itemsView: "full",
+    });
+    assert.deepEqual(oldest.data.map((turn) => turn.id), ["turn.1"]);
+    assert.equal(oldest.nextCursor, undefined);
+    const methods = await loggedMethods(fixture.methodLog);
+    assert.equal(methods.filter((method) => method === "thread/turns/list").length, 1);
+    assert.equal(methods.filter((method) => method === "thread/read").length, 3);
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test("restarts the Relay App Server to release an idle writer immediately", { timeout: 30_000 }, async () => {
   const fixture = await startFixture({ FAKE_CODEX_ALLOW_RESUME: "1" });
   try {

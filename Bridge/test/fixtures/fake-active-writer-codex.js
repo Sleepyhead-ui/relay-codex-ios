@@ -19,8 +19,20 @@ input.on("line", (line) => {
     if (allowResume) return respond(message.id, { thread: thread() });
     return fail(message.id, `thread-store conflict: thread ${threadId} already has an active writer`);
   }
-  if (message.method === "thread/read") return respond(message.id, { thread: thread() });
+  if (message.method === "thread/read") {
+    const turns = Array.from({ length: 5 }, (_, index) => ({
+      id: `turn.${index + 1}`,
+      status: "completed",
+      items: [{ id: `item.${index + 1}`, type: "agentMessage", phase: "final_answer", text: `answer ${index + 1}` }],
+    }));
+    return respond(message.id, {
+      thread: { ...thread(), ...(message.params?.includeTurns ? { turns } : {}) },
+    });
+  }
   if (message.method === "thread/turns/list") {
+    if (process.env.FAKE_CODEX_PAGINATED_THREADS_UNSUPPORTED === "1") {
+      return fail(message.id, "paginated_threads is not supported yet");
+    }
     return respond(message.id, {
       data: [{
         id: "turn.active-writer",

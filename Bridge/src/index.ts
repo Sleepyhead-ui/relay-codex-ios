@@ -36,6 +36,11 @@ import { SessionStream } from "./sessionStream.js";
 import { SessionSourceOwnership } from "./sessionSourceOwnership.js";
 import { SessionSubscriptionRegistry } from "./sessionSubscriptions.js";
 import { canRestartForWriterRelease, ThreadControlRegistry, type ThreadControlStatus } from "./threadControl.js";
+import {
+  isLegacyThreadTurnsCursor,
+  isPaginatedThreadsUnsupported,
+  paginateLegacyThreadTurns,
+} from "./threadTurnsCompatibility.js";
 import { UpdateManager } from "./updateManager.js";
 
 interface PendingServerRequest {
@@ -328,6 +333,14 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
     const receivedMs = performance.now();
     rpcDiagnostics.lastReceivedAt = receivedAt;
     rpcDiagnostics.lastMethod = message.method;
+    if (message.method === "thread/turns/list" && isLegacyThreadTurnsCursor(message.params.cursor)) {
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
+      await completeLegacyThreadTurnsList({ socket, clientId: message.id, params: message.params }, "legacy thread history cursor");
+      rpcDiagnostics.lastCompletedAt = new Date().toISOString();
+      rpcDiagnostics.lastCompletedMethod = message.method;
+      return;
+    }
     if (message.method === "relay/client/presence") {
       send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
@@ -826,6 +839,10 @@ async function handleCodexResponse(message: JsonObject): Promise<void> {
     await completeReadOnlyThreadResume(pending, responseError);
     return;
   }
+  if (pending.method === "thread/turns/list" && responseError && isPaginatedThreadsUnsupported(responseError)) {
+    await completeLegacyThreadTurnsList(pending, responseError);
+    return;
+  }
   if ("error" in message) {
     rpcDiagnostics.lastErrorAt = rpcDiagnostics.lastCompletedAt;
     rpcDiagnostics.lastError = isObject(message.error) && typeof message.error.message === "string"
@@ -905,12 +922,12 @@ async function completeReadOnlyThreadResume(
     const pageRequest = isObject(pending.params.initialTurnsPage) ? pending.params.initialTurnsPage : {};
     const [summary, page] = await Promise.all([
       codexRequest("thread/read", { threadId, includeTurns: false }, 30_000),
-      codexRequest("thread/turns/list", {
+      readThreadTurnsPage(threadId, {
         threadId,
         limit: typeof pageRequest.limit === "number" ? pageRequest.limit : 12,
         sortDirection: typeof pageRequest.sortDirection === "string" ? pageRequest.sortDirection : "desc",
         itemsView: typeof pageRequest.itemsView === "string" ? pageRequest.itemsView : "full",
-      }, historyRpcTimeoutMs),
+      }),
     ]);
     const result: JsonObject = {
       ...summary,
@@ -930,6 +947,41 @@ async function completeReadOnlyThreadResume(
     diagnostics.record("error", "rpc", detail, { method: pending.method, threadId, fallback: "thread/read" });
     send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message: detail } });
   }
+}
+
+async function completeLegacyThreadTurnsList(
+  pending: Pick<PendingRequest<WebSocket, JsonObject>, "socket" | "clientId" | "params">,
+  originalError: string,
+): Promise<void> {
+  const threadId = typeof pending.params.threadId === "string" ? pending.params.threadId : undefined;
+  if (!threadId) {
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message: originalError } });
+    return;
+  }
+  try {
+    const page = await readThreadTurnsPage(threadId, pending.params, true);
+    rpcDiagnostics.lastError = null;
+    diagnostics.record("warning", "compatibility", "Used the legacy thread/read history fallback because this Codex App Server does not support paginated thread history.", { threadId });
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, result: page });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : originalError;
+    rpcDiagnostics.lastErrorAt = new Date().toISOString();
+    rpcDiagnostics.lastError = detail;
+    diagnostics.record("error", "compatibility", detail, { method: "thread/turns/list", threadId });
+    send(pending.socket, { type: "rpcResult", id: pending.clientId, error: { message: detail } });
+  }
+}
+
+async function readThreadTurnsPage(threadId: string, params: JsonObject, forceLegacy = false): Promise<JsonObject> {
+  if (!forceLegacy && !isLegacyThreadTurnsCursor(params.cursor)) {
+    try {
+      return await codexRequest("thread/turns/list", params, historyRpcTimeoutMs);
+    } catch (error) {
+      if (!isPaginatedThreadsUnsupported(error)) throw error;
+    }
+  }
+  const summary = await codexRequest("thread/read", { threadId, includeTurns: true }, historyRpcTimeoutMs);
+  return boundHistoryPage(paginateLegacyThreadTurns(summary, params));
 }
 
 function isActiveWriterConflict(message: string): boolean {
