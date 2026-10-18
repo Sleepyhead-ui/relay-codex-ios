@@ -34,7 +34,8 @@ test("parses Codex versions and classifies the supported range", () => {
   assert.equal(codexRuntimeCompatibility("0.151.0-alpha.7.2"), "compatible");
   assert.equal(codexRuntimeCompatibility("0.151.9"), "compatible");
   assert.equal(codexRuntimeCompatibility("0.162.1"), "compatible");
-  assert.equal(codexRuntimeCompatibility("0.163.0"), "untested");
+  assert.equal(codexRuntimeCompatibility("0.163.0"), "compatible");
+  assert.equal(codexRuntimeCompatibility("0.164.0"), "untested");
   assert.equal(codexRuntimeCompatibility("0.143.9"), "outdated");
   assert.equal(codexRuntimeCompatibility("0.149.0"), "compatible");
 });

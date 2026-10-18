@@ -4,7 +4,7 @@ const legacyCursorPrefix = "relay-legacy-thread-turns:";
 
 export function isPaginatedThreadsUnsupported(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /paginated_threads\s+is\s+not\s+supported\s+yet/i.test(message);
+  return /paginated[_ ]?threads[\s\S]*(?:not\s+supported|unsupported)|(?:not\s+supported|unsupported)[\s\S]*paginated[_ ]?threads/i.test(message);
 }
 
 export function isLegacyThreadTurnsCursor(value: unknown): value is string {

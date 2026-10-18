@@ -698,16 +698,28 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
       return;
     }
     if (["turn/start", "turn/steer"].includes(message.method)) {
-      const threadId = requiredThreadControlId(message.params.threadId);
-      const access = await ensureThreadControl(threadId);
-      if (access.mode !== "relay-write") {
-        const detail = "此任务当前由另一个 Codex 实例控制。Relay 已保留输入内容，请在 Codex 释放任务后重试。";
-        diagnostics.record("warning", "thread-control", "Rejected a write because another App Server owns the thread.", { threadId, method: message.method });
-        send(socket, {
-          type: "rpcResult",
-          id: message.id,
-          error: { code: -32001, message: detail, data: { relayThreadAccess: access } },
-        });
+      // A mobile client has a short acceptance watchdog. Confirm receipt
+      // before the potentially slow thread/resume ownership handshake; the
+      // later rpcResult still reports whether Codex accepted the turn.
+      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      let threadId: string;
+      try {
+        threadId = requiredThreadControlId(message.params.threadId);
+        const access = await ensureThreadControl(threadId);
+        if (access.mode !== "relay-write") {
+          const detail = "此任务当前由另一个 Codex 实例控制。Relay 已保留输入内容，请在 Codex 释放任务后重试。";
+          diagnostics.record("warning", "thread-control", "Rejected a write because another App Server owns the thread.", { threadId, method: message.method });
+          send(socket, {
+            type: "rpcResult",
+            id: message.id,
+            error: { code: -32001, message: detail, data: { relayThreadAccess: access } },
+          });
+          return;
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Relay 无法取得当前任务的写入控制权。";
+        diagnostics.record("error", "thread-control", detail, { method: message.method });
+        send(socket, { type: "rpcResult", id: message.id, error: { code: -32000, message: detail } });
         return;
       }
     }
@@ -776,7 +788,9 @@ async function handleClientMessage(socket: WebSocket, raw: string): Promise<void
         sessionSourceOwnership.begin(params.threadId);
       }
       codex.send({ method: message.method, id: bridgeId, params });
-      send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      if (!["turn/start", "turn/steer"].includes(message.method)) {
+        send(socket, { type: "rpcAccepted", id: message.id, method: message.method });
+      }
       rpcDiagnostics.lastAcceptedAt = new Date().toISOString();
     } catch (error) {
       const pending = pendingClientRequests.take(bridgeId);

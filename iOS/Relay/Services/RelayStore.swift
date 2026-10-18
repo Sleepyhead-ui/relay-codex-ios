@@ -751,7 +751,12 @@ final class RelayStore: ObservableObject {
                 reconnectOnTimeout: false
             )
             async let control = readThreadControlStatus(id, archived: showingArchivedThreads)
-            let (summaryResult, pageResult, controlResult) = try await (summary, page, control)
+            let (summaryResult, pageResult) = try await (summary, page)
+            // Thread access is useful for write affordances, but it must not
+            // make an otherwise valid history page disappear on reconnect or
+            // when an older Bridge cannot answer the optional control RPC.
+            let controlResult = (try? await control)
+                ?? .object(["mode": .string("unowned")])
             let result = JSONValue.object([
                 "thread": summaryResult["thread"] ?? .object([:]),
                 "initialTurnsPage": pageResult,

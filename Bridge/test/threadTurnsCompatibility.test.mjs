@@ -8,6 +8,7 @@ import {
 
 test("recognizes the current unsupported paginated thread error", () => {
   assert.equal(isPaginatedThreadsUnsupported(new Error("paginated_threads is not supported yet")), true);
+  assert.equal(isPaginatedThreadsUnsupported(new Error("paginated threads are unsupported by this server")), true);
   assert.equal(isPaginatedThreadsUnsupported(new Error("thread not found")), false);
 });
 
